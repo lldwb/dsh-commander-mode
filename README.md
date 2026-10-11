@@ -136,7 +136,31 @@ node --test          # 57 个用例：门禁判定、协议文本、patch 结构
 
 ### 验证过什么
 
-- `node --test` 57/57 通过（含"teammate 调用 `write` 必须放行"这条关键断言）。
-- `preset_audit` 审计 `commander`：所有子行 `ACTIVE`、无 `broken`，scope 工具集符合预期。
-- 端到端（真实会话里选中该模式）由使用者在 GUI 里验证：门禁的拒绝路径需要真实模型触发
-  一次 `write` 才能观察到。
+- **`node --test` 63/63 通过**，含"teammate 调用 `write` 必须放行"这条关键断言。
+- **`preset_audit` 审计 `commander`**：20 个子行全部 `ACTIVE`、无 `broken`，scope 工具集
+  符合预期（`write` / `edit` / `pwsh` 保留给子代理，`ask_user_question` / `todo_write` /
+  `workflow` 到位）。
+- **端到端门禁验证**（一次性 headless 探测 profile，装一个"只带门禁、不带协议"的诊断
+  插件，好让模型真的去试）：
+
+  ```
+  PROBE-EXEC   {"tool":"pwsh","parentSession":null,"origin":null,"delegated":false}
+  PROBE-DENY   {"tool":"pwsh","kind":"deny"}                       ← Lead 被拒
+  PROBE-EXEC   {"tool":"subagent",...}                             ← 模型改去派发
+  PROBE-EXEC   {"tool":"pwsh","parentSession":"session-498c…",
+                "origin":"subagent","delegationDepth":1,"delegated":true}
+                                                                   ← 子代理放行，真的跑了
+  ```
+
+  模型收到的拒绝原文就是 `Error: 指挥者模式：你不自己执行 \`pwsh\`。…`，随后它按纠正指令
+  派了 `subagent`，子代理的 `pwsh` 调用**没有被门禁拦**（那次调用失败于 headless 沙箱的
+  ACL 问题，与门禁无关）。
+
+  这次探测抓到了一个真实缺陷并已修复：拒绝理由最初把 `spawn_teammate` 与
+  `team_task_create` 写死了，而那个部署里**没有 Agent Teams**，模型收到"请用
+  `spawn_teammate`"却找不到这个工具，**当场卡住**。现在理由按 agent 实际拥有的工具生成
+  （见 `lib/guard.js` 的 `buildDenialReason`，以及 `test/guard.test.mjs` 里那组
+  "拒绝理由必须适配真实部署"的用例）。
+- **仍未验证的**：桌面版 GUI 里选中「指挥者模式」后的真实会话表现（preset 绑定只在
+  web bundle 里发生，headless 验证不了）。上面那次端到端走的是"全局挂同一份门禁代码"的
+  等价路径。
