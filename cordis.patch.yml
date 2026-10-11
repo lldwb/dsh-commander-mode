@@ -1,0 +1,168 @@
+# dsh-commander-mode —— bundle patch 层。
+#
+# 这份 patch 只声明**一个 agent preset**：指挥者模式。在 DSH 里，一个模式**就是**一个
+# agent preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。这一行用
+# `@deepseek-ai/dsh-agent-preset`，即随附的通用声明器：它接受
+# `{ id, name, description, order, plugins }`，并替你调用 `ctx.agentPresets.register()`。
+#
+# ⚠️ preset 是一份**完整组合**，不是全局工具集上的叠加层。
+#
+# `@deepseek-ai/dsh-web-app` 把它随附的每一个能力行都设成 `disabled: true`，然后在**每个
+# preset 内部**重新声明它要的那些行。所以在桌面版里并不存在一个全局的 `read` 工具：它
+# 之所以在，只是因为 `preset-standard` 把 `tool-fs` 列成了自己的子行。因此下面的
+# `CAPABILITIES` 块镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式的表现等于
+# 「标准模式 + 本插件 + 指挥者门禁」。已用 `preset_audit` 核对：随附 `standard` 顶层声明
+# 19 行，本块声明其中 16 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
+# 组的内部构成（见下）。
+#
+# 故意**不**从 preset-standard 镜像的东西：
+#
+#   - `persona` —— 在一个没有声明它的 preset 里本来就已经生效，再声明一遍有产生重复
+#     prompt section 的风险；
+#   - `planning` / plan 模式 —— 60 行随附文案，而本模式自带的"规划 + 用选择工具让用户
+#     确认"已经覆盖了同一件事，两套协议会互相干扰；
+#   - `tool-plugin-manager` —— 随附时是禁用的（它是给 创造模式 用的），而且装插件属于
+#     "执行操作"，本模式下应当派给子代理；
+#   - **`tool-subagent` / `tool-subagent-fork` / `tool-subagent-control` /
+#     `tool-subagent-control/list-agents`** —— 见下。
+#
+# ## 派发通道：交给「智能体团队」，不要旧的 subagent 控件
+#
+# 本模式的委派**依赖 `@deepseek-ai/dsh-experimental-agent-team-profile`**（插件页里的
+# 「智能体团队」）。那个组合包做两件事：插入 `agent-team` 服务与 `tool-agent-team`
+# （九个 Team 工具），并**禁用**旧的 `tool-subagent-control`、`tool-subagent-list-agents`、
+# `tool-subagent` 与 `tool-subagent-fork`。
+#
+# 所以这里**不**镜像 standard 的 delegation 组里的那四个 subagent 行：在 preset 里重新
+# 声明它们，会把那个组合包刚刚关掉的旧控件又装回来，于是指挥者同时拿到两套
+# `send_message` / `list_agents` / `interrupt_agent`，行为变得不确定。Team 工具本身
+# **不需要在这里声明** —— `tool-agent-team` 的九个工具注册在每个 Team 成员 agent
+# **自己的 ctx** 上（Lead 是隐式 Team 的 Lead，因此也是成员），与 preset 无关。
+#
+# 只保留 `workflow-ptc` + `tool-workflow`：它是与 Team 工具互补的编排通道（一次性扇出
+# 多个 fresh 子代理），而 `agent-team-profile` 明确保留了 workflow 的 spawn 提供方。
+#
+# ⚠️ 代价（README 的「已知边界」也写明了）：如果用户在插件页关掉「智能体团队」，本模式
+# 就没有 `spawn_teammate` / `send_message` / `wait_agent` / `team_task_*` 了。那时门禁会
+# 自动放行（`lib/guard.js` 的 `canDelegate` 检查），模式退化成"只会做协议的普通 agent"，
+# 而不是把会话卡死。
+#
+# ## 门禁
+#
+# 「指挥者不执行操作」由本插件在 `tools/pre-execute` 上确定性拒绝（`write` / `edit` /
+# `pwsh` / `bash` / `job_kill` / `plugin_manager`）。之所以不在这里裁掉 `tool-fs` 或
+# `tool-pwsh`：子代理通过 `agentPresets.composeFrom()` 加入**父会话的同一个 preset
+# scope**，裁掉会让 teammate 也失去这些能力（per-child 的工具限制只能收紧、不能扩展）。
+#
+# 显示文案：输入框渲染的是 `preset.name ?? preset.id`，而自己起了名的声明就自己拥有
+# 文案 —— 只有那四个随附 preset（它们不发布 name）才会被翻译。所以下面这些字符串是原样
+# 显示的。`order` 决定菜单排序；随附 preset 用的是 1..4。
+#
+# 层序提醒：所有 bundle patch 先跑，然后是 profile 自己的 cordis.patch.yml，最后是
+# `--patch` 覆盖层。按 id 定向的 patch 会**整块替换** `config` 且从不深合并，所以 profile
+# 层若要覆盖下面这个 preset，必须重述 `id`、`name`、`description`、`order` 以及整个
+# `plugins` 列表。
+
+- insert:
+    - id: preset-commander
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: commander
+        name: 指挥者模式
+        description: 接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。
+        order: 7
+        plugins:
+          # ---- CAPABILITIES (mirrors @deepseek-ai/dsh-preset-standard) ----------
+          # 从工作区加载 AGENTS.md —— 指挥者要靠工作区约定才知道"派出去的活"该守什么规矩。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          # read / glob / grep —— 指挥者只读侦察的手段；write / edit 也在这一行里，
+          # 由 lib/guard.js 的门禁对指挥者拒掉，而子代理照常可用。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          # 与 Team 工具互补的编排通道：一次性扇出多个 fresh 子代理。
+          # （旧的 tool-subagent* 四个行**有意不在这里** —— 见文件头。）
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+          # 本模式的两次"必须问用户"都靠它：规划确认与分歧上报。
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          # 规划与进度板。
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+          # ---- end CAPABILITIES ----------------------------------------------
+          - id: commander-mode
+            name: 'dsh-commander-mode'
+            config:
+              # 规划/拆分完成后必须先让用户确认（本模式的核心要求）。
+              confirmPlan: true
+              # 子代理之间有分歧时交回用户。
+              escalateOnConflict: true
+              # 写进协议的建议并行上限。
+              maxTeammates: 4
+              # 指挥者不许自己调用的工具；传 [] 可以只留协议约束。
+              blockedTools:
+                - write
+                - edit
+                - pwsh
+                - bash
+                - job_kill
+                - plugin_manager

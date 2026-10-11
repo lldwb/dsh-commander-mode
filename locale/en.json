@@ -1,0 +1,4 @@
+{
+  "title": "Commander Mode",
+  "description": "Turn this session into a commander: analyse the task, plan and split it, delegate every execution step to subagents, never execute anything yourself, and escalate plans and disagreements back to the user with a choice tool."
+}

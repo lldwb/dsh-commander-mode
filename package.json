@@ -1,0 +1,53 @@
+{
+  "name": "dsh-commander-mode",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness 的指挥者模式：接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "icon": "./icon.svg",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "test/*.mjs"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "bundle",
+    "agent-preset",
+    "agent-mode",
+    "orchestrator",
+    "commander",
+    "agent-teams",
+    "delegation"
+  ],
+  "meta": {
+    "title": "指挥者模式",
+    "description": "把当前会话切换成指挥者：分析任务、规划与拆分、把执行派给子代理，自己不执行操作；规划与分歧都交回用户用选择工具确认。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
