@@ -3,10 +3,18 @@
   "version": "0.1.0",
   "description": "DeepSeek Harness 的指挥者模式：接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "private": true,
   "icon": "./icon.svg",
   "main": "./index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lldwb/dsh-commander-mode.git"
+  },
+  "homepage": "https://github.com/lldwb/dsh-commander-mode#readme",
+  "bugs": {
+    "url": "https://github.com/lldwb/dsh-commander-mode/issues"
+  },
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
@@ -43,7 +51,8 @@
   ],
   "meta": {
     "title": "指挥者模式",
-    "description": "把当前会话切换成指挥者：分析任务、规划与拆分、把执行派给子代理，自己不执行操作；规划与分歧都交回用户用选择工具确认。"
+    "description": "把当前会话切换成指挥者：分析任务、规划与拆分、把执行派给子代理，自己不执行操作；规划与分歧都交回用户用选择工具确认。",
+    "note": "DSH 的插件卡片标题/描述只读 package.json 的 name/description 与 locale/*.json 的 {\"meta\":{...}}，不读这里的字段；保留它只是给人看的。"
   },
   "dsh": {
     "bundle": {

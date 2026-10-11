@@ -3,8 +3,8 @@
 DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆分，把执行全部派给子代理；
 自己不执行操作，规划与分歧都交回用户用选择工具确认。
 
-- 仓库：<https://github.com/lldwb/dsh-commander-mode>（**私有**，非开源）
-- 许可：`UNLICENSED`
+- 仓库：<https://github.com/lldwb/dsh-commander-mode>（公开）
+- 许可：[MIT](./LICENSE)
 - 形态：Host 插件 + 一个 agent preset（模式）
 - 依赖：`@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」）
 
@@ -30,11 +30,11 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
 ## 安装
 
 ```powershell
-# 桌面版：用 plugin_manager 工具安装本目录
-plugin_manager { action: "install_bundle", target: "E:\dsh-plugins\dsh-commander-mode" }
+# 桌面版：用 plugin_manager 工具安装本目录（把 <本目录> 换成你 clone 下来的绝对路径）
+plugin_manager { action: "install_bundle", target: "<本目录的绝对路径>" }
 ```
 
-装好后在模式菜单里会出现「指挥者模式」（`order: 7`，排在面试模式之后）。
+装好后在模式菜单里会出现「指挥者模式」（`order: 7`）。
 模式在**新会话**里选择，已有会话的 preset 在第一轮之前就已绑定。
 
 ## 它怎么保证"指挥者不执行操作"
@@ -119,8 +119,8 @@ profile 层覆盖这个 preset 时注意：按 id 定向的 patch 会**整块替
 ## 开发
 
 ```powershell
-cd E:\dsh-plugins\dsh-commander-mode
-node --test          # 63 个用例：门禁判定、协议文本、patch 结构、插件接线
+cd <本插件目录>
+node --test          # 65 个用例：门禁判定、协议文本、patch 结构、插件接线
 ```
 
 零依赖：不 import 任何 `@deepseek-ai/*`，不声明 `Config`（配置在 `lib/config.js` 里自己解析），
