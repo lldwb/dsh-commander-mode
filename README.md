@@ -136,31 +136,36 @@ node --test          # 63 个用例：门禁判定、协议文本、patch 结构
 
 ### 验证过什么
 
-- **`node --test` 63/63 通过**，含"teammate 调用 `write` 必须放行"这条关键断言。
+- **`node --test` 65/65 通过**，含"teammate 调用 `write` 必须放行"这条关键断言。
 - **`preset_audit` 审计 `commander`**：20 个子行全部 `ACTIVE`、无 `broken`，scope 工具集
   符合预期（`write` / `edit` / `pwsh` 保留给子代理，`ask_user_question` / `todo_write` /
   `workflow` 到位）。
-- **端到端门禁验证**（一次性 headless 探测 profile，装一个"只带门禁、不带协议"的诊断
-  插件，好让模型真的去试）：
+- **真实 preset 会话端到端**（用 `@deepseek-ai/dsh-webhook` 的进程内 `dispatch()` 起一个
+  `agentPreset: "commander"` 的 root agent，绕开需要认证的 web API；会话日志逐字可查）：
 
-  ```
-  PROBE-EXEC   {"tool":"pwsh","parentSession":null,"origin":null,"delegated":false}
-  PROBE-DENY   {"tool":"pwsh","kind":"deny"}                       ← Lead 被拒
-  PROBE-EXEC   {"tool":"subagent",...}                             ← 模型改去派发
-  PROBE-EXEC   {"tool":"pwsh","parentSession":"session-498c…",
-                "origin":"subagent","delegationDepth":1,"delegated":true}
-                                                                   ← 子代理放行，真的跑了
-  ```
+  | 观察到的行为 | 证据 |
+  |---|---|
+  | preset 绑定 | header `{"agentPreset":"commander"}` |
+  | 协议注入 | `request/header` 里有 `指挥者模式（已选中该模式）`/`绝对边界：你不执行操作`/`什么时候必须问用户`/`输出契约` |
+  | 分歧/边界上报 | 调 `ask_user_question`，三选项、推荐项排第一并标注 (Recommended) |
+  | **规划确认** | 侦察 10 步后 `todo_write` 把"把计划交用户确认"标为 in_progress，紧接着 `ask_user_question` 问"按上面的 4 阶段计划推进吗？" |
+  | 派发 | `spawn_teammate(readme-auditor)` → `send_message` → `wait_agent` → `list_agents` |
+  | 子代理 prompt 自包含 | 目标、产出物、验收判据、写作用域（"严格只读：禁止创建/修改/删除"）、回报格式齐全 |
+  | 验收核对 | 不只信子代理回报，自己用 `glob` 交叉核对，并正确排除 `tools\README.md` |
+  | 门禁拒绝 | `Error: 指挥者模式：你不自己执行 \`pwsh\`。…` |
 
-  模型收到的拒绝原文就是 `Error: 指挥者模式：你不自己执行 \`pwsh\`。…`，随后它按纠正指令
-  派了 `subagent`，子代理的 `pwsh` 调用**没有被门禁拦**（那次调用失败于 headless 沙箱的
-  ACL 问题，与门禁无关）。
+- **两次端到端探测各抓到一个真实缺陷**（都已修 + 有回归用例）：
 
-  这次探测抓到了一个真实缺陷并已修复：拒绝理由最初把 `spawn_teammate` 与
-  `team_task_create` 写死了，而那个部署里**没有 Agent Teams**，模型收到"请用
-  `spawn_teammate`"却找不到这个工具，**当场卡住**。现在理由按 agent 实际拥有的工具生成
-  （见 `lib/guard.js` 的 `buildDenialReason`，以及 `test/guard.test.mjs` 里那组
-  "拒绝理由必须适配真实部署"的用例）。
-- **仍未验证的**：桌面版 GUI 里选中「指挥者模式」后的真实会话表现（preset 绑定只在
-  web bundle 里发生，headless 验证不了）。上面那次端到端走的是"全局挂同一份门禁代码"的
-  等价路径。
+  1. **拒绝理由点名了对方没有的工具**：headless 探测 profile 里没有 Agent Teams，模型收到
+     "请用 `spawn_teammate`"却找不到这个工具，**当场卡住**。现在理由按 agent 实际拥有的
+     通道生成（Team 工具 / `subagent` / `workflow`）。
+  2. **门禁在 web-app 式部署里整个失效**（**含桌面版**）：`agentToolNames()` 用
+     `agent.ctx.tools.schemas()` 读工具视图，而 `dsh-web-app` 把能力行全局禁用、工具都在
+     preset/agent 层 —— 不显式传 scope 时读到的是**全局层**，返回 `[]`，连 `write` /
+     `pwsh` / `ask_user_question` 都 `get()` 不到。空数组被当成事实 →
+     `canDelegate === false` → 放行 → **指挥者照常 `write`/`pwsh`**。在 headless 里它
+     "看起来是好的"，因为 headless 没有那层全局禁用。现在空视图一律当作"读不到"，按未知
+     处理即照常拦截。
+- **仍未验证的**：桌面版 GUI 里**手动选中**「指挥者模式」那一刻的交互（模式菜单点击 → 第一轮）。
+  preset 绑定本身、协议注入、门禁、派发、规划确认都已在真实 preset 会话里验证；这一条差的
+  只是"从菜单点进去"这个入口动作。
