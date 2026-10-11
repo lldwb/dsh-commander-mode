@@ -146,6 +146,64 @@ test('派发工具清单覆盖智能体团队的九个工具里的派发入口',
   }
 });
 
+// ------------------------------------------------- 拒绝理由必须适配真实部署 ---
+//
+// 这一组是端到端探测抓回来的真实缺陷：headless 探测 profile 里没有 Agent Teams，模型的
+// 工具只有 `subagent` / `send_message` / `workflow`，而拒绝理由却写死了"请用
+// `spawn_teammate`"。模型找不到那个工具，**当场卡住** —— 既不能自己动手，也没被指引到
+// 它真正能用的那条路。
+
+test('拒绝理由只点名 agent 真正拥有的派发工具', () => {
+  const headless = ['read', 'write', 'edit', 'pwsh', 'subagent', 'send_message', 'workflow', 'todo_write'];
+  const reason = buildDenialReason('write', headless);
+  assert.ok(reason.includes('subagent'), '应当指引到它真有的 subagent');
+  assert.ok(!reason.includes('spawn_teammate'), '不得点名它没有的 spawn_teammate');
+  assert.ok(!reason.includes('team_task_create'), '不得点名它没有的 team_task_create');
+  assert.ok(!reason.includes('ask_user_question'), '不得点名它没有的 ask_user_question');
+  // 没有 ask_user_question 时要退化成"写在正文里问用户"。
+  assert.ok(reason.includes('正文'));
+});
+
+test('有 Agent Teams 时指引用 Team 工具', () => {
+  const withTeams = ['read', 'write', 'ask_user_question', 'spawn_teammate', 'send_message', 'team_task_create', 'team_task_update'];
+  const reason = buildDenialReason('edit', withTeams);
+  assert.ok(reason.includes('spawn_teammate'));
+  assert.ok(reason.includes('send_message'));
+  assert.ok(reason.includes('team_task_create'));
+  assert.ok(reason.includes('ask_user_question'));
+});
+
+test('只有 workflow 时指引 workflow', () => {
+  const reason = buildDenialReason('pwsh', ['read', 'write', 'pwsh', 'workflow']);
+  assert.ok(reason.includes('workflow'));
+  assert.ok(!reason.includes('spawn_teammate'));
+});
+
+test('一条派发路径都没有时给逃生口，而不是让模型死磕', () => {
+  const reason = buildDenialReason('write', ['read', 'write', 'glob']);
+  assert.ok(reason.includes('没有可用的委派工具'));
+  assert.ok(reason.includes('请用户决定'));
+  assert.ok(!reason.includes('spawn_teammate'));
+});
+
+test('读不到工具视图时按"都有"处理，生成完整指引', () => {
+  const reason = buildDenialReason('write');
+  assert.ok(reason.includes('spawn_teammate'));
+  assert.ok(reason.includes('ask_user_question'));
+});
+
+test('evaluatePreExecute 会把工具视图透传给理由生成', () => {
+  const decision = evaluatePreExecute({
+    agent: leadAgent(),
+    name: 'write',
+    canDelegate: true,
+    availableTools: ['read', 'write', 'subagent'],
+  });
+  assert.ok(decision);
+  assert.ok(decision.reason.includes('subagent'));
+  assert.ok(!decision.reason.includes('spawn_teammate'));
+});
+
 // ---------------------------------------------------------------- 工具视图 ---
 
 test('agentToolNames 从 agent 自己的 scope 读工具名', () => {

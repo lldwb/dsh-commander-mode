@@ -110,16 +110,24 @@ export function apply(ctx, config) {
   const blockedSet = new Set(options.blockedTools);
 
   /**
-   * 该 agent 是否有"把活派出去"的工具。
+   * 该 agent 实际能用的工具名，以及其中有没有"把活派出去"的通道。
    *
    * 读 `agent.ctx.tools.schemas()` —— 在 agent 自己的作用域里求值，所以能看见 agent
-   * 作用域注册的 Team 工具（它们不在 preset scope 的视图里）。读不到时返回
-   * `undefined`（未知），调用方按"有"处理。
+   * 作用域注册的 Team 工具（它们不在 preset scope 的视图里）。
+   *
+   * 读不到时返回 `{ availableTools: undefined, canDelegate: undefined }`（未知），
+   * 判定按"有"处理；读到列表却一个派发工具都没有时 `canDelegate` 才是 `false`。
+   *
+   * 两个值都要往下传：`canDelegate` 决定**拦不拦**，`availableTools` 决定拒绝理由里
+   * **点名哪些工具** —— 理由若点名了 agent 没有的工具，它就会当场卡住。
    */
-  const canDelegateFor = (agent) => {
-    const names = agentToolNames(agent);
-    if (names === undefined) return undefined;
-    return names.some((toolName) => DELEGATION_TOOLS.includes(toolName));
+  const inspectAgentTools = (agent) => {
+    const availableTools = agentToolNames(agent);
+    if (availableTools === undefined) return { availableTools: undefined, canDelegate: undefined };
+    return {
+      availableTools,
+      canDelegate: availableTools.some((toolName) => DELEGATION_TOOLS.includes(toolName)),
+    };
   };
 
   ctx.on('tools/pre-execute', (exec, next) => {
@@ -127,11 +135,13 @@ export function apply(ctx, config) {
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
       // 快路径：绝大多数调用既不在拦截清单里，也不是 Lead 发起的。
       if (blockedSet.has(toolName) && !isDelegatedAgent(exec?.agent)) {
+        const { availableTools, canDelegate } = inspectAgentTools(exec.agent);
         const decision = evaluatePreExecute({
           agent: exec.agent,
           name: toolName,
           blocked: blockedSet,
-          canDelegate: canDelegateFor(exec.agent),
+          canDelegate,
+          availableTools,
         });
         if (decision !== undefined) {
           ctx.logger?.info?.('commander-mode: 拒绝指挥者自己调用 %s（已要求改为派发）', toolName);
