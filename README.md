@@ -120,7 +120,7 @@ profile 层覆盖这个 preset 时注意：按 id 定向的 patch 会**整块替
 
 ```powershell
 cd E:\dsh-plugins\dsh-commander-mode
-node --test          # 57 个用例：门禁判定、协议文本、patch 结构、插件接线
+node --test          # 63 个用例：门禁判定、协议文本、patch 结构、插件接线
 ```
 
 零依赖：不 import 任何 `@deepseek-ai/*`，不声明 `Config`（配置在 `lib/config.js` 里自己解析），
