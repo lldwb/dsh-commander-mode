@@ -213,7 +213,7 @@ test('agentToolNames 从 agent 自己的 scope 读工具名', () => {
   assert.deepEqual(agentToolNames(agent), ['spawn_teammate', 'read']);
 });
 
-test('读不到工具视图时返回 undefined（与"读到空列表"区分开）', () => {
+test('读不到工具视图时返回 undefined', () => {
   assert.equal(agentToolNames(undefined), undefined);
   assert.equal(agentToolNames({}), undefined);
   assert.equal(agentToolNames({ ctx: {} }), undefined);
@@ -230,6 +230,33 @@ test('读不到工具视图时返回 undefined（与"读到空列表"区分开�
     }),
     undefined,
   );
-  // 真的读到空列表时是 []，而不是 undefined —— 调用方据此判定"确实没有派发工具"。
-  assert.deepEqual(agentToolNames({ ctx: { tools: { schemas: () => [] } } }), []);
+});
+
+test('空视图必须当作"读不到"，否则门禁在 web-app 式部署里会整个失效', () => {
+  // 这是端到端探测抓回来的真实事故：`dsh-web-app` 把能力行全局禁用、工具都在 preset 层，
+  // 于是 `agent.ctx.tools.schemas()` 返回 `[]`（连 write 都"不存在"）。第一版把 [] 当成
+  // 事实 → `canDelegate === false` → 放行 → 指挥者照常 write/pwsh，门禁形同不存在。
+  assert.equal(agentToolNames({ ctx: { tools: { schemas: () => [] } } }), undefined);
+  assert.equal(
+    agentToolNames({ ctx: { tools: { schemas: () => [{ name: '' }, { name: '' }] } } }),
+    undefined,
+    '只读出空名字的视图同样是坏视图',
+  );
+});
+
+test('空视图走"未知"分支，也就是照常拦截', () => {
+  const agent = {
+    id: 'session-lead',
+    session: { header: { id: 'session-lead' } },
+    ctx: { tools: { schemas: () => [] } },
+  };
+  // canDelegate 由 index.js 从 agentToolNames 推导：undefined → undefined → 不触发放行。
+  const availableTools = agentToolNames(agent);
+  assert.equal(availableTools, undefined);
+  const decision = evaluatePreExecute({ agent, name: 'pwsh', canDelegate: undefined, availableTools });
+  assert.ok(decision, '空视图下 pwsh 必须被拒绝 —— 这正是桌面版曾经漏掉的那一拦');
+  assert.equal(decision.kind, 'deny');
+  // 而且理由要按"都有"生成完整指引，不能因为空视图就说"没有可用的委派工具"。
+  assert.ok(decision.reason.includes('spawn_teammate'));
+  assert.ok(!decision.reason.includes('没有可用的委派工具'));
 });
