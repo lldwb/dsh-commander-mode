@@ -154,6 +154,20 @@ node --test          # 65 个用例：门禁判定、协议文本、patch 结构
   | 验收核对 | 不只信子代理回报，自己用 `glob` 交叉核对，并正确排除 `tools\README.md` |
   | 门禁拒绝 | `Error: 指挥者模式：你不自己执行 \`pwsh\`。…` |
 
+- **真实使用记录**（2026-10-11 23:25，桌面版 GUI，`E:\github-desktop-zh-cn` 项目，门禁修复
+  之后）：用户把已有会话的模式切到「指挥者模式」后，主会话的工具调用统计是
+
+  ```
+  19x wait_agent   12x list_agents   12x read      12x glob
+   8x send_message  8x team_task_list  8x grep       8x team_task_create
+   6x todo_write    3x ask_user_question
+   2x spawn_teammate 1x present
+  ```
+
+  **零 `write` / 零 `edit` / 零 `pwsh`**，而且**门禁一次都没有触发** —— 模型从第一步起就在
+  派发，协议本身就把它约束住了（门禁是第二道防线，不是唯一防线）。它 spawn 的两个 teammate
+  继承了 `agentPreset: "commander"`，正常执行 `read`/`glob`/`grep`/`edit`/`write`/`pwsh` ——
+  边界只落在主 agent 身上，**子代理没有被拦死**。
 - **两次端到端探测各抓到一个真实缺陷**（都已修 + 有回归用例）：
 
   1. **拒绝理由点名了对方没有的工具**：headless 探测 profile 里没有 Agent Teams，模型收到
