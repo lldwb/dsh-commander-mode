@@ -151,7 +151,7 @@ node --test          # 65 个用例：门禁判定、协议文本、patch 结构
   | **规划确认** | 侦察 10 步后 `todo_write` 把"把计划交用户确认"标为 in_progress，紧接着 `ask_user_question` 问"按上面的 4 阶段计划推进吗？" |
   | 派发 | `spawn_teammate(readme-auditor)` → `send_message` → `wait_agent` → `list_agents` |
   | 子代理 prompt 自包含 | 目标、产出物、验收判据、写作用域（"严格只读：禁止创建/修改/删除"）、回报格式齐全 |
-  | 验收核对 | 不只信子代理回报，自己用 `glob` 交叉核对，并正确排除 `tools\README.md` |
+  | 验收核对 | 不只信子代理回报，自己用 `glob` 交叉核对，并正确排除与本次任务无关的 README |
   | 门禁拒绝 | `Error: 指挥者模式：你不自己执行 \`pwsh\`。…` |
 
 - **真实使用记录**（2026-10-11 23:25，桌面版 GUI，`E:\github-desktop-zh-cn` 项目，门禁修复
