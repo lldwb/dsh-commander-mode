@@ -62,8 +62,65 @@
 # `--patch` 覆盖层。按 id 定向的 patch 会**整块替换** `config` 且从不深合并，所以 profile
 # 层若要覆盖下面这个 preset，必须重述 `id`、`name`、`description`、`order` 以及整个
 # `plugins` 列表。
+#
+# ## 本 patch 插入两行，不是一个
+#
+# 1. `commander-mode`（`dsh-commander-mode/host`）—— **profile 顶层配置行**。它持有
+#    `Config`、提供 `commanderSettings` 服务、关掉自动设置页，**不注册任何工具**，所以不会
+#    把能力泄漏到别的模式里。
+# 2. `preset-commander` —— 模式声明行，里面的 `commander-mode-agent` 子行才是
+#    「指挥者协议 + 门禁 + specialist 安装」。
+#
+# 为什么必须拆开：preset 子行是运行时挂载的 fiber，**不在 Loader 的 entry 树里**，而设置页
+# 读的就是那棵树。把 `Config` 放在 preset 子行上，设置命名空间不可达、设置页卡片静默消失
+# （dsh 0.2.1-rc.2 实测）。参考实现 dsh-multi-model-orchestrator 的结构相同。
 
 - insert:
+    # ---- 配置行（profile 顶层）------------------------------------------------
+    # 持有 `Config`、提供 `commanderSettings` 服务、关掉自动设置页。
+    #
+    # ⚠️ 为什么配置不在 preset 里：preset 子行是**运行时挂载**的 Cordis fiber，不在 Loader
+    # 的 entry 树里；而设置页的两条通路（`Config.listConfigs` 与 `settings.describe()`）
+    # 都读那棵树。实测 0.2.1-rc.2：`Config` 声明在 preset 子行上时，设置命名空间不可达，
+    # `configForms.whileServed(['commander-mode'])` 永远为假，设置页卡片**静默消失**。
+    # 所以配置行必须是 profile 顶层行（与参考实现 dsh-multi-model-orchestrator 同构）。
+    #
+    # 行 id = 设置命名空间 = 客户端 `SETTINGS_NS` = `commander-mode`，四者必须一致。
+    - id: commander-mode
+      # ⚠️ 必须是**裸包名**（不含 `/`）：`dsh-client-modules` 判定一个 Loader 行有没有
+      # client 半时，对含 `/` 的说明符直接放弃（`exactPackageSpecifier()` 返回 undefined）。
+      # 写成 'dsh-commander-mode/host' 会让设置页永远找不到这个包的 client 半。
+      name: 'dsh-commander-mode'
+      # ⚠️ 下面每个键都必须在 host.js 导出的 `Config`（= lib/config.js）里声明：
+      # 按 id 定向的 patch 整块替换 config、不做深合并。
+      #
+      # 只有 `specialists` 是 volatile：设置页编辑它时 Loader 只热更新运行中的引用
+      # （不重载本行），配置行通过 `commanderSettings` 服务广播，模式行据此重建
+      # specialist preset 与工具。其余字段是加载期配置。
+      config:
+        # 规划/拆分完成后必须先让用户确认（本模式的核心要求）。
+        confirmPlan: true
+        # 子代理之间有分歧时交回用户。
+        escalateOnConflict: true
+        # 写进协议的建议并行上限。
+        maxTeammates: 4
+        # 指挥者不许自己调用的工具；传 [] 可以只留协议约束。
+        blockedTools:
+          - write
+          - edit
+          - pwsh
+          - bash
+          - job_kill
+          - plugin_manager
+        # 是否把长文协议注册成 skill。
+        registerSkill: true
+        # 可配置的多模型 specialist 名册：每项一个 `subagent_<id>` 前台工具。
+        # 开箱为空 —— 展开名册的入口是设置页（见 README「设置页」）。
+        specialists: []
+        # 名册条数上限（防御性：每项都意味着一个 preset + 一个工具）。
+        maxSpecialists: 20
+
+    # ---- 模式行（agent preset）-----------------------------------------------
     - id: preset-commander
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -149,20 +206,9 @@
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
           # ---- end CAPABILITIES ----------------------------------------------
-          - id: commander-mode
-            name: 'dsh-commander-mode'
-            config:
-              # 规划/拆分完成后必须先让用户确认（本模式的核心要求）。
-              confirmPlan: true
-              # 子代理之间有分歧时交回用户。
-              escalateOnConflict: true
-              # 写进协议的建议并行上限。
-              maxTeammates: 4
-              # 指挥者不许自己调用的工具；传 [] 可以只留协议约束。
-              blockedTools:
-                - write
-                - edit
-                - pwsh
-                - bash
-                - job_kill
-                - plugin_manager
+          # 模式行：协议 + 门禁 + specialist 安装。它**不持有配置**（配置在顶层的
+          # `commander-mode` 行），只通过 `commanderSettings` 服务读配置。
+          # preset 子行不在 Loader 树里、也不需要被 client-modules 扫描，所以用子路径
+          # 出口没问题。
+          - id: commander-mode-agent
+            name: 'dsh-commander-mode/agent'
