@@ -1,7 +1,7 @@
 {
   "name": "dsh-commander-mode",
-  "version": "0.1.2",
-  "description": "DeepSeek Harness 的指挥者模式：接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness 的指挥者模式：接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。0.2 起可在设置页配置多模型 specialist 名册。",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -17,11 +17,17 @@
   },
   "exports": {
     ".": "./index.js",
+    "./agent": "./agent.js",
+    "./client": "./client.js",
+    "./specialist": "./specialist.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "files": [
     "index.js",
+    "agent.js",
+    "client.js",
+    "specialist.js",
     "lib/*.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -47,16 +53,30 @@
     "orchestrator",
     "commander",
     "agent-teams",
-    "delegation"
+    "delegation",
+    "multi-model",
+    "specialist"
   ],
   "meta": {
     "title": "指挥者模式",
-    "description": "把当前会话切换成指挥者：分析任务、规划与拆分、把执行派给子代理，自己不执行操作；规划与分歧都交回用户用选择工具确认。",
+    "description": "把当前会话切换成指挥者：分析任务、规划与拆分、把执行派给子代理，自己不执行操作；规划与分歧都交回用户用选择工具确认。可在设置页配置多模型 specialist 名册。",
     "note": "DSH 的插件卡片标题/描述只读 package.json 的 name/description 与 locale/*.json 的 {\"meta\":{...}}，不读这里的字段；保留它只是给人看的。"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
   }
 }

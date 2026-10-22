@@ -57,7 +57,7 @@ test('一个模式所需的每一行能力都声明了', () => {
 
 test('顶层行集合恰好是能力行加本插件', () => {
   const declared = topRowIds();
-  assert.deepEqual([...declared].sort(), [...CAPABILITY_ROWS, 'commander-mode'].sort());
+  assert.deepEqual([...declared].sort(), [...CAPABILITY_ROWS, 'commander-mode-agent'].sort());
 });
 
 test('与 preset-standard 的三处省略是有意为之', () => {
@@ -108,24 +108,49 @@ test('preset 声明本身正确', () => {
   assert.match(PATCH, /description: .*子代理/u);
 });
 
-test('本插件挂成 preset 子行，且排在能力行之后', () => {
+test('配置行是 profile 顶层行，模式行挂在 preset 里', () => {
+  // 配置行必须是顶层行：preset 子行不进 Loader entry 树，设置页看不到它的 Config
+  // （dsh 0.2.1-rc.2 实测：命名空间不可达 → 设置卡片静默消失）。
+  // 而且 name 必须是**裸包名**：dsh-client-modules 对含 `/` 的说明符直接放弃，
+  // 写成 'dsh-commander-mode/host' 会让 client 半永远进不了页面清单。
+  assert.match(PATCH, /\n {4}- id: commander-mode\n(?: {6}#.*\n)* {6}name: 'dsh-commander-mode'\n/u);
+
+  // 模式行在 preset 的 plugins 列表里（第 10 个空格缩进），且是最后一行。
   const declared = topRowIds();
-  assert.equal(declared[declared.length - 1], 'commander-mode', '插件行应在最后');
-  assert.match(PATCH, /- id: commander-mode\n\s+name: 'dsh-commander-mode'/u);
-  // 门禁清单必须写在这里，而不是只靠默认值 —— 用户改这一行就能调整边界。
-  assert.match(PATCH, /confirmPlan: true/u);
-  assert.match(PATCH, /escalateOnConflict: true/u);
-  assert.match(PATCH, /blockedTools:/u);
+  assert.equal(declared[declared.length - 1], 'commander-mode-agent', '模式行应在最后');
+  assert.match(PATCH, /\n {10}- id: commander-mode-agent\n {12}name: 'dsh-commander-mode\/agent'/u);
 });
 
-test('这份 patch 从不插入顶层行', () => {
-  // 全局行会把模式的工具泄漏到其它每一个模式里。本 patch 里的一切都必须活在 preset 的
-  // `plugins` 列表之下。
-  const topLevelIds = LINES.filter((line) => /^- id: /u.test(line));
-  assert.deepEqual(topLevelIds, []);
-  assert.equal(LINES.filter((line) => line.trim() === '- insert:').length, 1);
+test('配置行不注册任何工具（避免能力泄漏到别的模式）', () => {
+  // 顶层行会被每个模式看见。它只能装配置与服务；一旦挂工具/能力行，别的模式也会拿到。
+  const block = PATCH.slice(
+    PATCH.indexOf('    - id: commander-mode\n'),
+    PATCH.indexOf('    - id: preset-commander\n'),
+  );
+  assert.ok(block.length > 0, '找不到配置行');
+  assert.ok(!/name: '@deepseek-ai\/dsh-tool-/u.test(block), '配置行不得挂工具包');
+  assert.ok(!/name: '@deepseek-ai\/dsh-agent-preset'/u.test(block));
+  assert.ok(block.includes("name: 'dsh-commander-mode'"));
 });
 
-test('只声明一个 preset', () => {
-  assert.equal(LINES.filter((line) => /^ {4}- id: preset-/u.test(line)).length, 1);
+test('配置行的 config 写全了 schema 声明的每个键', () => {
+  // 声明 Config 之后，patch 里的 config 会整块通过 schema 校验；而按 id 定向的覆盖会
+  // **整块替换** config —— 用户抄这一行做覆盖时，少写一个键就等于把它重置成默认值。
+  // 所以这里把每个键都显式写出来，既是文档也是覆盖模板。
+  for (const key of [
+    'confirmPlan',
+    'escalateOnConflict',
+    'maxTeammates',
+    'blockedTools',
+    'registerSkill',
+    'specialists',
+    'maxSpecialists',
+  ]) {
+    assert.match(PATCH, new RegExp(`\\n {8}${key}:`, 'u'), `config 里缺 ${key}`);
+  }
+});
+
+test('名册开箱为空：展开入口是设置页，而不是预置一堆没用的 specialist', () => {
+  assert.match(PATCH, /specialists: \[\]/u);
+  assert.match(PATCH, /maxSpecialists: 20/u);
 });

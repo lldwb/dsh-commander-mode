@@ -260,3 +260,33 @@ test('空视图走"未知"分支，也就是照常拦截', () => {
   assert.ok(decision.reason.includes('spawn_teammate'));
   assert.ok(!decision.reason.includes('没有可用的委派工具'));
 });
+
+// ---------------------------------------------------------------- specialist ---
+
+test('只有 specialist 工具时，拒绝理由点名 specialist 工具而不是 Team 工具', () => {
+  // 场景：用户关掉了「智能体团队」、只配置了 specialist 名册。此时 agent 的工具视图里
+  // 有 subagent_architect / subagent_reviewer，没有 spawn_teammate。拒绝理由若还点名
+  // spawn_teammate，模型就会去找一个不存在的工具 —— 0.1.x 在 headless 部署里踩过同一课。
+  const decision = evaluatePreExecute({
+    agent: leadAgent(),
+    name: 'write',
+    canDelegate: true,
+    availableTools: ['read', 'write', 'subagent_architect', 'subagent_reviewer'],
+  });
+  assert.ok(decision);
+  assert.equal(decision.kind, 'deny');
+  assert.ok(decision.reason.includes('subagent_architect'), '要点名它真有的 specialist 工具');
+  assert.ok(decision.reason.includes('subagent_reviewer'));
+  assert.ok(!decision.reason.includes('spawn_teammate'), '不得点名它没有的 Team 工具');
+});
+
+test('读不到工具视图时不猜 specialist 工具（不能点名不存在的工具）', () => {
+  const decision = evaluatePreExecute({
+    agent: leadAgent(),
+    name: 'write',
+    canDelegate: undefined,
+    availableTools: undefined,
+  });
+  assert.ok(decision);
+  assert.ok(!/subagent_/u.test(decision.reason), '未知视图下不得按前缀编造 specialist 工具名');
+});
