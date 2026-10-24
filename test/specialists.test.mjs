@@ -403,6 +403,19 @@ test('人设包含职责、边界、可靠性三节', () => {
   assert.ok(text.includes('不要扮演指挥者'), '边界里必须明确禁止再委派');
 });
 
+test('人设要求 specialist 在任务与定位不符时先报告，不要硬做', () => {
+  // 指挥者应当按定位派活；但派活是模型行为（概率性的），所以执行者侧也要有兜底：
+  // 收到明显超出定位的任务时报告，而不是硬做出低质量结果。
+  const text = renderSpecialistPersona(specialist());
+  assert.ok(text.includes('任务与你的定位差距大时先报告'));
+  assert.ok(text.includes('不要硬做'));
+  assert.ok(text.includes('任务与我的定位不符'));
+  assert.ok(text.includes('改派给匹配的执行者或新开一个子智能体'));
+  // 也禁止两种坏处理方式：自行扩大范围、沉默地按自己的理解做。
+  assert.ok(text.includes('不要') && text.includes('自行扩大范围'));
+  assert.ok(text.includes('不要沉默地按自己的理解做'));
+});
+
 test('配置了 persona 时作为附加人设追加在最后', () => {
   // 附加人设是用户在设置页写的定制部分，必须在最后（它可能包含对前面纪律的补充）。
   const text = renderSpecialistPersona(specialist({ persona: '  你特别挑剔。  ' }));
@@ -556,6 +569,22 @@ test('工具名与描述写明路由与可选覆盖', () => {
   const bare = buildSpecialistToolDefinition({ specialist: specialist(), presetId: 'preset-x', getSubagents: () => undefined });
   assert.ok(!bare.description.includes('推理等级'));
   assert.ok(!bare.description.includes('输出上限'));
+});
+
+test('工具描述声明"只用于该定位"，并给出错配时的出路', () => {
+  // 用户要求：派活要考虑子智能体的定位，差距大就开新子智能体。
+  // 工具描述是指挥者每次看到该工具时唯一的定位说明，所以必须在这里写明：
+  // 定位是什么、错配时改派给谁（另一个工具或 Team 通道新开子智能体）。
+  const tool = buildSpecialistToolDefinition({
+    specialist: specialist({ description: '负责代码审查与测试' }),
+    presetId: 'preset-x',
+    getSubagents: () => undefined,
+  });
+  assert.ok(tool.description.includes('属于该定位'), '要说明只适用于该定位');
+  assert.ok(tool.description.includes('负责代码审查与测试'), '要带上 specialist 的职责');
+  assert.ok(tool.description.includes('差距大'), '要给出错配判断口径');
+  assert.ok(tool.description.includes('不要硬派'));
+  assert.ok(tool.description.includes('新开一个子智能体'), '要指出错配时的出路');
 });
 
 test('parameters 的 required 在顶层数组里', () => {

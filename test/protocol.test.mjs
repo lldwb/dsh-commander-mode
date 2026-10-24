@@ -249,6 +249,49 @@ test('名册是可复用工具，不是任务数上限，也不许造活', () =>
   }
 });
 
+test('派活前必须做定位匹配，差距大就开新的子智能体（而不是硬派）', () => {
+  // 用户明确要求：分发任务要考虑子智能体的定位；任务与定位差距大就开新子智能体。
+  // 这条规则落在三处：紧凑版 section（每轮注入）、skill 长文（细节 + 例子）、
+  // 以及 specialist 工具描述 / 人设（执行者自己也会拒绝错配任务）。
+  for (const phrase of ['定位匹配', '固定定位', '差距大', '不要硬派', '开一个新的子智能体']) {
+    assert.ok(ROSTER_SECTION.includes(phrase), `紧凑版缺少定位匹配规则：${phrase}`);
+  }
+  // 新开的子智能体要把定位写进它的 description 与 prompt —— 否则它仍用默认人设。
+  assert.ok(ROSTER_SECTION.includes('写进它的 description 与 prompt'));
+  // 判断口径必须给出，否则"差距大"没有可执行标准。
+  assert.ok(ROSTER_SECTION.includes('顺带多做一点同领域的小事'));
+  assert.ok(ROSTER_SECTION.includes('这是另一类工作'));
+
+  // 同一任务里混着两种定位的工作 → 拆开派，而不是塞给一个人。
+  assert.ok(ROSTER_SECTION.includes('拆成两个任务分别派'));
+});
+
+test('长文给出定位匹配的判断步骤、开新子智能体的做法与常见错配', () => {
+  for (const phrase of [
+    '派活前必须做定位匹配',
+    '开一个新的子智能体',
+    'spawn_teammate',
+    '依赖漏洞扫描',
+    '常见的错配',
+    '自查',
+    '它的定位',
+  ]) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少定位匹配细节：${phrase}`);
+  }
+  // 长文要明确"通道 A 不能改名册"——所以开新子智能体走通道 B，或建议用户加进名册。
+  assert.ok(COMMANDER_PROTOCOL.includes('不能改名册'));
+  assert.ok(COMMANDER_PROTOCOL.includes('建议用户把它加进名册'));
+});
+
+test('空名册时也要求派活前做定位匹配（Team 通道同样适用）', () => {
+  // 名册为空时没有 specialist，但 teammate 也有定位（description / prompt），
+  // 所以"任务与定位差距大就开新的 teammate"这条在默认形态下也必须出现。
+  const empty = renderCommanderSection();
+  assert.ok(empty.includes('定位匹配'));
+  assert.ok(empty.includes('开一个新的 teammate'));
+  assert.ok(empty.includes('不要把任务硬塞给定位不符的旧成员'));
+});
+
 test('未声明 hasSpecialistTools 时按名册非空推断（容错，供旧调用方）', () => {
   // index.js 会显式传 hasSpecialistTools；漏传时按"名册非空即启用"处理，
   // 这样协议不会因为一个可选字段而丢掉整条通道。
