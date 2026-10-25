@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
+import { DEFAULT_SPECIALISTS, defaultSpecialistIds } from '../lib/presets.js';
 import {
   Config,
   KNOWN_CONFIG_KEYS,
@@ -54,16 +55,38 @@ test('默认配置保持 0.1.x 的行为', () => {
   assert.deepEqual(config.blockedTools, [...DEFAULT_BLOCKED_TOOLS]);
 });
 
-test('specialists 是唯一的 volatile 字段，默认空数组', () => {
+test('specialists 是唯一的 volatile 字段，默认是出厂预置名册', () => {
   // 只有 volatile 字段才能被「设置 → 插件」读写。名册不 volatile → 设置页只能看不能改；
   // 别的字段变成 volatile → 设置页会暴露加载期配置的编辑入口（改了也不生效）。
   assert.equal(Config.dict.specialists.meta.volatile, true);
   const config = Config();
   assert.equal(typeof config.specialists.get, 'function', '解析后的 volatile 字段必须是引用');
-  assert.deepEqual(config.specialists.get(), [], '开箱名册为空：每个 specialist 都是 preset + 工具');
+  const roster = config.specialists.get();
+  // 开箱即有按主流开发流程划分的专家（architect/implementer/reviewer/tester/
+  // security-auditor/doc-writer），且模型留空 = 继承指挥者。
+  assert.deepEqual(roster.map((entry) => entry.id), defaultSpecialistIds());
+  for (const entry of roster) {
+    assert.equal(entry.provider, '', `${entry.id} 的 provider 应为空（继承指挥者）`);
+    assert.equal(entry.model, '', `${entry.id} 的 model 应为空（继承指挥者）`);
+    assert.ok(entry.description.length > 0, `${entry.id} 必须有定位描述`);
+  }
   for (const key of ['maxSpecialists', 'confirmPlan', 'escalateOnConflict', 'maxTeammates', 'blockedTools', 'registerSkill']) {
     assert.notEqual(Config.dict[key].meta?.volatile, true, `${key} 不该是 volatile`);
   }
+});
+
+test('默认名册每次解析都是独立副本（会话间不共享）', () => {
+  // 实测：schemastery 会克隆 `.default(...)` 并**冻结**副本（写入抛 TypeError），
+  // 所以既不会跨解析共享引用，也不可能污染模块常量。这两条都是"默认值安全"的证据。
+  const first = Config().specialists.get();
+  const second = Config().specialists.get();
+  assert.notEqual(first, second, '每次解析必须是新数组');
+  assert.notEqual(first[0], second[0], '元素也必须是新对象');
+  assert.notEqual(first[0], DEFAULT_SPECIALISTS[0], '不能直接暴露模块常量');
+  assert.throws(() => {
+    first[0].description = '被改过的定位';
+  }, TypeError);
+  assert.equal(DEFAULT_SPECIALISTS[0].description.includes('系统架构与拆分'), true);
 });
 
 test('maxSpecialists 允许 0（禁用名册），拒绝负数与小数', () => {
@@ -111,16 +134,17 @@ test('默认配置数组不跨解析共享（否则一次运行会污染下一�
 
 test('schema 拒绝非法名册条目', () => {
   // 设置页会先做一遍校验，但配置也可能来自手写的 profile patch。这里的 schema 是
-  // 最后一道：非法 id 会拼进工具名（`tools.register()` 整个失败），缺 provider/model
-  // 会让 activation 无法启动，maxTokens 非法会让子代理起不来。
+  // 最后一道：非法 id 会拼进工具名（`tools.register()` 整个失败），缺 description
+  // 等于没有定位，maxTokens 非法会让子代理起不来。
+  //
+  // 注意 provider/model 是**可空**的（空 = 继承指挥者模型），所以"缺 provider/model"
+  // 不再被 schema 拒绝 —— 只填一半由 normalizeRoster 兜底。
   const invalid = [
     ['id 大写', { specialists: [specialist({ id: 'Architect' })] }],
     ['id 数字开头', { specialists: [specialist({ id: '1a' })] }],
     ['id 含点', { specialists: [specialist({ id: 'a.b' })] }],
     ['id 超长', { specialists: [specialist({ id: 'a'.repeat(49) })] }],
-    ['缺 provider', { specialists: [{ id: 'a', model: 'm', description: 'd' }] }],
-    ['缺 model', { specialists: [{ id: 'a', provider: 'p', description: 'd' }] }],
-    ['缺 description', { specialists: [{ id: 'a', provider: 'p', model: 'm' }] }],
+    ['缺 description', { specialists: [{ id: 'a' }] }],
     ['maxTokens 为 0', { specialists: [specialist({ maxTokens: 0 })] }],
     ['maxTokens 为小数', { specialists: [specialist({ maxTokens: 1.5 })] }],
     ['maxTokens 为字符串', { specialists: [specialist({ maxTokens: '4096' })] }],
@@ -129,6 +153,15 @@ test('schema 拒绝非法名册条目', () => {
   for (const [label, input] of invalid) {
     assert.throws(() => Config(input), undefined, `应拒绝：${label}`);
   }
+});
+
+test('schema 接受 provider/model 都为空的条目（继承指挥者模型）', () => {
+  // 出厂预置名册就是这种形态：任何部署都可用，不需要先知道 provider/model id。
+  const resolved = Config({ specialists: [{ id: 'probe', description: '探针', provider: '', model: '' }] });
+  const roster = resolved.specialists.get();
+  assert.equal(roster.length, 1);
+  assert.equal(roster[0].provider, '');
+  assert.equal(roster[0].model, '');
 });
 
 test('schema 接受合法的完整名册，且 volatile 引用返回写入的原样', () => {

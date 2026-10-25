@@ -115,8 +115,12 @@
         # 是否把长文协议注册成 skill。
         registerSkill: true
         # 可配置的多模型 specialist 名册：每项一个 `subagent_<id>` 前台工具。
-        # 开箱为空 —— 展开名册的入口是设置页（见 README「设置页」）。
-        specialists: []
+        #
+        # 这里**故意不写** `specialists`：默认值就是出厂预置名册（lib/presets.js，按主流
+        # 软件开发生命周期划分的 6 个专家，模型继承指挥者），开箱即用。想开箱为空就显式写
+        # `specialists: []`；想换一套就把整份名册写在这里（按 id 定向 patch 会整块替换 config）。
+        # 设置页的编辑会写进 profile 的 cordis.patch.yml，覆盖这份默认值。
+        #
         # 名册条数上限（防御性：每项都意味着一个 preset + 一个工具）。
         maxSpecialists: 20
 

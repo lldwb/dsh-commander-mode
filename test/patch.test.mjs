@@ -133,24 +133,31 @@ test('配置行不注册任何工具（避免能力泄漏到别的模式）', ()
   assert.ok(block.includes("name: 'dsh-commander-mode'"));
 });
 
-test('配置行的 config 写全了 schema 声明的每个键', () => {
+test('配置行的 config 写全了加载期配置键（specialists 故意不写）', () => {
   // 声明 Config 之后，patch 里的 config 会整块通过 schema 校验；而按 id 定向的覆盖会
   // **整块替换** config —— 用户抄这一行做覆盖时，少写一个键就等于把它重置成默认值。
-  // 所以这里把每个键都显式写出来，既是文档也是覆盖模板。
+  // 所以加载期键都显式写出来，既是文档也是覆盖模板。
+  //
+  // `specialists` 是**故意不写**的：它的默认值是出厂预置名册（lib/presets.js），
+  // 写 `specialists: []` 会把开箱专家抹掉；写一份数组又会在代码里多一份要维护的副本。
   for (const key of [
     'confirmPlan',
     'escalateOnConflict',
     'maxTeammates',
     'blockedTools',
     'registerSkill',
-    'specialists',
     'maxSpecialists',
   ]) {
     assert.match(PATCH, new RegExp(`\\n {8}${key}:`, 'u'), `config 里缺 ${key}`);
   }
+  assert.ok(!/\n {8}specialists:/u.test(PATCH), 'specialists 不应写进 patch（默认即预置名册）');
+  // 但必须留一行说明"默认即预置、想清空怎么写"，否则用户不知道从哪改。
+  assert.match(PATCH, /默认值就是出厂预置名册/u);
+  assert.match(PATCH, /specialists: \[\]/u, '注释里要给出清空写法');
 });
 
-test('名册开箱为空：展开入口是设置页，而不是预置一堆没用的 specialist', () => {
-  assert.match(PATCH, /specialists: \[\]/u);
+test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', () => {
   assert.match(PATCH, /maxSpecialists: 20/u);
+  // patch 不覆盖 specialists → schema 默认值（出厂预置名册）生效。
+  assert.ok(!/\n {8}specialists:/u.test(PATCH));
 });

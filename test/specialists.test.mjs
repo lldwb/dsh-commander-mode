@@ -229,30 +229,35 @@ test('重复 id 只保留第一个，并记一条 warn', () => {
   assert.ok(logger.warnings[0].includes('重复'), '被丢弃的原因要能出现在日志里');
 });
 
-test('缺 provider / model / description 任一项的条目被丢弃', () => {
-  // 三项里缺任何一项，工具执行时都会生成一个残缺的 activation：缺 provider/model
-  // 时子代理无法启动；缺 description 时人设里出现 "undefined"，模型会照着念。
+test('缺 description 的条目被丢弃；provider/model 只填一半也被丢弃', () => {
+  // - 缺 description：等于没有定位，协议与工具描述都会出现 "undefined"，模型照着念。
+  // - provider/model 只填一半：路由不完整，activation 无法构造 agentOptions。
+  // - provider/model **都空**是合法的：继承指挥者模型（出厂预置名册就是这种形态）。
   const logger = recordingLogger();
   const roster = normalizeRoster(
     [
+      { id: 'no-description', provider: 'p', model: 'm' },
       { id: 'no-provider', model: 'm', description: 'd' },
       { id: 'no-model', provider: 'p', description: 'd' },
-      { id: 'no-description', provider: 'p', model: 'm' },
-      { id: 'blank', provider: '   ', model: 'm', description: 'd' },
-      { id: 'ok', provider: 'p', model: 'm', description: 'd' },
+      { id: 'blank-provider', provider: '   ', model: 'm', description: 'd' },
+      { id: 'inherit', provider: '', model: '', description: '继承指挥者模型' },
+      { id: 'full', provider: 'p', model: 'm', description: 'd' },
     ],
     { logger },
   );
-  assert.deepEqual(roster.map((entry) => entry.id), ['ok']);
+  assert.deepEqual(roster.map((entry) => entry.id), ['inherit', 'full']);
+  assert.equal(roster[0].provider, '');
+  assert.equal(roster[0].model, '');
   assert.equal(logger.warnings.length, 4, '每一条被丢弃的条目都要留下日志');
-  for (const warning of logger.warnings) assert.ok(warning.includes('provider/model/description'));
+  assert.ok(logger.warnings.some((line) => line.includes('缺 description')));
+  assert.ok(logger.warnings.filter((line) => line.includes('只填了一栏')).length === 3);
 });
 
 test('被丢弃的条目不会占用 id —— 后面同 id 的合法条目仍能进来', () => {
-  // 真实路径：用户先在设置页留了一条缺 provider 的旧配置，又在下面补了一条修好的
+  // 真实路径：用户先在设置页留了一条坏配置（只填一半路由），又在下面补了一条修好的
   // 同名条目。若去重发生在校验之前，修好的那条会被当成"重复"丢掉，用户改了半天不生效。
   const roster = normalizeRoster([
-    { id: 'dup', provider: 'p' }, // 缺 model/description，丢弃
+    { id: 'dup', provider: 'p' }, // 只有 provider、没有 model → 丢弃
     { id: 'dup', provider: 'p', model: 'm', description: 'd' }, // 合法，保留
   ]);
   assert.deepEqual(roster.map((entry) => entry.id), ['dup']);
