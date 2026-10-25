@@ -119,7 +119,11 @@ window.__ModuleLoader__.load({
       missingDescription: 'row {row}: the responsibility is required',
       partialRoute: 'row {row}: fill both provider and model, or leave both blank to inherit the commander model',
       invalidMaxTokens: 'row {row}: max output tokens must be a positive integer',
-      rowLabel: 'Specialist {row}'
+      rowLabel: 'Specialist {row}',
+      expand: 'Expand to edit this specialist',
+      collapse: 'Collapse this specialist',
+      summaryInherited: 'inherits commander model',
+      summaryNoDescription: '(no responsibility yet)'
     };
 
     /** 简体中文文案（与 en 逐键对齐）。 */
@@ -159,7 +163,11 @@ window.__ModuleLoader__.load({
       missingDescription: '第 {row} 行：职责不能为空',
       partialRoute: '第 {row} 行：提供方与模型要么都填，要么都空（都空 = 继承指挥者模型）',
       invalidMaxTokens: '第 {row} 行：最大输出 Token 必须是正整数',
-      rowLabel: '专家 {row}'
+      rowLabel: '专家 {row}',
+      expand: '展开编辑这个专家',
+      collapse: '收起这个专家',
+      summaryInherited: '继承指挥者模型',
+      summaryNoDescription: '（还没写职责）'
     };
     // #endregion
 
@@ -478,6 +486,11 @@ window.__ModuleLoader__.load({
         this.failed = false;
         this.error = undefined;
         this.notice = undefined;
+        /**
+         * 已展开的专家行（`renderKey` 集合）。默认**全部折叠**：一个专家的表单有七个字段，
+         * 六个预置专家全部展开会铺满好几屏，设置页几乎没法用。
+         */
+        this.expanded = new Set();
         this.store = createStore(this.projection());
         this.unsubscribe = scope.subscribe(() => {
           this.refreshFromHost();
@@ -507,6 +520,8 @@ window.__ModuleLoader__.load({
           // 有东西可重置 = 草稿与出厂预置名册不同；相同时按钮禁用。
           canReset: !this.isDefaultRoster(),
           rows: this.draft,
+          /** 已展开行的 `renderKey` 集合（视图据此决定渲染字段还是摘要）。 */
+          expanded: this.expanded,
           error: this.error,
           notice: this.notice
         };
@@ -547,10 +562,45 @@ window.__ModuleLoader__.load({
         this.publish();
       }
 
+      /**
+       * 展开 / 收起一行。
+       *
+       * 默认全部折叠（见构造函数里的 `expanded`）。点击标题栏切换；展开状态只影响视图，
+       * 不进草稿、不参与脏判断。
+       */
+      toggle(index) {
+        const row = this.draft[index];
+        if (row === undefined) return;
+        const key = row.renderKey;
+        if (this.expanded.has(key)) this.expanded.delete(key);
+        else this.expanded.add(key);
+        this.publish();
+      }
+
+      /** 展开某一行（新增行、校验失败行用它）。 */
+      expandRow(index) {
+        const row = this.draft[index];
+        if (row === undefined) return;
+        this.expanded.add(row.renderKey);
+      }
+
+      /** 展开所有行（校验错误定位不到具体行时的兜底）。 */
+      expandAll() {
+        this.expanded = new Set(this.draft.map((row) => row.renderKey));
+      }
+
+      /** 全部收起。 */
+      collapseAll() {
+        this.expanded = new Set();
+      }
+
       /** 追加一行。 */
       add() {
         if (!this.projection().writable) return;
-        this.draft = this.draft.concat([createDraft()]);
+        const draft = createDraft();
+        this.draft = this.draft.concat([draft]);
+        // 新行是空的，折叠着用户根本不知道该填什么 —— 直接展开。
+        this.expanded.add(draft.renderKey);
         this.error = undefined;
         this.notice = undefined;
         this.recomputeDirty();
@@ -560,7 +610,9 @@ window.__ModuleLoader__.load({
       /** 删除一行。 */
       remove(index) {
         if (!this.projection().writable) return;
+        const removed = this.draft[index];
         this.draft = this.draft.filter((_, position) => position !== index);
+        if (removed !== undefined) this.expanded.delete(removed.renderKey);
         this.error = undefined;
         this.notice = undefined;
         this.recomputeDirty();
@@ -574,6 +626,7 @@ window.__ModuleLoader__.load({
         this.failed = false;
         this.error = undefined;
         this.notice = undefined;
+        this.collapseAll();
         this.publish();
       }
 
@@ -586,6 +639,9 @@ window.__ModuleLoader__.load({
       reset() {
         if (!this.projection().writable) return;
         this.draft = DEFAULT_ROSTER.map((entry) => toDraft(entry));
+        // 重置后整份名册换了一批行，旧的展开 key 全部失效 —— 收拢成默认折叠态，
+        // 让用户先看全貌再决定展开哪一行。
+        this.collapseAll();
         this.error = undefined;
         this.notice = this.t('resetDone');
         this.recomputeDirty();
@@ -605,6 +661,9 @@ window.__ModuleLoader__.load({
         const reason = validateDraft(this.draft, t);
         if (reason !== undefined) {
           this.error = reason;
+          // 错误信息里带行号（`第 {row} 行` / `row {row}`）：展开那一行，否则用户只能看到
+          // 一句"第 3 行有问题"却找不到是哪一行在折叠状态下藏起来的。
+          this.revealErrorRow(reason);
           this.publish();
           return;
         }
@@ -628,11 +687,36 @@ window.__ModuleLoader__.load({
           this.stored = this.draft.map((row) => Object.assign({}, row));
           this.dirty = false;
           this.failed = false;
+          // 保存成功后收拢：行对象换成了新的，旧 key 失效；也让用户看到"保存完成"的全貌。
+          this.collapseAll();
           this.notice = t('savedHint');
         } else {
           this.failed = true;
         }
         this.publish();
+      }
+
+      /**
+       * 从校验错误文案里解析行号并展开该行；解析不到就全展开。
+       *
+       * 文案由 locale 提供（中英两种），行号以第一个出现的数字为准：
+       * - 中文：`第 3 行：...`
+       * - 英文：`row 3: ...`
+       *
+       * @param {string} reason - `validateDraft` 返回的错误文案。
+       */
+      revealErrorRow(reason) {
+        const match = /(?:第\s*|row\s+)(\d+)/u.exec(typeof reason === 'string' ? reason : '');
+        if (match === null) {
+          this.expandAll();
+          return;
+        }
+        const rowNumber = Number(match[1]);
+        if (!Number.isSafeInteger(rowNumber) || rowNumber < 1) {
+          this.expandAll();
+          return;
+        }
+        this.expandRow(rowNumber - 1);
       }
 
       /** 交给槽位的 `inject()`：hooks → `use<Key>`，其余键直接成为 props。 */
@@ -644,7 +728,8 @@ window.__ModuleLoader__.load({
           add: () => this.add(),
           reset: () => this.reset(),
           remove: (index) => this.remove(index),
-          patch: (index, field, value) => this.patch(index, field, value)
+          patch: (index, field, value) => this.patch(index, field, value),
+          toggle: (index) => this.toggle(index)
         };
       }
 
@@ -675,8 +760,38 @@ window.__ModuleLoader__.load({
         display: 'grid',
         gap: '10px'
       },
+      rowExpanded: { gap: '12px' },
       rowHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' },
-      rowTitle: { margin: 0, fontSize: '13px', fontWeight: 600 },
+      /**
+       * 标题栏即展开开关（整块可点）。默认折叠：一个专家的表单有七个字段，
+       * 六个预置专家全部展开会铺满好几屏。
+       */
+      rowToggle: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        flex: '1 1 auto',
+        minWidth: 0,
+        margin: 0,
+        padding: '2px 0',
+        border: 'none',
+        background: 'transparent',
+        color: 'inherit',
+        font: 'inherit',
+        textAlign: 'left',
+        cursor: 'pointer'
+      },
+      chevron: { flex: '0 0 auto', fontSize: '11px', opacity: 0.7, width: '10px' },
+      rowTitle: { margin: 0, fontSize: '13px', fontWeight: 600, flex: '0 0 auto' },
+      rowSummary: {
+        margin: 0,
+        fontSize: '12px',
+        opacity: 0.6,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        minWidth: 0
+      },
       grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))', gap: '10px' },
       field: { display: 'grid', gap: '4px', minWidth: 0 },
       label: { fontSize: '12px', fontWeight: 500 },
@@ -778,6 +893,7 @@ window.__ModuleLoader__.load({
       const rows = state.rows.map((row, index) => {
         const rowNumber = index + 1;
         const idPrefix = 'commander-specialist-' + row.renderKey;
+        const expanded = state.expanded instanceof Set ? state.expanded.has(row.renderKey) : false;
         const fields = FIELD_SPECS.map((spec) =>
           h.jsx(
             FieldRow,
@@ -796,15 +912,40 @@ window.__ModuleLoader__.load({
           ),
         );
         const title = row.id.trim() === '' ? format(t('rowLabel'), { row: rowNumber }) : row.id.trim();
+        // 折叠时的摘要：定位 + 模型路由。让用户不展开也能判断"这行是谁、跑在什么模型上"。
+        const route =
+          row.provider.trim() === '' && row.model.trim() === ''
+            ? t('summaryInherited')
+            : row.provider.trim() + '/' + row.model.trim();
+        const summary = row.description.trim() === '' ? t('summaryNoDescription') : row.description.trim();
         return h.jsxs(
           'div',
           {
-            style: styles.row,
+            style: expanded ? Object.assign({}, styles.row, styles.rowExpanded) : styles.row,
             children: [
               h.jsxs('div', {
                 style: styles.rowHead,
                 children: [
-                  h.jsx('p', { style: styles.rowTitle, children: title }),
+                  // 标题栏整块是展开/收起开关：只做视觉与可点击性，不改任何字段。
+                  h.jsxs('button', {
+                    type: 'button',
+                    style: styles.rowToggle,
+                    'aria-expanded': expanded,
+                    title: expanded ? t('collapse') : t('expand'),
+                    onClick: () => {
+                      props.toggle(index);
+                    },
+                    children: [
+                      h.jsx('span', { style: styles.chevron, children: expanded ? '▾' : '▸' }),
+                      h.jsx('span', { style: styles.rowTitle, children: title }),
+                      expanded
+                        ? null
+                        : h.jsxs('span', {
+                            style: styles.rowSummary,
+                            children: [route, ' · ', summary]
+                          })
+                    ]
+                  }),
                   h.jsx('button', {
                     type: 'button',
                     style: styles.removeButton,
@@ -816,18 +957,20 @@ window.__ModuleLoader__.load({
                   })
                 ]
               }),
-              h.jsxs('div', {
-                style: styles.grid,
-                children: [
-                  fields[0], // id
-                  fields[1], // provider
-                  fields[2], // model
-                  fields[5], // reasoningEffort
-                  fields[6], // maxTokens
-                  h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[3] }), // description
-                  h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[4] }) // persona
-                ]
-              })
+              expanded
+                ? h.jsxs('div', {
+                    style: styles.grid,
+                    children: [
+                      fields[0], // id
+                      fields[1], // provider
+                      fields[2], // model
+                      fields[5], // reasoningEffort
+                      fields[6], // maxTokens
+                      h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[3] }), // description
+                      h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[4] }) // persona
+                    ]
+                  })
+                : null
             ]
           },
           row.renderKey,

@@ -38,6 +38,10 @@
     "missingDescription": "row {row}: the responsibility is required",
     "partialRoute": "row {row}: fill both provider and model, or leave both blank to inherit the commander model",
     "invalidMaxTokens": "row {row}: max output tokens must be a positive integer",
-    "rowLabel": "Specialist {row}"
+    "rowLabel": "Specialist {row}",
+    "expand": "Expand to edit this specialist",
+    "collapse": "Collapse this specialist",
+    "summaryInherited": "inherits commander model",
+    "summaryNoDescription": "(no responsibility yet)"
   }
 }
