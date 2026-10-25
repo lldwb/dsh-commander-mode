@@ -24,6 +24,22 @@
  * 设置命名空间 = Loader 行 id = 本插件 `name` 导出 = `commander-mode`。三处必须一致，
  * 否则 `configForms.whileServed()` 永远为假，设置页会**静默消失且不报错**。
  *
+ * ## 出厂预置名册与「恢复预置名册」
+ *
+ * 插件带一份出厂预置名册（architect / implementer / reviewer / tester /
+ * security-auditor / doc-writer），与 Host 半 `lib/presets.js` 的 `DEFAULT_SPECIALISTS`
+ * **逐项同值**；本文件内置了一份同值副本（见下方的内置名册常量）——客户端不能 import
+ * Host 模块，`require` 只解析 shell 静态模块表。
+ *
+ * 「恢复预置名册」按钮**只把草稿改回这份清单并置 dirty，不写 Host**：用户还要点「保存」
+ * 才落盘、点「放弃」可还原——天然二次确认，所以没有弹窗。草稿已经等于预置清单时按钮禁用。
+ *
+ * ## provider / model 可以为空（继承指挥者模型）
+ *
+ * 预置项的路由是空字符串 = **继承指挥者（父会话）的模型**：不同部署可用的模型完全不同，
+ * 出厂名册不能硬编码任何 provider/model。所以两栏都允许留空，但**必须同时空或同时填**：
+ * 只填一个说明路由不完整，保存前本地就报 `partialRoute` 错误（沿用 `row {row}` 定位）。
+ *
  * ## 为什么自绘列表
  *
  * `SettingsFormModel` 的字段模型是「一个 spec = 一个顶层标量字段」，`plan()` 只会生成
@@ -74,6 +90,10 @@ window.__ModuleLoader__.load({
       empty: 'No specialists configured. The commander still runs and can still delegate through Agent Teams; add a specialist here to give it a dedicated model.',
       add: 'Add specialist',
       remove: 'Remove',
+      reset: 'Restore built-in roster',
+      resetHint:
+        'Restore only rewrites the draft with the six built-in specialists; nothing is saved until you press Save.',
+      resetDone: 'Built-in roster restored in the draft. Review it, then press Save.',
       save: 'Save',
       saving: 'Saving…',
       savingFailed: 'The deployment did not accept this roster; your edits were kept for you to correct.',
@@ -88,17 +108,16 @@ window.__ModuleLoader__.load({
       fieldReasoningEffort: 'Reasoning effort (optional)',
       fieldMaxTokens: 'Max output tokens (optional)',
       hintId: 'Lowercase letters, digits, "-" and "_"; must start with a letter, at most 48 characters. It becomes part of the delegation tool name.',
-      hintProvider: 'Provider id as registered in this deployment (for example deepseek).',
-      hintModel: 'Model id the specialist runs on.',
+      hintProvider: 'Provider id as registered in this deployment (for example deepseek). Leave provider and model both blank to inherit the commander model.',
+      hintModel: 'Model id the specialist runs on. Provider and model must be filled together or left blank together.',
       hintDescription: 'What this specialist is responsible for; shown to the commander when it delegates.',
       hintPersona: 'Extra system-prompt text for the specialist. Leave blank to derive it from the responsibility.',
       hintReasoningEffort: 'Leave blank to use the model default.',
       hintMaxTokens: 'A positive integer; leave blank to use the model default.',
       invalidId: 'row {row}: the id must match ^[a-z][a-z0-9_-]{0,47}$',
       duplicateId: 'row {row}: the id "{id}" is used twice',
-      missingProvider: 'row {row}: the provider is required',
-      missingModel: 'row {row}: the model is required',
       missingDescription: 'row {row}: the responsibility is required',
+      partialRoute: 'row {row}: fill both provider and model, or leave both blank to inherit the commander model',
       invalidMaxTokens: 'row {row}: max output tokens must be a positive integer',
       rowLabel: 'Specialist {row}'
     };
@@ -112,6 +131,9 @@ window.__ModuleLoader__.load({
       empty: '尚未配置任何专家。指挥者仍可通过「智能体团队」派发；在这里添加专家可以给它一个专属模型。',
       add: '添加专家',
       remove: '删除',
+      reset: '恢复预置名册',
+      resetHint: '重置只会把出厂预置的六个专家放回草稿，不会直接保存；还需要点「保存」才会写入。',
+      resetDone: '预置名册已放回草稿。确认后再点「保存」才会写入。',
       save: '保存',
       saving: '保存中…',
       savingFailed: '本部署没有接受这份名册，已保留你的改动供你修正。',
@@ -126,17 +148,16 @@ window.__ModuleLoader__.load({
       fieldReasoningEffort: '推理等级（可选）',
       fieldMaxTokens: '最大输出 Token（可选）',
       hintId: '小写字母、数字、"-" 与 "_"；必须以字母开头，最长 48 个字符。它会成为委派工具名的一部分。',
-      hintProvider: '本部署注册的提供方 id（例如 deepseek）。',
-      hintModel: '该专家使用的模型 id。',
+      hintProvider: '本部署注册的提供方 id（例如 deepseek）。两栏都留空 = 继承指挥者的模型。',
+      hintModel: '该专家使用的模型 id。提供方与模型要么都填、要么都空。',
       hintDescription: '该专家负责什么；指挥者委派时会看到这段说明。',
       hintPersona: '追加给该专家的系统提示词。留空表示从职责推导。',
       hintReasoningEffort: '留空表示使用模型默认值。',
       hintMaxTokens: '正整数；留空表示使用模型默认值。',
       invalidId: '第 {row} 行：id 必须匹配 ^[a-z][a-z0-9_-]{0,47}$',
       duplicateId: '第 {row} 行：id "{id}" 重复了',
-      missingProvider: '第 {row} 行：提供方不能为空',
-      missingModel: '第 {row} 行：模型不能为空',
       missingDescription: '第 {row} 行：职责不能为空',
+      partialRoute: '第 {row} 行：提供方与模型要么都填，要么都空（都空 = 继承指挥者模型）',
       invalidMaxTokens: '第 {row} 行：最大输出 Token 必须是正整数',
       rowLabel: '专家 {row}'
     };
@@ -161,8 +182,10 @@ window.__ModuleLoader__.load({
      */
     const FIELD_SPECS = [
       { field: 'id', kind: 'text', required: true, maxLength: 48, labelKey: 'fieldId', hintKey: 'hintId' },
-      { field: 'provider', kind: 'text', required: true, labelKey: 'fieldProvider', hintKey: 'hintProvider' },
-      { field: 'model', kind: 'text', required: true, labelKey: 'fieldModel', hintKey: 'hintModel' },
+      // provider/model 可空：两栏都空 = 继承指挥者（父会话）的模型路由。
+      // 合法性不在这里表达，而在 validateDraft 的「同时空或同时填」检查里。
+      { field: 'provider', kind: 'text', required: false, labelKey: 'fieldProvider', hintKey: 'hintProvider' },
+      { field: 'model', kind: 'text', required: false, labelKey: 'fieldModel', hintKey: 'hintModel' },
       {
         field: 'description',
         kind: 'multiline',
@@ -198,6 +221,81 @@ window.__ModuleLoader__.load({
 
     /** 校验规则：与 Host 半 `SpecialistSchema` 的 `.pattern()` 必须完全一致。 */
     const SPECIALIST_ID = /^[a-z][a-z0-9_-]{0,47}$/;
+
+    /**
+     * 出厂预置名册，与 Host 半 `lib/presets.js` 的 `DEFAULT_SPECIALISTS` **逐项同值**
+     * （id / provider / model / description / persona 五个键、字段顺序也一致）。
+     *
+     * 为什么客户端要再存一份：client bundle 不能 import Host 模块（`require` 只解析
+     * shell 静态模块表里的两个说明符），而「重置」必须在不往返 Host 的情况下立刻改草稿。
+     * 一致性由 `test/presets.test.mjs`（Host 侧）与离线校验脚本（比对本常量）守护。
+     *
+     * `provider` / `model` 是空字符串 = **继承指挥者（父会话）的模型路由**：不同部署可用
+     * 的模型完全不同，预置名册不能硬编码任何路由。用户要给某个专家绑定专属模型时，
+     * 在表单里把两栏都填上即可。
+     */
+    const DEFAULT_ROSTER = Object.freeze([
+      {
+        id: 'architect',
+        provider: '',
+        model: '',
+        description: '系统架构与拆分：把需求拆成可独立验收的任务，给出技术方案、接口与数据模型设计；不直接写实现。',
+        persona:
+          '你关注边界与取舍：先确认约束（规模、性能、兼容性、已有约定），再给方案。'
+          + '方案要能被执行者直接落地——写清模块边界、接口签名、数据流与失败路径，指出关键风险与替代方案。'
+          + '不要替实现者写完整代码。'
+      },
+      {
+        id: 'implementer',
+        provider: '',
+        model: '',
+        description: '代码实现：按既定方案写或改代码，补齐边界处理与必要的注释；产出可运行的改动与自检结果。',
+        persona:
+          '你先读懂现有代码与约定再动手，改动用最小必要范围实现目标，不顺手重构无关部分。'
+          + '实现后必须自检（构建、类型检查、相关测试至少一项），并在报告里写清改了哪些文件、怎么验证的。'
+          + '发现方案本身有问题时先报告，不要擅自改变设计。'
+      },
+      {
+        id: 'reviewer',
+        provider: '',
+        model: '',
+        description: '代码审查：检查正确性、可维护性、风格一致性与潜在缺陷，给出按严重程度排序的具体意见。',
+        persona:
+          '你只审查、不实现。逐条给出**可定位**的意见（文件、位置、问题、建议），并标注严重程度'
+          + '（阻断 / 应修 / 建议）。没把握的地方明确说"不确定"，不要把猜测写成结论。'
+          + '最后给一句总体结论：可合并 / 修完再看。'
+      },
+      {
+        id: 'tester',
+        provider: '',
+        model: '',
+        description: '测试：设计并补齐覆盖改动的测试，运行验证并报告通过/失败明细；复现缺陷时给出最小步骤。',
+        persona:
+          '你以"怎么证明它是错的"为出发点设计用例：正常路径、边界、异常与回归。'
+          + '用例要独立、可重复、不依赖外部网络与人工步骤；失败时给出最小复现与期望/实际对比。'
+          + '不要为了让测试变绿而放宽断言。'
+      },
+      {
+        id: 'security-auditor',
+        provider: '',
+        model: '',
+        description: '安全审计：依赖漏洞、注入与越权、密钥与敏感信息泄漏、不安全默认值；给出风险等级与修复建议。',
+        persona:
+          '你按攻击面排查：输入边界、权限模型、依赖供应链、日志与配置中的敏感信息。'
+          + '每条发现都要有证据（文件/命令/输出）与风险等级，并区分"确定漏洞"与"需要确认的疑点"。'
+          + '不要为了凑数报告理论风险；也不要在报告里复述密钥原文。'
+      },
+      {
+        id: 'doc-writer',
+        provider: '',
+        model: '',
+        description: '文档：README、API 说明、使用与迁移文档；面向真实读者写清"是什么、怎么用、边界在哪"。',
+        persona:
+          '你写给人看：先给最短可用的快速开始，再补细节；命令与代码块必须可直接复制运行。'
+          + '以仓库现状为准（先读代码与现有文档），不臆造尚未实现的行为；不确定的地方标注"未验证"。'
+          + '保持术语与仓库一致。'
+      }
+    ]);
 
     // #region 纯函数：校验 / 清洗 / 草稿
     /** 格式化文案里的 {占位符}。 */
@@ -250,8 +348,13 @@ window.__ModuleLoader__.load({
     /**
      * 校验草稿，返回第一条错误（已本地化、可直接显示）或 `undefined`。
      *
-     * 与 Host `SpecialistSchema` 保持一致：这里挡不住的 Host 也会拒绝，但提前拦下能
-     * 告诉用户**第几行、哪个字段**。
+     * 规则（与 Host `SpecialistSchema` + 空路由语义一致）：
+     * - `id` 必填、匹配 pattern、名册内唯一；
+     * - `description` 必填；
+     * - `provider` / `model` **两栏要么都填、要么都空**（都空 = 继承指挥者模型）；
+     * - `maxTokens` 留空或正整数。
+     *
+     * 这里挡不住的 Host 也会拒绝，但提前拦下能告诉用户**第几行、哪个字段**。
      */
     function validateDraft(rows, t) {
       const seen = new Set();
@@ -262,8 +365,11 @@ window.__ModuleLoader__.load({
         if (!SPECIALIST_ID.test(id)) return format(t('invalidId'), { row: rowNumber });
         if (seen.has(id)) return format(t('duplicateId'), { row: rowNumber, id });
         seen.add(id);
-        if (row.provider.trim() === '') return format(t('missingProvider'), { row: rowNumber });
-        if (row.model.trim() === '') return format(t('missingModel'), { row: rowNumber });
+        // provider/model 两栏要么都填、要么都空。都空 = 继承指挥者（父会话）的模型路由；
+        // 只填一个说明路由不完整，是一份坏配置，就地拦下而不是交给 Host 猜。
+        const hasProvider = row.provider.trim() !== '';
+        const hasModel = row.model.trim() !== '';
+        if (hasProvider !== hasModel) return format(t('partialRoute'), { row: rowNumber });
         if (row.description.trim() === '') return format(t('missingDescription'), { row: rowNumber });
         if (row.maxTokens.trim() !== '') {
           const maxTokens = Number(row.maxTokens.trim());
@@ -278,10 +384,14 @@ window.__ModuleLoader__.load({
     /**
      * 草稿 → 写入 Host 的 JSON。
      *
-     * 约定：**可选字段的空字符串一律省略该键**（不写 `""`、不写 `null`）。原因有二：
-     * Host 的 `cloneJsonShaped` 拒绝数组里的 `undefined`；而 `""` 会让「未配置」与
-     * 「配置为空串」不可区分，`maxTokens: null` 还会撞 `z.number()` 的类型校验。
-     * `maxTokens` 在这里转成数字。
+     * 两类字段的「空值」处理**故意不同**：
+     * - `provider` / `model` 空串**显式保留**（`provider: ''` / `model: ''`）。空串是
+     *   有语义的合法值 = 继承指挥者模型；省略键虽然也会被 Host schema 的 `.default('')`
+     *   补上，但显式往返更稳、也避免「省略」被误读成「用户没配过这一栏」。
+     * - 其余可选字段（`persona` / `reasoningEffort` / `maxTokens`）空则**省略该键**：
+     *   Host 的 `cloneJsonShaped` 拒绝数组里的 `undefined`，而 `""` 会让「未配置」与
+     *   「配置为空串」不可区分；`maxTokens: null` 还会撞 `z.number()` 的类型校验。
+     *   `maxTokens` 在这里转成数字。
      */
     function toRoster(rows) {
       return rows.map((row) => {
@@ -299,6 +409,20 @@ window.__ModuleLoader__.load({
         if (maxTokens !== '') entry.maxTokens = Number(maxTokens);
         return entry;
       });
+    }
+
+    /**
+     * 预置名册规范化后的 JSON（惰性缓存）。
+     *
+     * 每次投影都要拿它和草稿比较（`isDefaultRoster`），所以只归一化一次：
+     * 既避免重复计算，也避免每次都消耗 `toDraft` 的 renderKey 计数器。
+     */
+    let presetRosterJson;
+    function defaultRosterJson() {
+      if (presetRosterJson === undefined) {
+        presetRosterJson = JSON.stringify(toRoster(DEFAULT_ROSTER.map((entry) => toDraft(entry))));
+      }
+      return presetRosterJson;
     }
     // #endregion
 
@@ -380,6 +504,8 @@ window.__ModuleLoader__.load({
           invalid: this.error !== undefined,
           saving: this.saving,
           failed: this.failed,
+          // 有东西可重置 = 草稿与出厂预置名册不同；相同时按钮禁用。
+          canReset: !this.isDefaultRoster(),
           rows: this.draft,
           error: this.error,
           notice: this.notice
@@ -394,6 +520,19 @@ window.__ModuleLoader__.load({
       recomputeDirty() {
         this.dirty = JSON.stringify(toRoster(this.draft)) !== JSON.stringify(toRoster(this.stored));
         if (!this.dirty) this.failed = false;
+      }
+
+      /**
+       * 草稿是否已经等于出厂预置名册。
+       *
+       * 比较的是**草稿**而非 Host 值：按钮语义是「把默认清单放进草稿」，
+       * 所以只要草稿已经是预置清单就没有可重置的东西（再点也不会有变化）。
+       *
+       * 注意预置名册先归一化成草稿形状：`DEFAULT_ROSTER` 是 Host 形状（可选项键可能缺省），
+       * 而 `toRoster` 只接受字段齐全的草稿行。归一化结果已缓存（`defaultRosterJson`）。
+       */
+      isDefaultRoster() {
+        return JSON.stringify(toRoster(this.draft)) === defaultRosterJson();
       }
 
       /** 改一个字段。 */
@@ -435,6 +574,21 @@ window.__ModuleLoader__.load({
         this.failed = false;
         this.error = undefined;
         this.notice = undefined;
+        this.publish();
+      }
+
+      /**
+       * 「恢复预置名册」：**只把草稿改回出厂预置清单，不写 Host**。
+       *
+       * 这是刻意的：重置后用户还要点「保存」才落盘，点「放弃」可还原——天然二次确认，
+       * 不需要弹窗。保存路径与手动编辑完全一致（`scope.set(ROSTER_FIELD, array)`）。
+       */
+      reset() {
+        if (!this.projection().writable) return;
+        this.draft = DEFAULT_ROSTER.map((entry) => toDraft(entry));
+        this.error = undefined;
+        this.notice = this.t('resetDone');
+        this.recomputeDirty();
         this.publish();
       }
 
@@ -488,6 +642,7 @@ window.__ModuleLoader__.load({
           save: () => this.save(),
           discard: () => this.discard(),
           add: () => this.add(),
+          reset: () => this.reset(),
           remove: (index) => this.remove(index),
           patch: (index, field, value) => this.patch(index, field, value)
         };
@@ -557,6 +712,8 @@ window.__ModuleLoader__.load({
         background: 'var(--button-bg, transparent)',
         cursor: 'pointer'
       },
+      toolbarActions: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      resetHint: { margin: '0 0 12px', fontSize: '11px', opacity: 0.55, lineHeight: 1.5 },
       alert: { margin: 0, fontSize: '12px', color: 'var(--danger-color, #c93434)' },
       notice: { margin: 0, fontSize: '12px', opacity: 0.75 }
     };
@@ -602,7 +759,7 @@ window.__ModuleLoader__.load({
      * 按插件页要求渲染一句话说明（`view === 'summary'`）或整张设置卡片。
      *
      * props 由宿主注入：`view`、`t`、`useSpecialistsCard(selector)`、
-     * `save / discard / add / remove / patch`。
+     * `save / discard / add / reset / remove / patch`。
      */
     function SpecialistsCard(props) {
       const t = props.t;
@@ -688,15 +845,30 @@ window.__ModuleLoader__.load({
             style: styles.toolbar,
             children: [
               state.rows.length === 0 ? h.jsx('p', { style: styles.empty, children: t('empty') }) : h.jsx('span', {}),
-              h.jsx('button', {
-                type: 'button',
-                style: styles.addButton,
-                disabled,
-                onClick: props.add,
-                children: '+ ' + t('add')
+              h.jsxs('div', {
+                style: styles.toolbarActions,
+                children: [
+                  // 「恢复预置名册」只改草稿：disabled 的条件是只读，或草稿已经等于预置清单。
+                  h.jsx('button', {
+                    type: 'button',
+                    style: styles.addButton,
+                    disabled: disabled || !state.canReset,
+                    title: t('resetHint'),
+                    onClick: props.reset,
+                    children: t('reset')
+                  }),
+                  h.jsx('button', {
+                    type: 'button',
+                    style: styles.addButton,
+                    disabled,
+                    onClick: props.add,
+                    children: '+ ' + t('add')
+                  })
+                ]
               })
             ]
           }),
+          h.jsx('p', { style: styles.resetHint, children: t('resetHint') }),
           h.jsx('div', { style: styles.list, children: rows }),
           state.error !== undefined ? h.jsx('p', { style: styles.alert, role: 'alert', children: state.error }) : null,
           state.notice !== undefined ? h.jsx('p', { style: styles.notice, role: 'status', children: state.notice }) : null
@@ -748,6 +920,9 @@ window.__ModuleLoader__.load({
     exports.ROSTER_FIELD = ROSTER_FIELD;
     exports.SPECIALIST_ID = SPECIALIST_ID;
     exports.FIELD_SPECS = FIELD_SPECS;
+    // 与 Host `lib/presets.js` 的 DEFAULT_SPECIALISTS 逐项同值；导出便于离线校验
+    // 两边不漂移（运行时不消费这个导出）。
+    exports.DEFAULT_ROSTER = DEFAULT_ROSTER;
     // 诊断/离线测试用：让 `node --test` 或校验脚本能直接比对内联词典与
     // locale/*.json 的 `settings` 段是否逐键对齐（运行时不消费这个导出）。
     exports.DICTIONARIES = { zh, en };

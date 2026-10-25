@@ -15,6 +15,7 @@ import test from 'node:test';
 import { apply, Config, name } from '../index.js';
 import { CAPABILITY_ROWS } from '../lib/capabilities.js';
 import { SpecialistSchema } from '../lib/config.js';
+import { defaultSpecialistIds } from '../lib/presets.js';
 
 /** 一个最小 Cordis 上下文替身（配置行只用这几样）。 */
 function makeCtx() {
@@ -82,7 +83,9 @@ test('导出 Config，specialists 是唯一的 volatile 字段', () => {
   // volatile 字段解析后是引用（有 .get()），不是普通数组。
   const live = Config().specialists;
   const value = typeof live?.get === 'function' ? live.get() : live;
-  assert.deepEqual(value, []);
+  // 默认是出厂预置名册（按主流开发流程划分的 6 个专家，模型继承指挥者）。
+  assert.deepEqual(value.map((entry) => entry.id), defaultSpecialistIds());
+  assert.ok(value.length >= 5, '开箱应当带一套覆盖开发流程的专家');
   // 名册之外没有第二个 volatile 字段（schema 不允许 volatile 嵌套 volatile，也避免表单
   // 出现两个互相影响的数组）。
   const volatileKeys = Object.keys(Config.dict).filter((key) => Config.dict[key].meta?.volatile === true);

@@ -39,21 +39,41 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
 2. **出现分歧或不确定时**——specialist / 子代理之间结论冲突、需求有歧义、必须做取舍、
    要动高风险的东西、子代理报回 BLOCKER，都交回用户选。
 
-## 0.2 新增：可配置的多模型 specialist 名册
+## 开箱预置的专家（按主流软件开发流程）
 
 0.2.0 参考 [ToxicantX/dsh-multi-model-orchestrator](https://github.com/ToxicantX/dsh-multi-model-orchestrator)
-加了第二条派发通道：**名册里的每个 specialist 是一个独立工具，绑定自己的模型**。
+加了第二条派发通道：**名册里的每个 specialist 是一个独立工具**。
 
-在「设置 → 插件 → 指挥者模式」里配置名册，每行：
+0.3.0 起**开箱就带一套按主流软件开发生命周期划分的专家**，装好即可派活，不用先配置：
+
+| id | 定位 |
+|---|---|
+| `architect` | 系统架构与拆分：需求拆解、技术方案、接口与数据模型设计（不直接写实现） |
+| `implementer` | 代码实现：按既定方案写/改代码，补齐边界处理，产出可运行改动与自检结果 |
+| `reviewer` | 代码审查：正确性、可维护性、风格一致性与潜在缺陷，按严重程度给意见 |
+| `tester` | 测试：设计并补齐覆盖改动的测试，运行验证并报告明细，复现缺陷给最小步骤 |
+| `security-auditor` | 安全审计：依赖漏洞、注入与越权、密钥与敏感信息泄漏、不安全默认值 |
+| `doc-writer` | 文档：README、API 说明、使用与迁移文档 |
+
+预置专家的 `provider` / `model` 是**空的**，语义是**继承指挥者（父会话）的模型**——不同
+部署可用的模型完全不同，预置名册不能硬编码任何模型 id，否则在别人的部署里就是坏配置。
+想给某个专家绑定专属模型时，在设置页把两栏都填上即可（两栏必须同时填或同时留空）。
+
+预设清单在 `lib/presets.js`（`DEFAULT_SPECIALISTS`）。设置页里的**「恢复预置名册」**按钮
+把草稿恢复成这份出厂清单——**只改草稿，仍需点「保存」才落盘**，点「放弃」可还原。
+
+### 在设置页里调整名册
+
+「设置 → 插件 → 指挥者专家名册」，每行：
 
 | 字段 | 必填 | 含义 |
 |---|---|---|
 | `id` | 是 | `^[a-z][a-z0-9_-]{0,47}$`，名册内唯一；工具名就是 `subagent_<id>` |
-| `provider` / `model` | 是 | 该 specialist 固定使用的模型路由（来自 DSH 已有的 provider/model） |
-| `description` | 是 | 展示给指挥者的职责摘要，用来选人 |
-| `persona` | 否 | 追加到该 specialist 人设末尾的专属提示词 |
+| `provider` / `model` | 否 | 该专家的模型路由；**两栏都空 = 继承指挥者的模型**（要么都填、要么都空） |
+| `description` | 是 | 展示给指挥者的职责摘要（= 定位），用来选人 |
+| `persona` | 否 | 追加到该专家人设末尾的专属提示词（预置项都有） |
 | `reasoningEffort` | 否 | 该模型支持的推理等级 |
-| `maxTokens` | 否 | 该 specialist 的输出上限 |
+| `maxTokens` | 否 | 该专家的输出上限 |
 
 保存后：**新会话**立刻拿到新的 `subagent_<id>` 工具（工具清单在启动时确定）；
 已打开的会话保持启动时的名册 —— 设置页里也这么写。
@@ -188,7 +208,7 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `maxTeammates` | `4` | 写进协议的建议并行子代理上限（1–12） |
 | `blockedTools` | `write, edit, pwsh, bash, job_kill, plugin_manager` | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
-| `specialists` | `[]`（**volatile**） | 多模型 specialist 名册，由设置页编辑 |
+| `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
 | `maxSpecialists` | `20` | 名册条数上限（每项 = 一个 preset + 一个工具） |
 
 只有 `specialists` 是 volatile：设置页保存后 Loader 热更新运行中的引用（不重载行），
@@ -293,12 +313,28 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
      （空态文案、添加专家、六个字段、删除/保存）；保存链路闭环 —— UI 保存 → profile
      `cordis.patch.yml` 顶层行 `specialists` 落盘 → Loader 热更新 →
      `settings.describe()` 回读 `valueSpecialists` 就是刚保存的那一项。
+  6. **0.3.0 第四轮（预置名册 / 空路由 / 重置）全绿**，真实 Loader 原文：
+     - compose 里 `specialists` **没有**被 patch 覆盖（只有 `maxSpecialists: 20`），默认名册生效；
+     - 不做任何配置，`acquireScope('commander')` 的工具集里就有
+       `subagent_architect / implementer / reviewer / tester / security-auditor / doc-writer`
+       六个工具（host scope 只有 base 自带的 `subagent_fork`），6 个 specialist preset 全部
+       `broken: null`；
+     - **空路由真的继承父模型**：`subagent_architect` 执行后，子会话
+       `[subagent/descriptor]` 与 `[request/header].config` 的 provider/model 与父 agent
+       完全一致（`sub2api/deepseek-flash`），不是只在记录里写了个默认值；
+     - 设置页开箱 6 行、「恢复预置名册」按钮初始禁用；删一行后按钮可用，点重置 → 6 行回到
+       草稿并提示"需保存"；保存后 profile patch 里 `specialists` 变成 5 项（再重置+保存回到
+       6 项），且空路由以 `provider: '' / model: ''` 原样写回，不会被固化成父模型。
 - **仍未验证的**：桌面版 GUI 里手动选中「指挥者模式」那个入口动作（模式绑定、协议注入、
-  门禁、派发在 0.1.x 的真实 preset 会话里验证过；0.2.0 的 specialist 通道在沙箱里以
-  「scope 工具集 + execute 直调」验证过，未跑「模型自然调用」）。
+  门禁、派发在 0.1.x 的真实 preset 会话里验证过；specialist 通道在沙箱里以
+  「scope 工具集 + execute 直调」验证过，未跑「模型自然调用」）；半填路由在 UI 的
+  `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
 
+- **0.3.0** —— 开箱预置名册（按主流软件开发流程 6 个专家：架构 / 实现 / 审查 / 测试 / 安全 /
+  文档，模型继承指挥者）、设置页新增**「恢复预置名册」**按钮（只改草稿、保存才落盘）、
+  `provider`/`model` 支持留空（空 = 继承指挥者模型，两栏必须同时空或同时填）。
 - **0.2.1** —— 派活前必须做「定位匹配」：任务与执行者定位差距大时不硬派，改用匹配的执行者或
   在 Team 通道**开一个新的子智能体**（把这次定位写进它的 description/prompt）；执行者侧同步获得
   "任务与我的定位不符时先报告、不要硬做"的边界。
