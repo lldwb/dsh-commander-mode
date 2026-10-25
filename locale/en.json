@@ -1,18 +1,23 @@
 {
   "meta": {
     "title": "Commander Mode",
-    "description": "Turn this session into a commander: analyse the task, plan and split it, delegate every execution step to subagents, never execute anything yourself, and escalate plans and disagreements back to the user with a choice tool."
+    "description": "You judge and coordinate; subagents execute. Ships with six built-in specialists (architecture, implementation, review, testing, security, docs) that you can reshape or bind to their own models."
   },
   "settings": {
     "title": "Commander specialists",
-    "description": "Configure the specialist roster the commander delegates work to.",
-    "intro": "Each specialist becomes a delegation target. The id is part of its tool name, so keep it lowercase, unique and stable. Saving updates the roster for new sessions; the session you have open keeps the roster it started with.",
-    "empty": "No specialists configured. The commander still runs and can still delegate through Agent Teams; add a specialist here to give it a dedicated model.",
+    "description": "You decide, subagents do the work. Ships with six built-in specialists (architecture, implementation, review, testing, security, docs); add, remove, or bind each to its own model.",
+    "intro": "Click a row to edit it. Restore brings back the six built-in specialists (draft only — press Save to apply). The roster applies to new sessions; the one you have open keeps what it started with.",
+    "emptyTitle": "No specialists yet",
+    "empty": "The commander can still delegate through Agent Teams. Add a specialist here to give a role its own prompt and, if you want, its own model.",
     "add": "Add specialist",
+    "addHint": "Append an empty specialist row and expand it for editing.",
     "remove": "Remove",
+    "removeHint": "Remove this specialist from the draft. Press Save to apply it.",
     "reset": "Restore built-in roster",
     "resetHint": "Restore only rewrites the draft with the six built-in specialists; nothing is saved until you press Save.",
     "resetDone": "Built-in roster restored in the draft. Review it, then press Save.",
+    "countUnit": "specialists",
+    "countInherited": "{count} inherit the commander model",
     "save": "Save",
     "saving": "Saving…",
     "savingFailed": "The deployment did not accept this roster; your edits were kept for you to correct.",
@@ -26,13 +31,13 @@
     "fieldPersona": "Persona (optional)",
     "fieldReasoningEffort": "Reasoning effort (optional)",
     "fieldMaxTokens": "Max output tokens (optional)",
-    "hintId": "Lowercase letters, digits, \"-\" and \"_\"; must start with a letter, at most 48 characters. It becomes part of the delegation tool name.",
-    "hintProvider": "Provider id as registered in this deployment (for example deepseek). Leave provider and model both blank to inherit the commander model.",
-    "hintModel": "Model id the specialist runs on. Provider and model must be filled together or left blank together.",
-    "hintDescription": "What this specialist is responsible for; shown to the commander when it delegates.",
-    "hintPersona": "Extra system-prompt text for the specialist. Leave blank to derive it from the responsibility.",
+    "hintId": "Lowercase letters, digits, \"-\" and \"_\"; starts with a letter, max 48 chars. Becomes part of the tool name.",
+    "hintProvider": "Provider id registered here (e.g. deepseek). Leave both blank to inherit the commander model.",
+    "hintModel": "Model id this specialist runs on. Fill provider and model together, or leave both blank.",
+    "hintDescription": "What this specialist is responsible for; the commander sees this when it picks someone.",
+    "hintPersona": "Extra system-prompt text. Leave blank to derive it from the responsibility.",
     "hintReasoningEffort": "Leave blank to use the model default.",
-    "hintMaxTokens": "A positive integer; leave blank to use the model default.",
+    "hintMaxTokens": "A positive integer; blank uses the model default.",
     "invalidId": "row {row}: the id must match ^[a-z][a-z0-9_-]{0,47}$",
     "duplicateId": "row {row}: the id \"{id}\" is used twice",
     "missingDescription": "row {row}: the responsibility is required",
@@ -41,7 +46,9 @@
     "rowLabel": "Specialist {row}",
     "expand": "Expand to edit this specialist",
     "collapse": "Collapse this specialist",
-    "summaryInherited": "inherits commander model",
+    "summaryInherited": "inherits model",
+    "summaryInheritedHint": "Uses the commander (parent session) model. Fill provider and model to give it its own.",
+    "summaryOwnRouteHint": "Uses its own provider/model route for every child it starts.",
     "summaryNoDescription": "(no responsibility yet)"
   }
 }

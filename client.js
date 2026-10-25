@@ -84,16 +84,20 @@ window.__ModuleLoader__.load({
      */
     const en = {
       title: 'Commander specialists',
-      description: 'Configure the specialist roster the commander delegates work to.',
+      description: 'You decide, subagents do the work. Ships with six built-in specialists (architecture, implementation, review, testing, security, docs); add, remove, or bind each to its own model.',
       intro:
-        'Each specialist becomes a delegation target. The id is part of its tool name, so keep it lowercase, unique and stable. Saving updates the roster for new sessions; the session you have open keeps the roster it started with.',
-      empty: 'No specialists configured. The commander still runs and can still delegate through Agent Teams; add a specialist here to give it a dedicated model.',
+        'Click a row to edit it. Restore brings back the six built-in specialists (draft only — press Save to apply). The roster applies to new sessions; the one you have open keeps what it started with.',
+      emptyTitle: 'No specialists yet',
+      empty: 'The commander can still delegate through Agent Teams. Add a specialist here to give a role its own prompt and, if you want, its own model.',
       add: 'Add specialist',
+      addHint: 'Append an empty specialist row and expand it for editing.',
       remove: 'Remove',
+      removeHint: 'Remove this specialist from the draft. Press Save to apply it.',
       reset: 'Restore built-in roster',
-      resetHint:
-        'Restore only rewrites the draft with the six built-in specialists; nothing is saved until you press Save.',
+      resetHint: 'Restore only rewrites the draft with the six built-in specialists; nothing is saved until you press Save.',
       resetDone: 'Built-in roster restored in the draft. Review it, then press Save.',
+      countUnit: 'specialists',
+      countInherited: '{count} inherit the commander model',
       save: 'Save',
       saving: 'Saving…',
       savingFailed: 'The deployment did not accept this roster; your edits were kept for you to correct.',
@@ -107,13 +111,13 @@ window.__ModuleLoader__.load({
       fieldPersona: 'Persona (optional)',
       fieldReasoningEffort: 'Reasoning effort (optional)',
       fieldMaxTokens: 'Max output tokens (optional)',
-      hintId: 'Lowercase letters, digits, "-" and "_"; must start with a letter, at most 48 characters. It becomes part of the delegation tool name.',
-      hintProvider: 'Provider id as registered in this deployment (for example deepseek). Leave provider and model both blank to inherit the commander model.',
-      hintModel: 'Model id the specialist runs on. Provider and model must be filled together or left blank together.',
-      hintDescription: 'What this specialist is responsible for; shown to the commander when it delegates.',
-      hintPersona: 'Extra system-prompt text for the specialist. Leave blank to derive it from the responsibility.',
+      hintId: 'Lowercase letters, digits, "-" and "_"; starts with a letter, max 48 chars. Becomes part of the tool name.',
+      hintProvider: 'Provider id registered here (e.g. deepseek). Leave both blank to inherit the commander model.',
+      hintModel: 'Model id this specialist runs on. Fill provider and model together, or leave both blank.',
+      hintDescription: 'What this specialist is responsible for; the commander sees this when it picks someone.',
+      hintPersona: 'Extra system-prompt text. Leave blank to derive it from the responsibility.',
       hintReasoningEffort: 'Leave blank to use the model default.',
-      hintMaxTokens: 'A positive integer; leave blank to use the model default.',
+      hintMaxTokens: 'A positive integer; blank uses the model default.',
       invalidId: 'row {row}: the id must match ^[a-z][a-z0-9_-]{0,47}$',
       duplicateId: 'row {row}: the id "{id}" is used twice',
       missingDescription: 'row {row}: the responsibility is required',
@@ -122,22 +126,29 @@ window.__ModuleLoader__.load({
       rowLabel: 'Specialist {row}',
       expand: 'Expand to edit this specialist',
       collapse: 'Collapse this specialist',
-      summaryInherited: 'inherits commander model',
+      summaryInherited: 'inherits model',
+      summaryInheritedHint: 'Uses the commander (parent session) model. Fill provider and model to give it its own.',
+      summaryOwnRouteHint: 'Uses its own provider/model route for every child it starts.',
       summaryNoDescription: '(no responsibility yet)'
     };
 
     /** 简体中文文案（与 en 逐键对齐）。 */
     const zh = {
       title: '指挥者专家名册',
-      description: '配置指挥者委派工作时使用的专家名册。',
+      description: '你只做判断，子代理做执行。开箱六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档），可增删、可绑定各自模型。',
       intro:
-        '每一行是一个专家，都会成为可委派的目标。id 会成为工具名的一部分，因此必须小写、唯一且保持稳定。保存后新会话才会拿到新的专家工具；当前已经打开的会话保持它启动时的名册。',
-      empty: '尚未配置任何专家。指挥者仍可通过「智能体团队」派发；在这里添加专家可以给它一个专属模型。',
+        '点一行展开编辑；「恢复预置名册」放回出厂六位专家（只改草稿，点「保存」生效）。名册对新会话生效，当前已打开的会话保持启动时的名册。',
+      emptyTitle: '还没有专家',
+      empty: '指挥者仍可通过「智能体团队」派活。在这里添加专家，可以把某个定位固化下来，并（可选）绑定它的专属模型。',
       add: '添加专家',
+      addHint: '追加一行空白专家，并自动展开编辑。',
       remove: '删除',
+      removeHint: '从草稿里删掉这位专家；点「保存」后才会生效。',
       reset: '恢复预置名册',
-      resetHint: '重置只会把出厂预置的六个专家放回草稿，不会直接保存；还需要点「保存」才会写入。',
+      resetHint: '重置只会把出厂预置的六位专家放回草稿，点「保存」才会写入。',
       resetDone: '预置名册已放回草稿。确认后再点「保存」才会写入。',
+      countUnit: '位专家',
+      countInherited: '{count} 位继承你的模型',
       save: '保存',
       saving: '保存中…',
       savingFailed: '本部署没有接受这份名册，已保留你的改动供你修正。',
@@ -151,10 +162,10 @@ window.__ModuleLoader__.load({
       fieldPersona: '角色提示词（可选）',
       fieldReasoningEffort: '推理等级（可选）',
       fieldMaxTokens: '最大输出 Token（可选）',
-      hintId: '小写字母、数字、"-" 与 "_"；必须以字母开头，最长 48 个字符。它会成为委派工具名的一部分。',
-      hintProvider: '本部署注册的提供方 id（例如 deepseek）。两栏都留空 = 继承指挥者的模型。',
+      hintId: '小写字母、数字、"-" 与 "_"；字母开头，最长 48 字符。它会成为工具名的一部分。',
+      hintProvider: '本部署注册的提供方 id（如 deepseek）。两栏都空 = 继承指挥者模型。',
       hintModel: '该专家使用的模型 id。提供方与模型要么都填、要么都空。',
-      hintDescription: '该专家负责什么；指挥者委派时会看到这段说明。',
+      hintDescription: '该专家负责什么；指挥者选人时会看到这段说明。',
       hintPersona: '追加给该专家的系统提示词。留空表示从职责推导。',
       hintReasoningEffort: '留空表示使用模型默认值。',
       hintMaxTokens: '正整数；留空表示使用模型默认值。',
@@ -164,9 +175,11 @@ window.__ModuleLoader__.load({
       partialRoute: '第 {row} 行：提供方与模型要么都填，要么都空（都空 = 继承指挥者模型）',
       invalidMaxTokens: '第 {row} 行：最大输出 Token 必须是正整数',
       rowLabel: '专家 {row}',
-      expand: '展开编辑这个专家',
-      collapse: '收起这个专家',
-      summaryInherited: '继承指挥者模型',
+      expand: '展开编辑这位专家',
+      collapse: '收起这位专家',
+      summaryInherited: '继承模型',
+      summaryInheritedHint: '使用指挥者（父会话）的模型。填上提供方与模型可以让它用自己的。',
+      summaryOwnRouteHint: '它派出的子代理固定使用这个提供方/模型路由。',
       summaryNoDescription: '（还没写职责）'
     };
     // #endregion
@@ -742,26 +755,56 @@ window.__ModuleLoader__.load({
 
     // #region 视图
     const styles = {
-      intro: { margin: '0 0 12px', fontSize: '12px', opacity: 0.65, lineHeight: 1.6 },
+      intro: { margin: '0 0 10px', fontSize: '12px', opacity: 0.68, lineHeight: 1.6 },
+      /** 统计 + 操作的同一行：左边告诉用户"有多少"，右边是动作。 */
       toolbar: {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: '12px',
-        marginBottom: '12px',
+        marginBottom: '8px',
         flexWrap: 'wrap'
       },
-      list: { display: 'grid', gap: '10px' },
-      empty: { margin: 0, fontSize: '13px', opacity: 0.6 },
+      count: { margin: 0, fontSize: '12px', opacity: 0.7 },
+      countStrong: { fontWeight: 600, opacity: 1, fontVariantNumeric: 'tabular-nums' },
+      countInherited: { opacity: 0.55 },
+      list: { display: 'grid', gap: '8px', marginTop: '4px' },
+      /** 空态：独立成块，而不是挤在工具栏里当一行灰字。 */
+      emptyBlock: {
+        display: 'grid',
+        gap: '8px',
+        justifyItems: 'center',
+        alignContent: 'center',
+        minHeight: '150px',
+        padding: '28px 24px',
+        border: '1px dashed var(--border-color, #d8dce3)',
+        borderRadius: '10px',
+        textAlign: 'center'
+      },
+      emptyTitle: { margin: 0, fontSize: '14px', fontWeight: 600 },
+      empty: { margin: 0, fontSize: '12px', opacity: 0.62, lineHeight: 1.7, maxWidth: '52ch' },
+      /**
+       * 一行专家。折叠时紧凑（只占一行），展开时左侧出现强调竖条 —— 让"正在编辑哪一行"
+       * 一眼可见（折叠/展开共用同一个容器，避免展开后整块布局跳动）。
+       */
       row: {
         border: '1px solid var(--border-color, #d8dce3)',
         borderRadius: '8px',
-        padding: '12px',
+        borderLeft: '3px solid transparent',
+        padding: '8px 12px',
         display: 'grid',
-        gap: '10px'
+        gap: '10px',
+        background: 'transparent'
       },
-      rowExpanded: { gap: '12px' },
-      rowHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' },
+      rowOpen: {
+        borderLeft: '3px solid var(--accent-color, #4c6ef5)',
+        // 用中灰半透明而不是极淡的白：深色主题下 rgba(255,255,255,0.04) 几乎看不见。
+        background: 'var(--surface-subtle, rgba(127, 127, 127, 0.10))',
+        // 上下给一点间距：展开块与相邻折叠行的边界更清楚（否则两块像连在一起）。
+        margin: '4px 0',
+        padding: '10px 12px'
+      },
+      rowHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' },
       /**
        * 标题栏即展开开关（整块可点）。默认折叠：一个专家的表单有七个字段，
        * 六个预置专家全部展开会铺满好几屏。
@@ -781,21 +824,61 @@ window.__ModuleLoader__.load({
         textAlign: 'left',
         cursor: 'pointer'
       },
-      chevron: { flex: '0 0 auto', fontSize: '11px', opacity: 0.7, width: '10px' },
-      rowTitle: { margin: 0, fontSize: '13px', fontWeight: 600, flex: '0 0 auto' },
+      chevron: { flex: '0 0 auto', fontSize: '10px', opacity: 0.55, width: '10px' },
+      /** id 用等宽字体：它是工具名的一部分，等宽更容易扫读与核对。 */
+      rowTitle: {
+        margin: 0,
+        fontSize: '13px',
+        fontWeight: 600,
+        flex: '0 0 auto',
+        fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace)'
+      },
+      /** 模型路由 badge：一眼区分"继承指挥者模型"与"绑定专属模型"。 */
+      modelBadge: {
+        flex: '0 0 auto',
+        padding: '1px 6px',
+        borderRadius: '999px',
+        border: '1px solid var(--border-color, #d8dce3)',
+        fontSize: '11px',
+        opacity: 0.75,
+        whiteSpace: 'nowrap'
+      },
+      modelBadgeOwn: {
+        borderColor: 'var(--accent-color, #4c6ef5)',
+        opacity: 0.95
+      },
       rowSummary: {
         margin: 0,
         fontSize: '12px',
-        opacity: 0.6,
+        opacity: 0.58,
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
         minWidth: 0
       },
-      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))', gap: '10px' },
+      rowSummaryEmpty: { fontStyle: 'italic', opacity: 0.45 },
+      /** 展开后的字段区：与标题栏用一条细线隔开，视觉上不会再"糊成一团"。 */
+      panel: {
+        display: 'grid',
+        gap: '10px',
+        paddingTop: '10px',
+        borderTop: '1px solid var(--border-color, #e6e9ef)'
+      },
+      /**
+       * 展开后的字段网格：**3 列**。
+       *
+       * 7 个字段排 3 列：id / 提供方 / 模型 一行，推理等级 / 最大输出 一行（各占 1 列，
+       * 第三列留给说明留白比 4 列把最后一个字段甩到第二行更平衡），职责与角色提示词各占整行。
+       */
+      grid: {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))',
+        gap: '12px 14px'
+      },
       field: { display: 'grid', gap: '4px', minWidth: 0 },
       label: { fontSize: '12px', fontWeight: 500 },
-      hint: { margin: 0, fontSize: '11px', opacity: 0.55, lineHeight: 1.5 },
+      /** hint：11px/0.55 在窄列里读着吃力，放大一点、提高对比。 */
+      hint: { margin: 0, fontSize: '12px', opacity: 0.65, lineHeight: 1.55 },
       control: {
         boxSizing: 'border-box',
         width: '100%',
@@ -808,15 +891,21 @@ window.__ModuleLoader__.load({
         font: 'inherit'
       },
       multiline: { resize: 'vertical' },
+      /**
+       * 删除是危险/次要操作：**无边框**、低对比（6 行并排时不抢注意力），
+       * 危险语义靠 title 提示。
+       */
       removeButton: {
-        minHeight: '30px',
-        border: '1px solid var(--border-color, #c9ced8)',
+        flex: '0 0 auto',
+        minHeight: '26px',
+        border: 'none',
         borderRadius: '6px',
-        padding: '4px 10px',
+        padding: '3px 8px',
         color: 'inherit',
         background: 'transparent',
         cursor: 'pointer',
-        fontSize: '12px'
+        fontSize: '11px',
+        opacity: 0.45
       },
       addButton: {
         minHeight: '34px',
@@ -828,7 +917,6 @@ window.__ModuleLoader__.load({
         cursor: 'pointer'
       },
       toolbarActions: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
-      resetHint: { margin: '0 0 12px', fontSize: '11px', opacity: 0.55, lineHeight: 1.5 },
       alert: { margin: 0, fontSize: '12px', color: 'var(--danger-color, #c93434)' },
       notice: { margin: 0, fontSize: '12px', opacity: 0.75 }
     };
@@ -912,16 +1000,15 @@ window.__ModuleLoader__.load({
           ),
         );
         const title = row.id.trim() === '' ? format(t('rowLabel'), { row: rowNumber }) : row.id.trim();
-        // 折叠时的摘要：定位 + 模型路由。让用户不展开也能判断"这行是谁、跑在什么模型上"。
-        const route =
-          row.provider.trim() === '' && row.model.trim() === ''
-            ? t('summaryInherited')
-            : row.provider.trim() + '/' + row.model.trim();
-        const summary = row.description.trim() === '' ? t('summaryNoDescription') : row.description.trim();
+        // 折叠时的摘要：模型路由 badge + 职责。让用户不展开也能判断"这行是谁、跑在什么模型上"。
+        const inherited = row.provider.trim() === '' && row.model.trim() === '';
+        const route = inherited ? t('summaryInherited') : row.provider.trim() + '/' + row.model.trim();
+        const hasDescription = row.description.trim() !== '';
+        const summary = hasDescription ? row.description.trim() : t('summaryNoDescription');
         return h.jsxs(
           'div',
           {
-            style: expanded ? Object.assign({}, styles.row, styles.rowExpanded) : styles.row,
+            style: expanded ? Object.assign({}, styles.row, styles.rowOpen) : styles.row,
             children: [
               h.jsxs('div', {
                 style: styles.rowHead,
@@ -938,11 +1025,16 @@ window.__ModuleLoader__.load({
                     children: [
                       h.jsx('span', { style: styles.chevron, children: expanded ? '▾' : '▸' }),
                       h.jsx('span', { style: styles.rowTitle, children: title }),
+                      h.jsx('span', {
+                        style: inherited ? styles.modelBadge : Object.assign({}, styles.modelBadge, styles.modelBadgeOwn),
+                        title: inherited ? t('summaryInheritedHint') : t('summaryOwnRouteHint'),
+                        children: route
+                      }),
                       expanded
                         ? null
-                        : h.jsxs('span', {
-                            style: styles.rowSummary,
-                            children: [route, ' · ', summary]
+                        : h.jsx('span', {
+                            style: hasDescription ? styles.rowSummary : Object.assign({}, styles.rowSummary, styles.rowSummaryEmpty),
+                            children: summary
                           })
                     ]
                   }),
@@ -950,6 +1042,7 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     style: styles.removeButton,
                     disabled,
+                    title: t('removeHint'),
                     onClick: () => {
                       props.remove(index);
                     },
@@ -958,16 +1051,23 @@ window.__ModuleLoader__.load({
                 ]
               }),
               expanded
-                ? h.jsxs('div', {
-                    style: styles.grid,
+                ? h.jsx('div', {
+                    style: styles.panel,
                     children: [
-                      fields[0], // id
-                      fields[1], // provider
-                      fields[2], // model
-                      fields[5], // reasoningEffort
-                      fields[6], // maxTokens
-                      h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[3] }), // description
-                      h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[4] }) // persona
+                      h.jsxs('div', {
+                        style: styles.grid,
+                        children: [
+                          // 3 列 × auto-fit：前两行各放 3 个短字段，第三列的空位由
+                          // 说明文字自然占据；职责与角色提示词各占整行。
+                          fields[0], // id
+                          fields[1], // provider
+                          fields[2], // model
+                          fields[5], // reasoningEffort
+                          fields[6], // maxTokens
+                          h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[3] }), // description
+                          h.jsx('div', { style: Object.assign({}, styles.field, { gridColumn: '1 / -1' }), children: fields[4] }) // persona
+                        ]
+                      })
                     ]
                   })
                 : null
@@ -975,6 +1075,21 @@ window.__ModuleLoader__.load({
           },
           row.renderKey,
         );
+      });
+
+      // 统计：有多少专家、其中多少继承指挥者的模型。折叠态下一眼看清整体配置。
+      const inheritedCount = state.rows.filter(
+        (row) => row.provider.trim() === '' && row.model.trim() === '',
+      ).length;
+      const countLine = h.jsxs('p', {
+        style: styles.count,
+        children: [
+          h.jsx('strong', { style: styles.countStrong, children: String(state.rows.length) }),
+          ' ' + t('countUnit'),
+          inheritedCount > 0
+            ? h.jsx('span', { style: styles.countInherited, children: ' · ' + format(t('countInherited'), { count: inheritedCount }) })
+            : null
+        ]
       });
 
       return h.jsxs(P.SettingsForm, {
@@ -987,7 +1102,7 @@ window.__ModuleLoader__.load({
           h.jsxs('div', {
             style: styles.toolbar,
             children: [
-              state.rows.length === 0 ? h.jsx('p', { style: styles.empty, children: t('empty') }) : h.jsx('span', {}),
+              countLine,
               h.jsxs('div', {
                 style: styles.toolbarActions,
                 children: [
@@ -1004,6 +1119,7 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     style: styles.addButton,
                     disabled,
+                    title: t('addHint'),
                     onClick: props.add,
                     children: '+ ' + t('add')
                   })
@@ -1011,8 +1127,17 @@ window.__ModuleLoader__.load({
               })
             ]
           }),
-          h.jsx('p', { style: styles.resetHint, children: t('resetHint') }),
-          h.jsx('div', { style: styles.list, children: rows }),
+          // 这里**不再**常显一行「重置只会…」：intro 已经说明"重置只改草稿、保存才生效"，
+          // 按钮 title 也有完整说明。常显那行只会把统计行和列表隔开、同件事说两遍。
+          state.rows.length === 0
+            ? h.jsxs('div', {
+                style: styles.emptyBlock,
+                children: [
+                  h.jsx('p', { style: styles.emptyTitle, children: t('emptyTitle') }),
+                  h.jsx('p', { style: styles.empty, children: t('empty') })
+                ]
+              })
+            : h.jsx('div', { style: styles.list, children: rows }),
           state.error !== undefined ? h.jsx('p', { style: styles.alert, role: 'alert', children: state.error }) : null,
           state.notice !== undefined ? h.jsx('p', { style: styles.notice, role: 'status', children: state.notice }) : null
         ]
