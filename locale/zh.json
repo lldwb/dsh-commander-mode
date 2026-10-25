@@ -38,6 +38,10 @@
     "missingDescription": "第 {row} 行：职责不能为空",
     "partialRoute": "第 {row} 行：提供方与模型要么都填，要么都空（都空 = 继承指挥者模型）",
     "invalidMaxTokens": "第 {row} 行：最大输出 Token 必须是正整数",
-    "rowLabel": "专家 {row}"
+    "rowLabel": "专家 {row}",
+    "expand": "展开编辑这个专家",
+    "collapse": "收起这个专家",
+    "summaryInherited": "继承指挥者模型",
+    "summaryNoDescription": "（还没写职责）"
   }
 }
