@@ -31,6 +31,7 @@
  */
 
 import { Config } from './lib/config.js';
+import { hidePresetsFromCatalog, isSpecialistPresetId } from './lib/preset-catalog.js';
 import { provideSettings } from './lib/settings-service.js';
 
 /** Cordis 插件名。**必须与 Loader 行 id、设置命名空间、客户端 `SETTINGS_NS` 一致**。 */
@@ -72,6 +73,28 @@ export function apply(ctx, config) {
       } catch (error) {
         // 关掉自动页失败不是致命问题：最坏情况是设置里多一个自动生成的卡片。
         ctx.logger?.warn?.('commander-mode: 无法关闭自动设置页：%o', error);
+      }
+    });
+  }
+
+  // ③ 把 specialist preset 从**模式菜单**里隐藏。
+  //
+  //    每位专家都要一份独立 preset 来承载人设（0.2.x 起 tool-subagent/subagents 不再接受
+  //    persona 参数），而注册出来的 preset 默认会出现在模式选择菜单里 —— 用户会看到六条
+  //    「指挥官 specialist: …」，像是可选模式。它们不是模式，只是指挥者内部的专家。
+  //
+  //    这里只包 `remoteExportList`（目录的 UI 通道），不碰注册/挂载：工具照常按 id 挂载、
+  //    人设照常生效，只是不再出现在菜单里。细节见 `lib/preset-catalog.js`。
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['agentPresets'], (presetCtx) => {
+      try {
+        presetCtx.effect(
+          () => hidePresetsFromCatalog(presetCtx.agentPresets, isSpecialistPresetId),
+          'commander-mode: hide specialist presets from the mode menu',
+        );
+      } catch (error) {
+        // 隐藏失败只是菜单里多出几行，不影响专家本身能否被调用 —— 降级为警告。
+        ctx.logger?.warn?.('commander-mode: 无法从模式菜单隐藏 specialist preset：%o', error);
       }
     });
   }
