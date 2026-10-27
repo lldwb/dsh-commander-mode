@@ -1,11 +1,11 @@
 {
   "name": "dsh-commander-mode",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "你只做判断，子代理做执行：接单、拆解、派活、验收，规划与分歧交回你确认。开箱带六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档），可在设置页增删并绑定各自模型。",
   "type": "module",
   "license": "MIT",
   "private": true,
-  "icon": "./icon.png",
+  "icon": "./icon.svg",
   "main": "./index.js",
   "repository": {
     "type": "git",
@@ -31,7 +31,7 @@
     "lib/*.js",
     "cordis.patch.yml",
     "locale/*.json",
-    "icon.png",
+    "icon.svg",
     "README.md",
     "LICENSE",
     "test/*.mjs"
