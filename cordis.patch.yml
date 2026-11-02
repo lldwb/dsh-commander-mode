@@ -104,6 +104,9 @@
         escalateOnConflict: true
         # 写进协议的建议并行上限。
         maxTeammates: 4
+        # 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底。
+        # 关掉只去掉这两样，协议里的结算同步要求仍在。
+        syncGuard: true
         # 指挥者不许自己调用的工具；传 [] 可以只留协议约束。
         blockedTools:
           - write

@@ -11,6 +11,11 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   `subagent_<id>` 前台工具，可继承你的模型或绑定专属模型；② 「智能体团队」解决长驻队友、
   持续对话、共享任务板与后台并行。
 - **两次必须问你**：规划拆分完成后先确认再派活；出现分歧、歧义或取舍时交回你选。
+- **结算即同步**：任务一完成就同步**任务板 / 计划清单 / 团队状态**，而不是收尾才补。
+  每轮运行时上下文里有「**同步看板**」（任务板、计划清单、团队状态的实时快照，有未同步项
+  时直接给纠正指令）；万一还是忘了，回合结束前的兜底钩子会把它拽回来。0.4.0 起生效。
+- **a2a 有纪律**：派活一次写全、开工前先约定回报格式、`wait_agent` 超时**不算异常**
+  （别紧接着 `list_agents` + `team_task_list` 复查）—— 少一轮就是一个回合。0.4.0 起生效。
 
 ```text
 30 秒上手
@@ -46,8 +51,49 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
 | 只读侦察（`read` / `glob` / `grep` / `web_search`） | 写文件、改文件（`write` / `edit`） |
 | 规划与拆分、维护 `todo_write` | 跑命令（`pwsh` / `bash`） |
 | 建任务板、派发给 specialist 或 teammate | 杀作业（`job_kill`） |
-| `wait_agent` 等进展、核对验收判据 | 装插件（`plugin_manager`） |
-| 用 `ask_user_question` 让用户确认计划、上报分歧 | 替用户拍板 |
+| 结算后三同步：任务板 / 计划清单 / 团队状态 | 装插件（`plugin_manager`） |
+| `wait_agent` 等进展、核对验收判据 | 替用户拍板 |
+| 用 `ask_user_question` 让用户确认计划、上报分歧 | |
+
+### 结算同步（0.4.0）
+
+多子代理会话里最贵的失误不是派错活，而是**做完了但没人同步进度**。真实事故（2026-11-02，
+一次三小时、1111 个事件、3 个子代理的会话）：
+
+- `todo_write` 全程只调了 **5 次**，最后一次停在 **+61 分钟**；
+- 之后 100 分钟里任务板完成/删除了 4 个任务，**计划清单一次都没动**；
+- 收尾报告发出时任务板 4 分钟前刚结算完，清单还是两小时前的快照 —— 直到用户亲口问
+  「进度如何？同步更新任务」才补上。
+
+0.4.0 用**两条确定性通道**堵住（不靠"希望模型记得"）：
+
+1. **每轮运行时上下文**里的一行「指挥者·同步看板」（`systemPrompt.context`，比 section
+   遵从率高得多）：任务板几项已结算 / 谁还没结算、计划清单完成度、每个成员 running 还是
+   inactive；有未同步项时直接给出 `todo_write` / `team_task_update` 的纠正指令。
+2. **回合结束兜底**（`agent/turn-stopping`）：回合要结束了还有未同步项，就注入一次提醒
+   （每回合最多一次），让模型在同一个回合里补完，并要求它补一条 1–2 行的同步回执而不是
+   重复报告。
+
+两条都只对指挥者生效（teammate 用 `isDelegatedAgent` 排除）。关掉看板与兜底：
+配置行 `syncGuard: false`（协议里的同步要求仍在）。
+
+### a2a 效率（0.4.0）
+
+同一会话的浪费是可以量化的：**50 次 `wait_agent`、27 次 `list_agents`、12 次
+`team_task_list`**（合计 39 次纯轮询工具调用），30 条 `send_message` 合计 2.6 万字，
+其中两次因为"重复同一个调用"被运行时警告。0.4.0 把这些写成 a2a 纪律（并在看板提供状态
+之后把轮询变成**不必要**）：
+
+- **派活一次写全**：目标 / 产出物 / 验收判据 / 写作用域 / 回报格式 / 停手条件写进一条消息；
+- **先约定回报协议**：长任务连续跑到完成，只在一行里程碑或异常时回报，**不要每批结束回合
+  等指令**（每次多两轮：它停一次、你再推一次）；
+- **超时不是事件**：`wait_agent` 超时只说明"这段时间没变化"——换更长 timeout 或做独立只读
+  核对，别紧接着 `list_agents` + `team_task_list` 复查；同一参数连续重复会被运行时警告；
+- **回执即成功**：`send_message` 返回 `accepted` / `queued` 都算投递成功，绝不重发。
+
+顺带修掉一个真实的**系统提示泄漏**：teammate 与指挥者共用同一个 preset scope，0.3.x 里
+每个执行者的系统提示都带着整份「指挥者模式 … 你不执行操作」（约 4.4 KB/请求），既浪费
+token 又和它自己的执行者人设冲突。0.4.0 起 prompt section 按 agent 判定，子级返回空串。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -233,6 +279,7 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认" |
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
 | `maxTeammates` | `4` | 写进协议的建议并行子代理上限（1–12） |
+| `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
 | `blockedTools` | `write, edit, pwsh, bash, job_kill, plugin_manager` | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
@@ -257,6 +304,16 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   协议里剔除（避免点名不存在的工具）；其余 specialist 与整个模式照常工作。
 - **`inactive` ≠ 做完了。** teammate 的 `inactive` 只表示"当前没有轮次在执行"。判断结果
   要看它报回来的内容与验收判据——协议里写明了，但这是模型行为，不是代码保证。
+- **同步看板依赖「智能体团队」。** 没有 `agentTeams` 服务（用户关掉「智能体团队」、或这个
+  部署没装）时，看板与回合同步兜底都**不产生任何文本**，协议自动切到"看一遍状态、不要轮询"
+  的说法；`todo_write` 的计划清单仍会被记录，但没有任务板可对照。
+- **同步兜底最多每回合提醒一次。** 模型若坚持不同步，回合会正常结束（不会卡住），下一次
+  有新未同步项时才会再提醒。看板只报告**证据充分**的未同步（结算发生在清单更新之后、
+  或清单说全完成但板还有未结算任务），读不到的一律按"未知"处理，不误报。
+- **同一步先结算再写清单不算未同步。** 写清单时会先把当时的任务板记成新基线——否则
+  "先 `team_task_update` 再 `todo_write`"会被误判成清单落后。
+- **协议 section 不再注入给 teammate（0.4.0）。** 之前执行者会被灌整份指挥者协议；现在
+  子级返回空串。副作用：teammate 也看不到「结算同步」等条款——它们不需要，指挥者负责。
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -282,6 +339,7 @@ node --test "test/**/*.test.mjs"
 | `agent.js` | **模式行**（preset 内）：协议 section、`tools/pre-execute` 门禁、skill、specialist 安装与重建 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
 | `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill） |
+| `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
 | `lib/guard.js` | 执行边界的纯函数：身份判别、判定、拒绝理由 |
 | `lib/config.js` | schemastery `Config`、默认值、宽容读取器 |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
@@ -312,6 +370,27 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.4.0 第五轮（结算同步 / a2a 效率，真实 Loader 端到端）**，证据全部来自 headless 沙箱
+  真跑（`dsh --profile <sandbox>`，把模式行临时挂到 profile 顶层——headless 的一次性 runner
+  拒绝"已绑定 preset"的会话，见 `dsh-headless/lib/index.js`）：
+  - **`node --test` 265/265 通过**：新增 `test/sync.test.mjs`（账本 / 判定 / 渲染 / 宽容入参）
+    与 plugin.test.mjs 的接线用例（看板、post-execute 记录、turn-stopping 兜底、teammate 隔离）。
+  - **系统提示注入**：模型从自己的系统提示里**逐字**复述出新 section 的内容 ——
+    `- **每次结算都做三同步**：任务一进入终态（completed / 失败 / 取消 / 删除）…` 与
+    `### a2a 效率（派活、等待、汇报 — 每条都能省掉一整轮）`。
+  - **同步看板（真实 `agentTeams`）**：模型调用 `team_task_create` 建出 task-1 后，**下一步**的
+    运行时上下文里逐字出现：
+    `【指挥者·同步看板】任务板 0/1 已结算（未结算 1 项：task-1 pending）；计划清单：未建立。
+    状态以此为准，不要用 list_agents / team_task_list 轮询。`
+  - **未同步判定 + 回合结束兜底**：写计划清单 → 结算任务 → 模型被要求"直接结束回合"。模型
+    自述收到 `⚠️`（"current runtime context has an ⚠️ warning telling me to todo_write"），
+    并在回合结束前收到注入的 `【指挥者·结算同步】` 提醒；补完同步后按约定给出 1–2 行回执，
+    看板变为 `任务板 1/1 已结算（无未结算）；计划清单 1/1 已完成`。
+  - **沙箱回归脚手架**：`devkit_sandbox_create/install/compose/run/destroy` 全绿；
+    `compose` 里可见 `commander-mode` / `preset-commander` / `commander-mode-agent` 三行，
+    配置含 `syncGuard: true`；跑完删除沙箱，零残留。
+  - **仍未验证的**：桌面版 GUI 里点「指挥者模式」那个入口动作（沿用 0.1.x 的真实 preset 会话
+    证据；0.4.0 的变更都在模型看得到的文本与钩子上，没有改 UI 入口）。
 - **`node --test` 全绿**（201 个用例，0.2.0 时点），覆盖：门禁判定与身份放行、协议文本与
   可靠性语义、patch 结构（含 config 键与名册默认值）、名册清洗、specialist preset/工具契约、
   volatile 重建、设置页契约与纯逻辑模块（config / capabilities）。
@@ -359,6 +438,14 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.4.0** —— 修「任务完成后不同步」并优化 a2a 效率（依据 2026-11-02 一次 1111 事件、
+  三小时的指挥者会话）：① 新增**结算同步**体系 —— 每轮运行时上下文里的「指挥者·同步看板」
+  （任务板 / 计划清单 / 团队状态实时快照 + 未同步项的纠正指令）+ `agent/turn-stopping`
+  回合结束兜底（每回合最多一次）；② 协议新增「结算同步」四条与「a2a 效率」四条
+  （派活一次写全 / 先约定回报协议 / 超时不是事件 / 回执即成功），`wait_agent` 等轮询
+  不再被鼓励；③ 修复 **prompt section 泄漏给 teammate**（执行者不再收到整份指挥者协议，
+  每请求省约 4.4 KB）；④ 新增配置 `syncGuard` 与 `lib/sync.js`（纯函数状态机 + 单测）。
+- **0.3.5 / 0.3.4** —— 插件图标调整（先 PNG，后改成手绘 SVG，对齐 dsh 官方图标的矢量语言）。
 - **0.3.3** —— 把内部 specialist preset 从**模式菜单**隐藏（它们只是指挥者按需调用的专家，
   不该作为可选模式出现）。做法是包装 `agentPresets.remoteExportList()` 过滤
   `commander-specialist-*`，只影响目录读取，注册/挂载/诊断不变。

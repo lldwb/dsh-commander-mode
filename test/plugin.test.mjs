@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { apply, FALLBACK_OPTIONS, SECTION_NAME, SECTION_ORDER } from '../agent.js';
+import { SYNC_CONTEXT_NAME, SYNC_CONTEXT_ORDER } from '../lib/sync.js';
 
 // ---------------------------------------------------------------- 夹具 ---
 
@@ -82,9 +83,10 @@ function makeSubagents(record, settlement = { output: [{ type: 'text', text: '�
  * `inject` 回调收到的子上下文带着该依赖对应的桩服务；`effect()` 立即执行回调（与 Cordis
  * 的挂载语义一致），返回的 disposer 被记录下来。
  */
-function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement } = {}) {
+function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams } = {}) {
   const record = {
     sections: [],
+    contexts: [],
     skills: [],
     listeners: [],
     warnings: [],
@@ -93,6 +95,8 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
     presets: [],
     activations: [],
     settingsPolicies: [],
+    /** 记录 `agent.inject()` 收到的消息（结算是靠它兜底的）。 */
+    injected: [],
   };
   const logger = {
     info: () => {},
@@ -100,6 +104,7 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
     warn: (...args) => record.warnings.push(args.map(String).join(' ')),
   };
   const services = {
+    ...(agentTeams === undefined ? {} : { agentTeams }),
     ...(withSkills ? {
       skills: {
         register: (definition) => {
@@ -136,6 +141,10 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
     systemPrompt: {
       section: (definition) => {
         record.sections.push(definition);
+        return () => {};
+      },
+      context: (definition) => {
+        record.contexts.push(definition);
         return () => {};
       },
     },
@@ -183,14 +192,71 @@ function preExecute(record) {
   return entry.listener;
 }
 
+/**
+ * 取某个事件的监听器。
+ *
+ * @param {object} record - `makeCtx()` 的记录。
+ * @param {string} event - 事件名。
+ * @returns {Function} 监听器。
+ */
+function listenerOf(record, event) {
+  const entry = record.listeners.find((item) => item.event === event);
+  assert.ok(entry, `没有注册 ${event} 监听器`);
+  return entry.listener;
+}
+
+/** 取同步看板的运行时上下文定义。 */
+function syncContext(record) {
+  const entry = record.contexts.find((item) => item.name === SYNC_CONTEXT_NAME);
+  assert.ok(entry, '没有注册同步看板运行时上下文');
+  return entry;
+}
+
 /** 一个 Lead agent。 */
-const LEAD = { id: 'session-lead', session: { header: { id: 'session-lead' } } };
+const LEAD = { id: 'session-lead', session: { id: 'session-lead', header: { id: 'session-lead' } } };
 
 /** 一个 teammate。 */
 const TEAMMATE = {
   id: 'session-child',
-  session: { header: { id: 'session-child', parentSession: 'session-lead', origin: 'subagent', delegationDepth: 1 } },
+  session: { id: 'session-child', header: { id: 'session-child', parentSession: 'session-lead', origin: 'subagent', delegationDepth: 1 } },
 };
+
+/**
+ * 让一个 Lead agent 可以被注入消息，并记录注入的内容。
+ *
+ * `agent/turn-stopping` 的兜底靠 `agent.inject()`；真实实现里它是 AgentLoop 的方法。
+ *
+ * @returns {object} 带 inject 记录的 agent。
+ */
+function injectableLead() {
+  const agent = { id: 'session-lead', session: { id: 'session-lead', header: { id: 'session-lead' } }, injected: [] };
+  agent.inject = (message) => {
+    agent.injected.push(message);
+  };
+  return agent;
+}
+
+/**
+ * `agentTeams` 服务的替身。
+ *
+ * 只有 `tryMembership` / `listTasks` / `listMembers` 三个读方法是本插件用到的。
+ *
+ * @param {{ tasks?: object[], members?: object[], member?: boolean }} [options] - 初始视图。
+ * @returns {object} 服务替身（`tasks`/`members` 可在测试里直接替换）。
+ */
+function makeAgentTeams(options = {}) {
+  const service = {
+    member: options.member !== false,
+    tasks: options.tasks ?? [],
+    // 真实 `listMembers()` 的 row 用 `status`（running / inactive / provisioning / failed），
+    // Lead 自己也在列表里（role: 'lead'）。
+    members: options.members ?? [{ id: 'lead', name: 'lead', role: 'lead', status: 'running', diagnostics: [] }],
+    tryMembership: () => (service.member ? { role: 'lead' } : undefined),
+    listTasks: () => service.tasks,
+    listMembers: () => service.members,
+  };
+  return service;
+}
 
 /** 一个总是被调用到的 `next()`，记录自己被调了几次。 */
 function spyNext(value = { kind: 'allow' }) {
@@ -265,9 +331,10 @@ test('没有 skills 服务的部署里不炸', () => {
   assert.ok(record.listeners.some((item) => item.event === 'tools/pre-execute'));
 });
 
-test('注册了 tools/pre-execute 监听器', () => {
-  const { record } = boot();
-  assert.deepEqual(record.listeners.map((item) => item.event), ['tools/pre-execute']);
+test('注册了三个确定性钩子：门禁、计划清单记录、结算兜底', () => {
+  // 门禁（不执行操作）+ 计划清单记录（todo_write 之后更新账本）+ 回合结束兜底（结算同步）。
+  const events = boot().record.listeners.map((item) => item.event);
+  assert.deepEqual([...events].sort(), ['agent/turn-stopping', 'tools/post-execute', 'tools/pre-execute']);
 });
 
 // ---------------------------------------------------------------- 监听器 ---
@@ -389,6 +456,208 @@ test('没有 next 时返回 undefined，不冒充 allow', async () => {
   const listener = preExecute(boot().record);
   assert.equal(await listener({ name: 'read', agent: LEAD }, undefined), undefined);
   assert.equal((await listener({ name: 'write', agent: LEAD }, undefined)).kind, 'deny');
+});
+
+// ---------------------------------------------------------- 结算同步（0.4.0） ---
+
+test('指挥者协议不注入给 teammate（0.4.0 修复的系统提示泄漏）', () => {
+  // 0.3.x 的实测现象：teammate 与指挥者共用同一个 preset scope，于是每个执行者的
+  // 系统提示里都带着整份「指挥者模式 … 你不执行操作」（约 4.4 KB/请求），
+  // 既浪费 token 又和它自己的执行者人设打架。0.4.0 起 section 按 agent 判定。
+  const { record } = boot();
+  const section = record.sections[0];
+  assert.equal(section.text({ agent: TEAMMATE }), '');
+  // 不传 agent（旧调用方 / 单测直接调用）时仍按指挥者渲染 —— 不能因为拿不到身份就整段消失。
+  assert.ok(section.text().includes('指挥者模式'));
+  assert.ok(section.text({ agent: LEAD }).includes('指挥者模式'));
+});
+
+test('注册了同步看板运行时上下文，名字与 order 是约定的', () => {
+  const { record } = boot();
+  const context = syncContext(record);
+  assert.equal(context.name, SYNC_CONTEXT_NAME);
+  assert.equal(context.name, 'commander:sync-board');
+  // 排在 TEAM_IDENTITY（125）之后、HARNESS_SOURCE（200）之前。
+  assert.equal(context.order, SYNC_CONTEXT_ORDER);
+  assert.equal(context.order, 130);
+  // 每轮求值：text 必须是函数而不是静态字符串。
+  assert.equal(typeof context.text, 'function');
+});
+
+test('没有智能体团队的部署里，同步看板不产生任何文本', () => {
+  const { record } = boot();
+  assert.equal(syncContext(record).text({ agent: LEAD }), '');
+  // teammate 也永远拿不到看板。
+  assert.equal(syncContext(record).text({ agent: TEAMMATE }), '');
+});
+
+test('任务结算后，看板立刻指出计划清单没同步', () => {
+  const agentTeams = makeAgentTeams({
+    tasks: [
+      { id: 'task-1', status: 'in_progress', subject: '实现', ownerName: 'browser-ops' },
+      { id: 'task-2', status: 'pending', subject: '验收' },
+    ],
+  });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const postExecute = listenerOf(record, 'tools/post-execute');
+  // 规划阶段先写一次计划清单（否则看板只会说"未建立"，不构成"结算没同步"）。
+  postExecute({ name: 'todo_write', agent: LEAD, arguments: { todos: [{ content: '实现', status: 'in_progress' }, { content: '验收', status: 'pending' }] } }, undefined, spyNext({ kind: 'accept' }).next);
+
+  // 第一次只建基线，不应报"未同步"（账本之前的历史不算）。
+  const first = context.text({ agent: LEAD });
+  assert.ok(first.includes('任务板'), '应当给出任务板摘要');
+  assert.ok(!first.includes('⚠️'), `基线不该报未同步：${first}`);
+
+  // 队友把 task-1 做完 → 下一次求值必须报"计划清单没更新"。
+  agentTeams.tasks = [
+    { id: 'task-1', status: 'completed', subject: '实现', ownerName: 'browser-ops' },
+    { id: 'task-2', status: 'pending', subject: '验收' },
+  ];
+  const second = context.text({ agent: LEAD });
+  assert.ok(second.includes('⚠️'), `结算后应当出现未同步提示：${second}`);
+  assert.ok(second.includes('todo_write'), '提示里应给出纠正动作');
+  assert.ok(second.includes('task-1'), '提示里应点名未同步的任务');
+});
+
+test('post-execute 记录 todo_write 之后，看板不再报未同步', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress', subject: '实现' }] });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const postExecute = listenerOf(record, 'tools/post-execute');
+
+  context.text({ agent: LEAD }); // 建基线
+  agentTeams.tasks = [{ id: 'task-1', status: 'completed', subject: '实现' }];
+  assert.ok(context.text({ agent: LEAD }).includes('⚠️'));
+
+  // 指挥者调 todo_write 把清单同步掉。
+  const { next } = spyNext({ kind: 'accept' });
+  postExecute({ name: 'todo_write', agent: LEAD, arguments: { todos: [{ content: '实现', status: 'completed' }] } }, undefined, next);
+  const after = context.text({ agent: LEAD });
+  assert.ok(!after.includes('⚠️'), `同步后不应再报：${after}`);
+  assert.ok(after.includes('计划清单 1/1 已完成'), after);
+});
+
+test('post-execute 只记录指挥者自己的 todo_write，teammate 的不记', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress' }] });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const postExecute = listenerOf(record, 'tools/post-execute');
+
+  context.text({ agent: LEAD });
+  agentTeams.tasks = [{ id: 'task-1', status: 'completed' }];
+  const { next } = spyNext({ kind: 'accept' });
+  postExecute({ name: 'todo_write', agent: TEAMMATE, arguments: { todos: [{ content: '子代理自己的清单', status: 'completed' }] } }, undefined, next);
+  const text = context.text({ agent: LEAD });
+  assert.ok(text.includes('计划清单：未建立'), `teammate 的清单不该影响指挥者看板：${text}`);
+});
+
+test('同一步里"先结算、再写清单"不会被误报成未同步', () => {
+  // 模型经常在一步里连发两个工具：team_task_update(complete) + todo_write。
+  // 任务板变化要等下一次求值才被账本观测到，如果只比 epoch，这次已经同步好的写入
+  // 会被误判成"清单落后于结算"，然后白提醒一轮。
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress' }] });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const postExecute = listenerOf(record, 'tools/post-execute');
+
+  context.text({ agent: LEAD }); // 基线：in_progress
+  // 同一步：先结算，再写清单。
+  agentTeams.tasks = [{ id: 'task-1', status: 'completed' }];
+  postExecute({ name: 'todo_write', agent: LEAD, arguments: { todos: [{ content: '实现', status: 'completed' }] } }, undefined, spyNext({ kind: 'accept' }).next);
+
+  const text = context.text({ agent: LEAD });
+  assert.ok(!text.includes('⚠️'), `同一步内已同步，不该再提醒：${text}`);
+});
+
+test('回合结束兜底：未同步时注入一次，同一回合不重复', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress' }] });
+  const { record } = boot({ agentTeams });
+  const stop = listenerOf(record, 'agent/turn-stopping');
+  const agent = injectableLead();
+  const context = syncContext(record);
+  const postExecute = listenerOf(record, 'tools/post-execute');
+
+  // 规划阶段先写清单，再建基线（第一次观测）。
+  postExecute({ name: 'todo_write', agent, arguments: { todos: [{ content: '实现', status: 'in_progress' }] } }, undefined, spyNext({ kind: 'accept' }).next);
+  context.text({ agent });
+  agentTeams.tasks = [{ id: 'task-1', status: 'completed' }];
+  context.text({ agent }); // 观测到结算 → 账本里出现未同步项
+
+  stop({ agent, turn: 3, signal: { aborted: false } });
+  assert.equal(agent.injected.length, 1, '应当注入一次');
+  const message = agent.injected[0];
+  assert.equal(message.role, 'user');
+  assert.notEqual(message.source.kind, 'user', '不能冒充用户输入');
+  const text = message.content.map((block) => block.text ?? '').join('');
+  assert.ok(text.includes('结算同步'), text);
+  assert.ok(text.includes('task-1'), text);
+  assert.ok(text.includes('不要重复刚才的报告'), '要说明不要重复报告');
+
+  // 同一回合再结束一次：不重复注入（否则可能死循环）。
+  stop({ agent, turn: 3, signal: { aborted: false } });
+  assert.equal(agent.injected.length, 1);
+
+  // 新回合但已同步（清单写了）→ 不注入。
+  agent.injected.length = 0;
+  postExecute({ name: 'todo_write', agent, arguments: { todos: [{ content: '实现', status: 'completed' }] } }, undefined, spyNext({ kind: 'accept' }).next);
+  stop({ agent, turn: 4, signal: { aborted: false } });
+  assert.equal(agent.injected.length, 0, '同步完成后的新回合不该再注入');
+});
+
+test('回合结束兜底不碰 teammate / 已中断的回合 / 没有团队的状态', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress' }] });
+  const { record } = boot({ agentTeams });
+  const stop = listenerOf(record, 'agent/turn-stopping');
+  const context = syncContext(record);
+  const agent = injectableLead();
+
+  context.text({ agent });
+  agentTeams.tasks = [{ id: 'task-1', status: 'completed' }];
+  context.text({ agent });
+
+  stop({ agent: TEAMMATE, turn: 1, signal: { aborted: false } });
+  stop({ agent, turn: 2, signal: { aborted: true } });
+  stop({ agent: undefined, turn: 3 });
+  assert.equal(agent.injected.length, 0);
+
+  // 没有 agentTeams 服务的部署里连看板都没有，兜底自然也不该注入。
+  const bare = boot();
+  const bareAgent = injectableLead();
+  listenerOf(bare.record, 'agent/turn-stopping')({ agent: bareAgent, turn: 1, signal: { aborted: false } });
+  assert.equal(bareAgent.injected.length, 0);
+});
+
+test('syncGuard: false 时看板与兜底一起关掉（协议仍要求同步）', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress' }] });
+  const settings = makeSettings({ options: { syncGuard: false } });
+  const { record } = boot({ agentTeams, settings });
+  const context = syncContext(record);
+  const agent = injectableLead();
+
+  context.text({ agent });
+  agentTeams.tasks = [{ id: 'task-1', status: 'completed' }];
+  assert.equal(context.text({ agent }), '');
+  listenerOf(record, 'agent/turn-stopping')({ agent, turn: 1, signal: { aborted: false } });
+  assert.equal(agent.injected.length, 0);
+  // 协议里仍写着结算同步的要求 —— 关掉的只是"看板/兜底"这两样确定性设施。
+  assert.ok(record.sections[0].text({ agent: LEAD }).includes('结算同步'));
+});
+
+test('看板里带上团队状态（teammate 的 running/inactive），但过滤掉 Lead 自己', () => {
+  const agentTeams = makeAgentTeams({
+    tasks: [{ id: 'task-1', status: 'completed' }],
+    members: [
+      { id: 'lead', name: 'lead', role: 'lead', status: 'running' },
+      { id: 'm1', name: 'browser-ops', role: 'teammate', status: 'inactive' },
+      { id: 'm2', name: 'expert-knowledge', role: 'teammate', status: 'running' },
+    ],
+  });
+  const { record } = boot({ agentTeams });
+  const text = syncContext(record).text({ agent: LEAD });
+  assert.ok(text.includes('browser-ops inactive'), text);
+  assert.ok(text.includes('expert-knowledge running'), text);
+  assert.ok(!text.includes('lead running'), `不该把 Lead 自己算进团队状态：${text}`);
 });
 
 // ------------------------------------------------------------ specialist ---

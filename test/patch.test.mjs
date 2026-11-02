@@ -144,6 +144,7 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'confirmPlan',
     'escalateOnConflict',
     'maxTeammates',
+    'syncGuard',
     'blockedTools',
     'registerSkill',
     'maxSpecialists',

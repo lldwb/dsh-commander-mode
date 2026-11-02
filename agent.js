@@ -35,12 +35,29 @@
  * waterfall 确定性地拒绝 `write` / `edit` / `pwsh` / `bash` / `job_kill` /
  * `plugin_manager`，拒绝理由就是纠正指令）。
  *
+ * ## 结算同步（0.4.0）
+ *
+ * 「任务完成了但任务板 / 计划清单 / 团队状态没同步」是长会话里最贵的一种失误：用户看到的
+ * 进度是过期的。这里用两条**确定性**通道兜住，而不是只靠协议：
+ *
+ * - `systemPrompt.context`：每轮运行时上下文里的「指挥者·同步看板」，给出任务板 / 计划清单 /
+ *   团队状态的实时快照，有未同步项时带纠正指令（**事前**）。
+ * - `agent/turn-stopping`：回合即将结束仍有未同步项时注入一次提醒（**事后**，每回合一次）。
+ *
+ * 两条都只对指挥者生效；teammate 通过 `isDelegatedAgent` 排除。逻辑在 `lib/sync.js`。
+ *
+ * 同样是为了 teammate：preset scope 是共享的，所以在这个 scope 上注册的 prompt section
+ * 也会进 teammate 的系统提示（实测 0.3.x 就是这样 —— 执行者被灌了整份"你不执行操作"）。
+ * 0.4.0 起 section 的 text 按 agent 判定，子级一律返回空串：既省 token，也不再和它们的人设打架。
+ *
  * 为什么不把工具从 preset 里裁掉：队友通过 `agentPresets.composeFrom()` 加入**父会话的
  * 同一个 preset scope**，裁剪会连它们一起废掉（per-child 的工具限制只能收紧、不能扩展）。
  * 而 specialist 走**独立 preset**（`lib/specialists.js`），根本看不到指挥者协议。
  *
  * @module dsh-commander-mode/agent
  */
+
+import { randomUUID } from 'node:crypto';
 
 import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluatePreExecute, isDelegatedAgent } from './lib/guard.js';
 import { resolveConfig } from './lib/config.js';
@@ -52,6 +69,16 @@ import {
   renderModeOpening,
 } from './lib/protocol.js';
 import { installSpecialist } from './lib/specialists.js';
+import {
+  SYNC_CONTEXT_NAME,
+  SYNC_CONTEXT_ORDER,
+  buildSyncNudge,
+  createSyncLedger,
+  evaluateSync,
+  recordBoard,
+  recordPlan,
+  renderSyncBoard,
+} from './lib/sync.js';
 
 /** Cordis 插件名（Loader 诊断用）。 */
 export const name = 'commander-mode-agent';
@@ -118,17 +145,129 @@ export function apply(ctx) {
    */
   let installedRoster = [];
 
+  /**
+   * 取一个可选服务（可能还没被别的行提供，也可能这个部署里根本没有）。
+   *
+   * @param {string} name - 服务名。
+   * @returns {object | undefined} 服务实例。
+   */
+  const getService = (name) => {
+    try {
+      return typeof ctx.get === 'function' ? ctx.get(name) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  // -------------------------------------------------- 结算同步（看板 + 兜底） ---
+
+  //
+  // 为什么需要这一块：长会话里任务板一直在动，而计划清单没人更新。实测一次三小时会话
+  // （1111 个事件、3 个子代理）：`todo_write` 只调了 5 次，最后一次停在 +61 分钟，之后
+  // 100 分钟里任务板完成/删除了 4 个任务，清单一次没动，直到用户亲口问「进度怎么不同步」。
+  //
+  // 协议只能降低概率，所以这里补两道确定性的：
+  //
+  // 1. **每轮运行时上下文**（`systemPrompt.context`）——把任务板 / 计划清单 / 团队状态
+  //    的实时快照放在模型每一步都能读到的地方；有未同步项时直接给出纠正指令。这是"事前"。
+  // 2. **回合结束兜底**（`agent/turn-stopping`）——回合要结束了还有未同步项时注入一条提醒，
+  //    让模型在同一个回合里补完。这是"事后"。
+  //
+  // 两者都**只对指挥者本人**生效：teammate 走同一个 preset scope（`composeFrom`），所以
+  // 必须用 `isDelegatedAgent` 区分，否则会给执行者注入"你该去同步任务板"的噪声。
+
+  /** 每个 agent 一份同步账本；agent 是活对象，会话结束自然回收。 */
+  const ledgers = new WeakMap();
+
+  /**
+   * 取（或创建）某个 agent 的同步账本。
+   *
+   * @param {object} agent - 活着的 agent。
+   * @returns {object} 账本。
+   */
+  const ledgerOf = (agent) => {
+    let ledger = ledgers.get(agent);
+    if (ledger === undefined) {
+      ledger = createSyncLedger();
+      ledgers.set(agent, ledger);
+    }
+    return ledger;
+  };
+
+  /** 已经提醒过的回合（`sessionId:turn`）；只需要覆盖还可能在收尾的轮次。 */
+  const nudgedTurns = new Set();
+
+  /**
+   * 读团队视图（任务板 + 成员）。
+   *
+   * 读不到一律返回 `undefined`（"未知"），让同步判定跳过而不是误报：
+   * 这个部署可能根本没装「智能体团队」，或者当前 agent 还不是 Team 成员。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {{ tasks: object[], members: object[] } | undefined} 团队视图。
+   */
+  const readTeam = (agent) => {
+    const service = getService('agentTeams');
+    if (service === undefined) return undefined;
+    try {
+      // `tryMembership` 对"不是 Team 成员"返回 undefined；`listTasks` 在非成员上会抛。
+      if (typeof service.tryMembership === 'function' && service.tryMembership(agent) === undefined) return undefined;
+      const tasks = typeof service.listTasks === 'function' ? service.listTasks(agent) : [];
+      const members = typeof service.listMembers === 'function' ? service.listMembers(agent) : [];
+      return {
+        tasks: Array.isArray(tasks) ? tasks : [],
+        // Lead 自己也会出现在成员列表里；看板只关心执行者的状态。
+        members: Array.isArray(members) ? members.filter((member) => member?.role !== 'lead') : [],
+      };
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 读取团队状态失败（按未知处理）：%o', error);
+      return undefined;
+    }
+  };
+
+  /**
+   * 同步能力的运行时开关：配置开启**且**这个部署里真有团队服务。
+   *
+   * @returns {boolean} 是否提供「指挥者·同步看板」。
+   */
+  const syncBoardEnabled = () => {
+    try {
+      return readOptions().syncGuard !== false && getService('agentTeams') !== undefined;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * 观测一次同步状态：读团队视图 → 更新账本 → 给出视图。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {{ view: object, members: object[] }} 视图与成员（读不到团队时 members 为空）。
+   */
+  const inspectSync = (agent) => {
+    const ledger = ledgerOf(agent);
+    const team = readTeam(agent);
+    if (team !== undefined) recordBoard(ledger, team.tasks);
+    return { view: evaluateSync(ledger), members: team?.members ?? [] };
+  };
+
   // ---------------------------------------------------------------- 提示词 ---
 
   ctx.systemPrompt.section({
     name: SECTION_NAME,
     order: SECTION_ORDER,
-    text: () => {
+    text: (context) => {
       try {
+        // 0.4.0 修复：teammate / specialist 与指挥者共用同一个 preset scope，也会被问到
+        // 这份 section。此前它们会收到完整的「指挥者模式」协议（"你不执行操作"），
+        // 既浪费每个请求约 4 KB，又和它们自己的执行者人设冲突。子级一律返回空串。
+        const agent = context?.agent;
+        if (agent !== undefined && isDelegatedAgent(agent)) return '';
         return renderModeOpening({
           ...readOptions(),
           specialists: installedRoster,
           hasSpecialistTools: installedRoster.length > 0,
+          syncBoard: syncBoardEnabled(),
         });
       } catch (error) {
         // prompt section 抛错会让该会话的每一步都失败，所以渲染失败就退化成
@@ -137,6 +276,93 @@ export function apply(ctx) {
         return '';
       }
     },
+  });
+
+  // ------------------------------------------------------------ 同步看板 ---
+
+  // `systemPrompt.context` 是**每轮**下发的运行时上下文（与用户请求同一条消息），
+  // 实测比 section 的遵从率高得多；这里用它把"当前有没有未同步项"放在模型眼前。
+  if (typeof ctx.systemPrompt.context === 'function') {
+    ctx.systemPrompt.context({
+      name: SYNC_CONTEXT_NAME,
+      order: SYNC_CONTEXT_ORDER,
+      text: (context) => {
+        try {
+          const agent = context?.agent;
+          if (agent === undefined || isDelegatedAgent(agent)) return '';
+          if (!syncBoardEnabled()) return '';
+          const { view, members } = inspectSync(agent);
+          return renderSyncBoard(view, members);
+        } catch (error) {
+          // 运行时上下文抛错会让每个请求都失败；读不到就当没有可报的。
+          ctx.logger?.warn?.('commander-mode: 渲染同步看板失败：%o', error);
+          return '';
+        }
+      },
+    });
+  }
+
+  // 计划清单只在 `todo_write` 成功之后才算更新（整表替换语义）。记它的作用有两个：
+  // ① 判断"任务结算之后计划清单有没有更新过"；② 看板里给出清单的完成进度。
+  ctx.on('tools/post-execute', (exec, _result, next) => {
+    try {
+      if (exec?.name === 'todo_write') {
+        const agent = exec.agent;
+        if (agent !== undefined && !isDelegatedAgent(agent) && readOptions().syncGuard !== false) {
+          const todos = exec.arguments?.todos;
+          if (Array.isArray(todos)) {
+            const ledger = ledgerOf(agent);
+            // ⚠️ 顺序陷阱：模型可能在**同一步**里"先 task_update 结算、再 todo_write 同步"。
+            // 任务板的变化要等到下一次求值（看板/兜底）才会被账本观测到；如果只在那一刻
+            // 算 epoch，这次已经完全同步的写入会被误判成"清单落后于结算"。
+            // 所以写清单时先把**当时真实的板**记成新基线：它代表"这次同步之后"的状态。
+            const team = readTeam(agent);
+            if (team !== undefined) recordBoard(ledger, team.tasks);
+            recordPlan(ledger, todos);
+          }
+        }
+      }
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 记录计划清单失败：%o', error);
+    }
+    return typeof next === 'function' ? next() : undefined;
+  });
+
+  // 回合要结束了、结算却还没同步 → 在同一个回合里补一次提醒（每回合最多一次）。
+  // 这是"事后"的兜底：正常情况下运行时时上下文里的同步看板已经让模型在回复前就同步完。
+  ctx.on('agent/turn-stopping', (payload) => {
+    try {
+      const agent = payload?.agent;
+      if (agent === undefined || isDelegatedAgent(agent)) return;
+      if (payload?.signal?.aborted === true) return;
+      if (readOptions().syncGuard === false) return;
+      if (!syncBoardEnabled()) return;
+      if (typeof agent.inject !== 'function') return;
+
+      const turn = payload?.turn;
+      const key = `${String(agent.session?.id ?? agent.id)}:${String(turn)}`;
+      if (nudgedTurns.has(key)) return; // 同一回合只兜一次，否则会死循环
+
+      const { view } = inspectSync(agent);
+      const text = buildSyncNudge(view);
+      if (text === '') return;
+
+      // 账本只需要覆盖那些还可能正在收尾的轮次。
+      if (nudgedTurns.size > 256) nudgedTurns.clear();
+      nudgedTurns.add(key);
+
+      agent.inject({
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text }],
+        // 不是 `kind: 'user'`：这是插件提醒，不是用户发言（技能手势扫描只读真正的用户输入）。
+        source: { kind: 'dsh-commander-mode', form: 'notice', summary: '结算同步提醒' },
+      });
+      ctx.logger?.info?.('commander-mode: 结算未同步，已注入一次兜底提醒（turn=%s）', String(turn));
+    } catch (error) {
+      // 兜底钩子自己出错绝不能把回合弄挂 —— 最坏情况是少一次提醒。
+      ctx.logger?.warn?.('commander-mode: 结算同步兜底失败：%o', error);
+    }
   });
 
   // ---------------------------------------------------------------- 门禁 ---

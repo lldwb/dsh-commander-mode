@@ -376,6 +376,65 @@ test('标准流程的派发/监控/收尾步与新语义一致', () => {
   assert.ok(FLOW_STEPS[5].detail.includes('必需 child 未结算'));
 });
 
+// ---------------------------------------------------------------- 结算同步 ---
+
+test('紧凑版把「结算同步」写成每轮都在的硬要求', () => {
+  // 2026-11-02 的事故：任务板一直在动，计划清单停在 +61 分钟，直到用户亲口问"同步更新任务"。
+  // 所以"结算 → 三同步"必须是 section 的一部分，而不是 skill 里的一句建议。
+  const section = renderCommanderSection({ syncBoard: true });
+  assert.ok(section.includes('结算同步'), section);
+  assert.ok(section.includes('三同步'), section);
+});
+
+test('结算同步的四条都在：三同步 / 看板权威 / 收尾三查 / 里程碑就同步', () => {
+  const section = renderCommanderSection({ syncBoard: true });
+  for (const phrase of ['每次结算都做三同步', '看板是权威', '收尾三查', '里程碑就同步']) {
+    assert.ok(section.includes(phrase), `结算同步缺少：${phrase}`);
+  }
+  // 三同步必须点名三样：任务板、计划清单、团队状态。
+  for (const phrase of ['team_task_update', 'todo_write', '团队状态']) {
+    assert.ok(section.includes(phrase), `三同步缺少：${phrase}`);
+  }
+  // 收尾三查要给出可判定的三个条件。
+  assert.ok(section.includes('pending'), '收尾三查要提到未结算状态');
+});
+
+test('没有看板的部署里，看板那条换成"看一次，不要轮询"', () => {
+  const without = renderCommanderSection({ syncBoard: false });
+  // 不点名"看板已给出状态"（这个部署里没有），但仍要求用一次 list_agents。
+  assert.ok(without.includes('没有实时看板可用时'), without);
+  assert.ok(without.includes('list_agents'), without);
+  assert.ok(without.includes('不要轮询'), without);
+  // 有看板时才写"看板是权威"。
+  assert.ok(!without.includes('看板是权威'), '没有看板时不能声称看板是权威');
+  assert.ok(renderCommanderSection({ syncBoard: true }).includes('看板是权威'));
+});
+test('a2a 效率的四条都写进紧凑版', () => {
+  const section = renderCommanderSection();
+  for (const phrase of ['派活一次写全', '先约定回报协议', '超时不是事件', '回执即成功']) {
+    assert.ok(section.includes(phrase), `a2a 效率缺少：${phrase}`);
+  }
+  // 必须给出可执行的动作，而不是抽象要求。
+  for (const phrase of ['连续跑到完成', 'list_agents', 'team_task_list', 'send_message']) {
+    assert.ok(section.includes(phrase), `a2a 效率缺少事实：${phrase}`);
+  }
+});
+
+test('长文给出结算同步与 a2a 效率的完整说明（含事故与数字）', () => {
+  for (const phrase of ['结算同步', '三同步', '看板是权威', '收尾三查', 'a2a 效率', '超时不是事件', '回执即成功']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少：${phrase}`);
+  }
+  // 事故数字是这条纪律的依据，别在改文案时丢掉。
+  assert.ok(COMMANDER_PROTOCOL.includes('1111'), '长文应写明事故规模');
+  assert.ok(COMMANDER_PROTOCOL.includes('5 次'), '长文应写明 todo_write 只调了 5 次');
+});
+
+test('标准流程的监控/收尾步与同步语义一致，且不再教轮询', () => {
+  assert.ok(FLOW_STEPS[4].detail.includes('同步看板'), FLOW_STEPS[4].detail);
+  assert.ok(FLOW_STEPS[4].detail.includes('别轮询'), FLOW_STEPS[4].detail);
+  assert.ok(FLOW_STEPS[5].detail.includes('三查'), FLOW_STEPS[5].detail);
+});
+
 // ---------------------------------------------------------------- 长度与兼容 ---
 
 test('紧凑版长度受控：每轮注入，必须短于长文', () => {
