@@ -20,12 +20,17 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   （`spawn_teammate` + `team_task_*` + `send_message`）；一次性单点任务才用 `subagent_<id>`。
   看板会显示**派发通道配比**并点名**孤儿任务**（没人认领 / 主人已停手），防止"重启后队友没了
   就退化成只用一次性 specialist、任务板留下 6 项没收尾"。
+- **工单与计划授权（0.6.0）**：每一件被派出去的活都挂一张**工单**（`commander_ticket_*`），
+  派发前必须有用户确认的**计划授权**（`ask_user_question` 的固定问题 id / 选项）。
+  没有授权或不带工单的派发会被**确定性拒绝**；每轮看板显示「**指挥者·工单看板**」——
+  计划授权状态、进行中工单、待验收 / 受阻 / 停滞 / 等你回答的项与下一步动作。
+  账本落在 `<DSH_HOME>/commander/<profile>.json`（原子写、损坏自动备份、重启不丢）。
 
 ```text
 30 秒上手
 1) 插件页安装本包，重启桌面版
 2) 新建会话，模式菜单选「指挥者模式」
-3) 把任务丢给它：它会先只读侦察 → 给你计划 → 你确认 → 派给专家 → 汇总验收
+3) 把任务丢给它：它会先只读侦察 → 给你计划 → 你确认 → 建工单 → 派给专家 → 汇总验收
    （想调专家？设置 → 插件 → 指挥者专家名册：增删、改定位、绑模型、一键恢复预置）
 ```
 
@@ -129,6 +134,56 @@ token 又和它自己的执行者人设冲突。0.4.0 起 prompt section 按 age
 
 宽限期 10 分钟是刻意留的：规划阶段一次建 5–15 个任务是常态，过早报警只会有噪声；
 而那次会话里的孤儿任务躺了**两天**，10 分钟足够区分。
+
+### 工单、计划授权与注意力看板（0.6.0）
+
+0.4/0.5 的看板只回答"任务板 / 计划清单同步了没"，不回答"**每一件被派出去的活**现在在哪一步、
+卡在谁身上、要不要人管"。0.6.0 借鉴 DeepSeek Harness 团队 Super-agent 原型的
+Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去掉 Source/Thread/Eval），
+把"派活"从一段文本变成**有状态、可审计、可恢复**的工单。
+
+**模型可见的闭环**（全部写进协议，且大部门禁是代码）：
+
+1. **计划确认有固定格式**：必须用 `ask_user_question`，问题 id 精确写成 `commander-plan`，
+   选项第一项 label 精确写成「确认，开始执行」，第二项「需要调整」。只有选中第一项
+   （或自定义答案以"确认"开头）才算拿到**计划授权（Mandate）**。
+2. **先建工单再派活**：计划确认后，每一项要交付的活用 `commander_ticket_create` 建工单
+   （`title` + `acceptance`，可选 `intent` / `scope`）。一张工单可多次派发（实现 / 返工 / 审查）。
+3. **每次派发都带工单**：specialist 工具传 `ticket` 参数；Team 的 `spawn_teammate` 在
+   prompt 首行写 `[ticket:t-N]`。
+4. **回报必须结构化**：执行者最终答复最后一行写
+   `STATUS: progress|waiting|ready|blocked|failed|dropped`；指挥者核对后用
+   `commander_ticket_update` 更新工单（`blocked`/`failed` 时用 `question` 写清要用户决定什么）。
+5. **验收后结算**：`commander_ticket_update` `status=done`（或 `cancelled` 写 `reason`）。
+
+**确定性门禁**（`tools/pre-execute`，不是提示词）：
+
+- 没有有效计划授权就派发新工作 → **拒绝**，理由给出固定问题 id / 选项与下一步；
+- 有授权但不带工单 → **拒绝**，列出当前会话的工单并提示先建；
+- 工单不存在 / 已结束 / 不属于本会话 / 建立在旧版授权下 → **拒绝**；
+- 子代理自己派发、账本服务缺失、身份读不到 → **放行**（宁可漏拦，不可拦死，与执行门禁同一原则）。
+
+**工单看板**（每轮运行时上下文，独立于同步看板）：
+
+```text
+【指挥者·工单看板】计划授权：已确认（<计划摘要>）；工单 2 项进行中：t-2[review] …、t-1[working] …
+⚠️ t-2 待验收：… → 只读核对产物与验收判据；通过就 commander_ticket_update 标记 done，不通过就补派返工。
+```
+
+- 优先级：等你回答 > 受阻 > 失败 > 待验收 > 停滞 > 进行中；最多列 6 项；
+- **安静默认**：没有工单且没有授权时不产生任何文本；
+- **停滞**是代理指标：派发后超过 `ticketStallMs`（默认 10 分钟）且没有新回报 → 提示"先只读核对，
+  再决定问用户 / 补派 / 标记受阻"，**不自动重派或结束**（Super-agent 也承认任务层巡检最难）。
+
+**账本**：
+
+- 位置：默认 `<DSH_HOME>/commander/<profile>.json`；配置 `stateDir` 可改（相对路径以 `DSH_HOME`
+  为基准；`.json` 结尾视为文件，否则视为目录）；
+- 原子写（临时文件 + rename）、损坏 JSON 自动备份为 `*.corrupt-<时间戳>` 后用空账本启动、
+  按会话隔离、最多保留 `maxTickets` 张（超出裁剪最老的已结束工单）；
+- 只存工单/授权/派发/回报这类状态事实；**不存**会话正文或子代理输出（以 DSH 会话日志为准）；
+- 写盘失败降级为"内存继续 + warning"，绝不把工具调用弄挂；
+- 关掉 `ledger: false` 时退化为 0.5.0 行为（没有工单工具、没有授权门禁、只有同步看板与协议）。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -317,12 +372,18 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
 | `blockedTools` | `write, edit, pwsh, bash, job_kill, plugin_manager` | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
+| `ledger` | `true` | 工单账本（`commander_ticket_*` + 看板 + 计划授权门禁）；关掉退化为 0.5.0 行为 |
+| `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
+| `requireMandate` | `true` | 派发新工作前必须有用户确认的计划授权（`commander-plan`） |
+| `requireTicket` | `true` | 每次派发必须带工单（specialist 的 `ticket` 参数 / Team 的 `[ticket:t-N]`） |
+| `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
+| `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
 | `maxSpecialists` | `20` | 名册条数上限（每项 = 一个 preset + 一个工具） |
 
 只有 `specialists` 是 volatile：设置页保存后 Loader 热更新运行中的引用（不重载行），
 配置行通过 `commanderSettings` 服务广播，模式行据此重建 specialist preset 与工具。
-其余字段是加载期配置，改它们要改 profile patch 并重载。
+其余字段是加载期配置（含 0.6.0 的 ledger / requireMandate 等），改它们要改 profile patch 并重载。
 
 profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`，所以覆盖
 `preset-commander` 必须重述 `id` / `name` / `description` / `order` 和整个 `plugins`
@@ -357,6 +418,19 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   `subagent_<id>` / `subagent` / `subagent_fork` / `workflow` 记一次性。
   `wait_agent` / `list_agents` / `team_task_*` 不计入（它们是等待、读状态与建板，不是派活）。
   重启会重置计数（账本是进程内的），重启后第一次派发的配比从零开始。
+- **工单门禁只覆盖 DSH 工具调用（0.6.0）。** 与执行门禁同一边界：如果某个插件通过别的途径
+  派活（例如自定义工具自己起子代理），本插件的 `tools/pre-execute` 看不到。
+- **工单是"状态"不是"锁"（0.6.0）。** 工单的 `scope`（写作用域）只是提示；执行环境仍共享
+  cwd，没有 worktree / 文件锁。真正的执行隔离需要给每个工单独立 Session + 目录
+  （Worker Session），属于后续版本方向，不在 0.6.0 内。
+- **停滞只是代理指标（0.6.0）。** "派发后 N 分钟没有新回报"不等于任务没进展，也不等于失败；
+  看板只提示"先只读核对产物，再决定问用户 / 补派 / 标记受阻"，**不自动重派或结束**。
+- **账本是单进程文件（0.6.0）。** 同一 profile 下多进程写同一 `stateDir` 没有锁；正常部署只有
+  一个桌面进程，不构成问题。账本损坏时自动备份并用空账本启动，工单会"丢"（历史仍在会话日志里）。
+- **没有计划授权也能建工单（0.6.0）。** `commander_ticket_create` 不要求授权；门禁在**派发**时
+  检查。这样规划阶段可以先建工单，但"建了工单≠可以派活"。
+- **工单工具依赖配置行的账本服务（0.6.0）。** 账本初始化失败 / `ledger:false` 时工具不可用或
+  报可执行错误，模式其余部分（门禁、看板降级）仍工作。
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -378,11 +452,16 @@ node --test "test/**/*.test.mjs"
 
 | 文件 | 职责 |
 |---|---|
-| `index.js` | **配置行**（profile 顶层）：导出 `Config`、提供 `commanderSettings` 服务、关掉自动设置页 |
-| `agent.js` | **模式行**（preset 内）：协议 section、`tools/pre-execute` 门禁、skill、specialist 安装与重建 |
+| `index.js` | **配置行**（profile 顶层）：导出 `Config`、提供 `commanderSettings` / `commanderLedger` 服务、关掉自动设置页 |
+| `agent.js` | **模式行**（preset 内）：协议 section、执行门禁、派发/计划授权门禁、工单工具、skill、specialist 安装与重建 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
 | `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
+| `lib/tickets.js` | 工单状态机：六态回报 → 工单状态/阶段、停滞判定、计划授权判定、`STATUS:` 解析、工单看板渲染（纯函数） |
+| `lib/ledger.js` | 账本存储层：原子写、损坏备份、schema 清洗、路径解析 |
+| `lib/ledger-service.js` | `commanderLedger` 服务：会话隔离的工单/授权/派发/回报读写与裁剪 |
+| `lib/dispatch-gate.js` | 派发门禁：没有计划授权 / 不带工单 → 确定性拒绝；子代理/缺服务/身份不明一律放行 |
+| `lib/ticket-tools.js` | 三个工单工具（create / update / list）的 schema、执行与错误文案 |
 | `lib/guard.js` | 执行边界的纯函数：身份判别、判定、拒绝理由 |
 | `lib/config.js` | schemastery `Config`、默认值、宽容读取器 |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
@@ -413,6 +492,34 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.6.0 第七轮（工单 / 计划授权 / 注意力看板）**：
+  - **`node --test` 366/366 通过**（285 → 366，+81）：新增 `test/tickets.test.mjs`（状态迁移、
+    六态映射、停滞、计划确认、`STATUS:` 解析、看板渲染）、`test/ledger.test.mjs`（路径解析、
+    原子写回读、损坏备份、schema 清洗、会话隔离、授权生命周期、裁剪、写盘失败降级、真实文件
+    重启回读）、`test/dispatch-gate.test.mjs`（识别、放行、五类拒绝）、`test/ticket-tools.test.mjs`
+    （schema、缺账本/子代理拒绝、建单/更新/列表）；`plugin.test.mjs` 增接线用例（门禁拒绝/放行、
+    计划确认记账、`STATUS:` 回报、缺格式按 progress 记、看板、`ledger:false` 降级）；
+    `config/host/patch/protocol` 增新配置键与契约断言。
+  - **本轮的四个实现缺陷（测试先红后绿）**：① `attentionOf` 原先把"受阻"排在结构化问题之前，
+    导致"等你回答"被显示成"受阻" → 改为问题优先；② `parseReportStatus` 不容忍
+    `STATUS:**`（markdown 冒号后置）→ 修正正则；③ 派发门禁在"已有工单但不带工单"分支里没点名
+    `commander_ticket_create`，模型不知道下一步 → 补上；④ 285 例既有接线测试按"工具总数/首工具"
+    断言，被新增的工单工具打破 → 改为按 `subagent_` 前缀取 specialist 工具（合法演进）。
+  - **真实 Loader（headless 沙箱 `commander-060`）**：`devkit_sandbox_create/install/compose`
+    三行（`commander-mode` / `preset-commander` / `commander-mode-agent`）与 6 个新配置键都
+    出现在合成树里；`devkit_sandbox_run` 的 stderr 原文
+    `preset-commander … pending (waiting for service: agentPresets)` —— **headless 模板没有
+    `agentPresets`，preset 类插件在该模板无法激活**（与 0.5.0 记录的限制一致，不是 0.6.0 回归）；
+    该会话里也没有工单工具（预期）。
+  - **真实 Loader（web 沙箱 `commander-060-web`）**：client 半进入页面清单；
+    `POST /api/agentPresets/list` 返回 `{id:"commander", name:"指挥者模式", order:7}`；
+    选中模式后 `POST /api/session/list` 的 projection 为 `agentPreset:"commander"`、
+    `agentAvailable:true`；`POST /api/settings/describe` 里有 `commander-mode` 命名空间与
+    6 位预置专家 → **preset 注册、模式绑定、配置命名空间在真实 web Loader 里成立**。
+  - **未验证**：真实模式里"模型自然调用 `commander_ticket_*` / 被门禁拒绝后改走确认流程"的
+    端到端。web 沙箱 UI 没有模型凭据（模型目录为空，页面显示"暂无可用模型"），无法发起模型
+    回合；桌面版手动会话仍未跑。与 0.5.0 的未验证项同类，**不当作已验证**。
+  - 两个沙箱已 `devkit_sandbox_destroy`，零残留。
 - **0.5.0 第六轮（Team 优先 / 通道配比 / 孤儿任务）**：
   - **`node --test` 285/285 通过**：新增通道配比（`recordDelegation` / `channel-drift`）、
     孤儿任务（`board-stale-open`：宽限期、依赖未满足、主人 running vs inactive、结算后消失）、
@@ -508,6 +615,19 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.6.0** —— 借鉴 DeepSeek Harness 团队 Super-agent 原型的 Ticket / Mandate / Assignment /
+  Report 形状（裁剪到指挥者场景），把"派活"变成有状态、可审计、可恢复的工单：① 新增
+  `commanderLedger` 服务与账本（`lib/{ledger,ledger-service}.js`，默认
+  `<DSH_HOME>/commander/<profile>.json`，原子写、损坏备份、会话隔离、重启不丢）；② 新增工单
+  状态机与看板（`lib/tickets.js`：六态回报 → 状态/阶段、停滞判定、计划确认、`STATUS:` 解析、
+  「指挥者·工单看板」）；③ 新增三个工具（`commander_ticket_create/update/list`）与**确定性派发
+  门禁**（`lib/dispatch-gate.js`：没有计划授权 / 不带工单 / 旧授权工单 → 拒绝）；④ 协议新增
+  「工单与计划授权」六条与固定确认格式（问题 id `commander-plan`、选项「确认，开始执行」）；
+  ⑤ 新增配置 `ledger` / `stateDir` / `requireMandate` / `requireTicket` / `ticketStallMs` /
+  `maxTickets`（默认全开，`ledger:false` 可回退 0.5.0 行为）；⑥ 测试 285 → 366，新增
+  tickets/ledger/dispatch-gate/ticket-tools 四个测试文件；⑦ headless（host 行/配置）与 web
+  （preset 注册/模式绑定/设置命名空间）真实 Loader 回归，未验证"模型自然调用"的端到端
+  （web 沙箱无模型凭据，见「验证过什么」）。
 - **0.5.0** —— 解决「Agent Teams 用得太少」（依据 `session-7064696b`：Team 工具调用
   118 → 13 → 0 的漂移曲线，任务板最终 6/14 未结算）：① **决策点提示** —— 每个
   `subagent_<id>` 的工具描述写明"一次性通道，多阶段/长任务改用 Team"；② 协议新增

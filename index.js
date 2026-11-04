@@ -27,10 +27,18 @@
  *
  * 它只装配置与服务，不注册工具、不注入 prompt —— 所以不会把能力泄漏到别的模式里。
  *
+ * ## 0.6.0：工单账本的宿主
+ *
+ * 这一行还是 `commanderLedger` 服务的宿主：工单要跨会话、跨回合、跨重启存在，而 preset 子行
+ * 只在某个 agent 挂载期间存在。账本文件默认 `<DSH_HOME>/commander/<profile>.json`，原子写、
+ * 损坏自动备份；初始化失败只降级（模式退化为无账本），绝不让插件起不来。
+ *
  * @module dsh-commander-mode
  */
 
-import { Config } from './lib/config.js';
+import { Config, resolveConfig } from './lib/config.js';
+import { resolveLedgerFile } from './lib/ledger.js';
+import { CommanderLedger, LEDGER_SERVICE_NAME } from './lib/ledger-service.js';
 import { hidePresetsFromCatalog, isSpecialistPresetId } from './lib/preset-catalog.js';
 import { provideSettings } from './lib/settings-service.js';
 
@@ -59,6 +67,30 @@ export const inject = [];
 export function apply(ctx, config) {
   // ① 发布配置服务：模式行靠它读 option / 名册，并订阅 volatile 变化。
   provideSettings(ctx, config);
+
+  // ①.5 发布工单账本服务（0.6.0）：模式行/工单工具靠它读写，账本是唯一写者。
+  //
+  //     为什么不放在模式行：账本要跨会话、跨回合、跨重启存在，而 preset 子行只在某个
+  //     agent 挂载期间存在；配置行是 profile 顶层、进程级常驻，是天然宿主。
+  //     写盘失败只降级（内存继续），绝不因为账本坏了让模式起不来。
+  const options = resolveConfig(config).options;
+  if (options.ledger !== false) {
+    try {
+      const file = resolveLedgerFile({ stateDir: options.stateDir });
+      const ledger = new CommanderLedger({
+        file,
+        logger: ctx.logger,
+        maxTickets: options.maxTickets,
+      });
+      const loaded = ledger.load();
+      ctx.provide(LEDGER_SERVICE_NAME, ledger);
+      for (const warning of loaded.warnings) ctx.logger?.warn?.('commander-mode: %s', warning);
+      ctx.logger?.info?.('commander-mode: 工单账本就绪（%s，%d 张工单）', file, ledger.state.tickets.length);
+    } catch (error) {
+      // 账本初始化失败：模式仍可用，只是没有工单/授权门禁（降级到 0.5 行为）。
+      ctx.logger?.warn?.('commander-mode: 工单账本初始化失败，已降级为无账本模式：%o', error);
+    }
+  }
 
   // ② 关掉自动生成的设置页：本包自带 client 半（「设置 → 插件 → 指挥者模式」）。
   //    放在可选子级里：没有 settings 服务的部署也要能跑；策略绑在插件自己的 fiber 上，

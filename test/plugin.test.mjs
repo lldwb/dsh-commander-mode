@@ -17,6 +17,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { apply, FALLBACK_OPTIONS, SECTION_NAME, SECTION_ORDER } from '../agent.js';
+import { emptyLedger } from '../lib/ledger.js';
+import { CommanderLedger } from '../lib/ledger-service.js';
+import { PLAN_CONFIRM_LABEL, PLAN_QUESTION_ID } from '../lib/tickets.js';
 import { SYNC_CONTEXT_NAME, SYNC_CONTEXT_ORDER } from '../lib/sync.js';
 
 // ---------------------------------------------------------------- 夹具 ---
@@ -41,6 +44,12 @@ function makeSettings(initial = {}) {
     maxTeammates: 4,
     blockedTools: ['write', 'edit', 'pwsh', 'bash', 'job_kill', 'plugin_manager'],
     maxSpecialists: 20,
+    ledger: true,
+    stateDir: '',
+    requireMandate: true,
+    requireTicket: true,
+    ticketStallMs: 10 * 60 * 1000,
+    maxTickets: 100,
     ...(initial.options ?? {}),
   };
   let roster = initial.specialists ?? [];
@@ -83,7 +92,7 @@ function makeSubagents(record, settlement = { output: [{ type: 'text', text: '�
  * `inject` 回调收到的子上下文带着该依赖对应的桩服务；`effect()` 立即执行回调（与 Cordis
  * 的挂载语义一致），返回的 disposer 被记录下来。
  */
-function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams } = {}) {
+function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger } = {}) {
   const record = {
     sections: [],
     contexts: [],
@@ -105,6 +114,7 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
   };
   const services = {
     ...(agentTeams === undefined ? {} : { agentTeams }),
+    ...(ledger === undefined ? {} : { commanderLedger: ledger }),
     ...(withSkills ? {
       skills: {
         register: (definition) => {
@@ -210,6 +220,11 @@ function syncContext(record) {
   const entry = record.contexts.find((item) => item.name === SYNC_CONTEXT_NAME);
   assert.ok(entry, '没有注册同步看板运行时上下文');
   return entry;
+}
+
+/** 取 specialist 工具（排除 0.6.0 的 commander_ticket_* 工单工具）。 */
+function specialistTools(record) {
+  return record.tools.filter((tool) => typeof tool.name === 'string' && tool.name.startsWith('subagent_'));
 }
 
 /** 一个 Lead agent。 */
@@ -719,7 +734,12 @@ test('空名册不注册任何 specialist preset 或工具', async () => {
   const { record } = boot();
   await flush();
   assert.equal(record.presets.length, 0);
-  assert.equal(record.tools.length, 0);
+  assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('subagent_')), []);
+  // 0.6.0：工单工具与名册无关，空名册也应注册（它们是模式自身的能力）。
+  assert.deepEqual(
+    record.tools.map((tool) => tool.name).sort(),
+    ['commander_ticket_create', 'commander_ticket_update', 'commander_tickets'],
+  );
 });
 
 test('名册里每个 specialist 注册一个 preset 与一个前台工具', async () => {
@@ -727,14 +747,14 @@ test('名册里每个 specialist 注册一个 preset 与一个前台工具', asy
   await flush();
 
   assert.equal(record.presets.length, 2);
-  assert.deepEqual(record.tools.map((tool) => tool.name).sort(), ['subagent_architect', 'subagent_reviewer']);
+  assert.deepEqual(specialistTools(record).map((tool) => tool.name).sort(), ['subagent_architect', 'subagent_reviewer']);
   for (const preset of record.presets) {
     // preset 是完整组合：必须带能力行与人设行。
     assert.ok(preset.plugins.some((row) => row.name === 'dsh-commander-mode/specialist'));
     assert.ok(preset.plugins.some((row) => row.id === 'tool-fs'));
     assert.ok(!preset.plugins.some((row) => row.id === 'commander-mode-agent'), 'specialist 不能挂指挥者协议');
   }
-  for (const tool of record.tools) {
+  for (const tool of specialistTools(record)) {
     assert.equal(tool.parameters.type, 'object');
     assert.deepEqual(tool.parameters.required, ['task']);
     assert.equal(tool.output.schema.type, 'object');
@@ -745,14 +765,14 @@ test('maxSpecialists 从配置服务读，名册被截断', async () => {
   const settings = makeSettings({ specialists: ROSTER, options: { maxSpecialists: 1 } });
   const { record } = boot({ settings });
   await flush();
-  assert.equal(record.tools.length, 1);
-  assert.equal(record.tools[0].name, 'subagent_architect');
+  assert.equal(specialistTools(record).length, 1);
+  assert.equal(specialistTools(record)[0].name, 'subagent_architect');
 });
 
 test('工具执行会带 agentPreset 与模型覆盖，并返回子代理结算文本', async () => {
   const { record } = boot({ specialists: [ROSTER[1]] });
   await flush();
-  const tool = record.tools[0];
+  const tool = specialistTools(record)[0];
   assert.equal(tool.name, 'subagent_reviewer');
 
   const value = await tool.execute({ task: '审一下这个改动' }, { agent: LEAD, signal: new AbortController().signal });
@@ -789,14 +809,14 @@ test('名册更新后，旧工具执行会被拒绝（重新读名册）', async
 test('配置服务广播变化时重建 specialist', async () => {
   const { record, settings } = boot({ specialists: [...ROSTER] });
   await flush();
-  assert.deepEqual(record.tools.map((tool) => tool.name).sort(), ['subagent_architect', 'subagent_reviewer']);
+  assert.deepEqual(specialistTools(record).map((tool) => tool.name).sort(), ['subagent_architect', 'subagent_reviewer']);
 
   settings.update([{ id: 'tester', provider: 'sub2api', model: 'glm-5.3-flash', description: '负责测试' }]);
   await flush();
 
   assert.equal(record.presets.length, 1);
   assert.ok(record.presets[0].id.startsWith('commander-specialist-tester-'));
-  assert.deepEqual(record.tools.map((tool) => tool.name), ['subagent_tester'], '旧工具已释放，只留新工具');
+  assert.deepEqual(specialistTools(record).map((tool) => tool.name), ['subagent_tester'], '旧工具已释放，只留新工具');
 });
 
 test('没有 specialist 服务的部署里只退化协议，不炸', async () => {
@@ -816,4 +836,173 @@ test('协议只在 specialist 真的安装成功后才点名工具', async () =>
   const textAfter = record.sections[0].text({ agent: LEAD });
   assert.ok(textAfter.includes('subagent_architect'));
   assert.ok(textAfter.includes('subagent_reviewer'));
+});
+
+// ---------------------------------------------------------------- 0.6.0 工单 ---
+
+/** 一个内存账本（真实 CommanderLedger，测试不碰磁盘）。 */
+function memoryLedger() {
+  let state = emptyLedger();
+  const ledger = new CommanderLedger({
+    file: 'memory.json',
+    load: () => ({ state }),
+    save: (_file, next) => {
+      state = JSON.parse(JSON.stringify(next));
+    },
+  });
+  ledger.load();
+  return ledger;
+}
+
+/** 取 `tools/post-execute` 的监听器。 */
+function postExecute(record) {
+  return listenerOf(record, 'tools/post-execute');
+}
+
+/** 一张登记了计划授权与工单的账本。 */
+function ledgerWithWork() {
+  const ledger = memoryLedger();
+  ledger.recordMandate({ sessionId: 'session-lead', planHash: 'h1', planSummary: '实现 X' });
+  const ticket = ledger.createTicket({ sessionId: 'session-lead', title: '实现 X' });
+  return { ledger, ticket };
+}
+
+test('0.6.0 门禁：没有计划授权时拒绝派发，并给出固定确认格式', async () => {
+  const ledger = memoryLedger();
+  const { record } = boot({ ledger });
+  await flush();
+  const listener = preExecute(record);
+
+  const denied = await listener(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: 't-1' } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  assert.equal(denied.kind, 'deny');
+  assert.ok(denied.reason.includes(PLAN_QUESTION_ID), denied.reason);
+  assert.ok(denied.reason.includes(PLAN_CONFIRM_LABEL), denied.reason);
+});
+
+test('0.6.0 门禁：有授权 + 工单时放行，并记录 Assignment', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  const listener = preExecute(record);
+
+  const decision = await listener(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  assert.equal(decision?.kind, 'allow', '合法派发不应被拦');
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.assignments.length, 1);
+  assert.equal(stored.assignments[0].channel, 'specialist');
+});
+
+test('0.6.0 门禁：有授权但不带工单 → 拒绝并提示 commander_ticket_create', async () => {
+  const { ledger } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  const decision = await preExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X' } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  assert.equal(decision.kind, 'deny');
+  assert.match(decision.reason, /commander_ticket_create/u);
+});
+
+test('0.6.0 授权：计划确认 post-execute 记录 Mandate；未确认或跳过不记录', async () => {
+  const ledger = memoryLedger();
+  const { record } = boot({ ledger });
+  await flush();
+  const listener = postExecute(record);
+  const plan = {
+    id: PLAN_QUESTION_ID,
+    question: '按这个计划执行吗？',
+    options: [{ label: PLAN_CONFIRM_LABEL }, { label: '需要调整' }],
+  };
+
+  // 未选择"确认" → 不授权。
+  await listener(
+    { name: 'ask_user_question', agent: LEAD, arguments: { questions: [plan] } },
+    { isError: false, value: { answers: [{ id: PLAN_QUESTION_ID, selected: ['需要调整'] }] } },
+    spyNext().next,
+  );
+  assert.equal(ledger.activeMandate('session-lead'), null);
+
+  // 选中"确认，开始执行" → 记录授权。
+  await listener(
+    { name: 'ask_user_question', agent: LEAD, arguments: { questions: [plan] } },
+    { isError: false, value: { answers: [{ id: PLAN_QUESTION_ID, selected: [PLAN_CONFIRM_LABEL] }] } },
+    spyNext().next,
+  );
+  const mandate = ledger.activeMandate('session-lead');
+  assert.ok(mandate, '应记录计划授权');
+  assert.equal(mandate.planSummary, '按这个计划执行吗？');
+  assert.equal(mandate.planHash.length, 16);
+});
+
+test('0.6.0 回报：specialist 的 STATUS 行更新工单并补写 childId', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  await preExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  await postExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { isError: false, value: { childId: 'child-9', stopReason: 'completed', text: '改完了\nSTATUS: ready\n验证：单测通过' } },
+    spyNext().next,
+  );
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.status, 'review');
+  assert.equal(stored.lastReport.status, 'ready');
+  assert.equal(stored.assignments[0].ref, 'child-9');
+  assert.notEqual(stored.assignments[0].endedAt, null);
+});
+
+test('0.6.0 回报：没有 STATUS 行按 progress 记录并点名格式缺失', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  await preExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  await postExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { isError: false, value: { childId: 'child-9', text: '做了一些事' } },
+    spyNext().next,
+  );
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.status, 'working');
+  assert.match(stored.lastReport.summary, /STATUS/u);
+});
+
+test('0.6.0 看板：每轮上下文给出工单与授权；无工单时安静', async () => {
+  const empty = memoryLedger();
+  const quiet = boot({ ledger: empty });
+  await flush();
+  assert.equal(syncContext(quiet.record).text({ agent: LEAD }), '');
+
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  const text = syncContext(record).text({ agent: LEAD });
+  assert.match(text, /指挥者·工单看板/u);
+  assert.match(text, /计划授权：已确认/u);
+  assert.ok(text.includes(ticket.id), text);
+});
+
+test('ledger:false 时没有工单工具，也不拦截派发（0.5.0 行为）', async () => {
+  const ledger = memoryLedger();
+  const settings = makeSettings({ options: { ledger: false, requireMandate: false } });
+  const { record } = boot({ settings, ledger });
+  await flush();
+  assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_')), []);
+  const decision = await preExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X' } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  assert.equal(decision?.kind, 'allow');
 });

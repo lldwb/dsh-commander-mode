@@ -25,7 +25,9 @@ import {
   readFlag,
   readMaxSpecialists,
   readMaxTeammates,
+  readPositiveNumber,
   readSpecialists,
+  readString,
   resolveConfig,
 } from '../lib/config.js';
 
@@ -301,6 +303,12 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       maxTeammates: 4,
       blockedTools: [...DEFAULT_BLOCKED_TOOLS],
       maxSpecialists: 20,
+      ledger: true,
+      stateDir: '',
+      requireMandate: true,
+      requireTicket: true,
+      ticketStallMs: 600000,
+      maxTickets: 100,
     },
     warnings: [],
   });
@@ -354,6 +362,12 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     maxTeammates: 9,
     blockedTools: ['read'],
     maxSpecialists: 3,
+    ledger: true,
+    stateDir: '',
+    requireMandate: true,
+    requireTicket: true,
+    ticketStallMs: 600000,
+    maxTickets: 100,
   });
   assert.deepEqual(warnings, []);
 });
@@ -364,4 +378,50 @@ test('resolveConfig 不快照名册 —— 名册只能由 specialists.js 实时
   // 而且清洗规则会出现两份（一份在 apply 时，一份在热更新时）。
   const { options } = resolveConfig({ specialists: [specialist()] });
   assert.equal('specialists' in options, false);
+});
+
+// ---------------------------------------------------------------- 0.6.0 工单 ---
+
+test('0.6.0 默认：账本与计划授权/工单门禁默认开启', () => {
+  const config = Config();
+  assert.equal(config.ledger, true);
+  assert.equal(config.requireMandate, true);
+  assert.equal(config.requireTicket, true);
+  assert.equal(config.stateDir, '');
+  assert.equal(config.ticketStallMs, 10 * 60 * 1000);
+  assert.equal(config.maxTickets, 100);
+});
+
+test('0.6.0 读取器：ledger 可关、stateDir 去空白、阈值有下限', () => {
+  const { options } = resolveConfig({
+    ledger: false,
+    requireMandate: false,
+    requireTicket: false,
+    stateDir: '  my-ledger.json  ',
+    ticketStallMs: 1,
+    maxTickets: 0,
+  });
+  assert.equal(options.ledger, false);
+  assert.equal(options.requireMandate, false);
+  assert.equal(options.requireTicket, false);
+  assert.equal(options.stateDir, 'my-ledger.json');
+  assert.equal(options.ticketStallMs, 600_000, '低于 1 分钟回退默认（10 分钟）');
+  assert.equal(options.maxTickets, 100, '非正数回退默认');
+});
+
+test('0.6.0 读取器：readString/readPositiveNumber 宽容处理引用与异常值', () => {
+  assert.equal(readString({ get: () => ' x ' }), 'x');
+  assert.equal(readString(42, 'fallback'), 'fallback');
+  assert.equal(readPositiveNumber({ get: () => '300000' }, 1, 60_000), 300_000);
+  assert.equal(readPositiveNumber(undefined, 9, 1), 9);
+  assert.equal(readPositiveNumber(-5, 9, 1), 9);
+  assert.equal(readPositiveNumber(3.6, 9, 1), 4);
+});
+
+test('0.6.0 已知键包含新配置，未知键警告仍列出完整清单', () => {
+  for (const key of ['ledger', 'stateDir', 'requireMandate', 'requireTicket', 'ticketStallMs', 'maxTickets']) {
+    assert.ok(KNOWN_CONFIG_KEYS.includes(key), `KNOWN_CONFIG_KEYS 缺少 ${key}`);
+  }
+  const { warnings } = resolveConfig({ maxTemmates: 4 });
+  assert.match(warnings[0], /requireMandate/u);
 });

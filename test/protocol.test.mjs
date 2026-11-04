@@ -22,10 +22,12 @@ import {
   ESCALATION_TRIGGERS,
   FLOW_STEPS,
   SKILL_NAME,
+  TICKET_RULES,
   renderCommanderSection,
   renderModeOpening,
   renderSpecialistRoster,
 } from '../lib/protocol.js';
+import { PLAN_CONFIRM_LABEL, PLAN_QUESTION_ID } from '../lib/tickets.js';
 
 const SECTION = renderCommanderSection();
 const OPENING = renderModeOpening();
@@ -496,4 +498,31 @@ test('renderCommanderSection 向后兼容：不传 options 与传空对象等价
   // 名册字段不传时，旧的 Team 通道与写作用域要求完整保留。
   assert.ok(SECTION.includes('workflow'));
   assert.ok(SECTION.includes('写作用域'));
+});
+
+// ---------------------------------------------------------------- 0.6.0 工单 ---
+
+test('0.6.0：默认 section 带工单与计划授权契约（固定检查）', () => {
+  assert.ok(SECTION.includes('### 工单与计划授权（0.6.0，确定性门禁）'), SECTION);
+  for (const phrase of [PLAN_QUESTION_ID, PLAN_CONFIRM_LABEL, 'commander_ticket_create', 'commander_ticket_update', '[ticket:t-N]', 'STATUS:']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
+  }
+  for (const rule of TICKET_RULES) {
+    assert.ok(SECTION.includes(rule.title), `section 缺少规则：${rule.title}`);
+  }
+});
+
+test('0.6.0：ledger:false 时不出现工单契约或工单工具名', () => {
+  const text = renderCommanderSection({ ledger: false });
+  assert.ok(!text.includes('工单与计划授权'), '关闭账本后不应出现工单契约');
+  assert.ok(!text.includes('commander_ticket_'), '关闭账本后不应点名工单工具');
+  // 其余协议保持不变。
+  assert.ok(text.includes('绝对边界'));
+});
+
+test('0.6.0：工单规则不提到具体 specialist 工具名（空名册也安全）', () => {
+  // 与 0.2 的教训一致：协议里点名一个当前不存在的工具，模型会当场卡住。
+  const joined = TICKET_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
+  assert.ok(!/subagent_/u.test(joined), '工单规则不应出现 subagent_ 工具名');
+  assert.ok(!/specialist/iu.test(joined), '工单规则不应出现 specialist');
 });

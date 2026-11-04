@@ -46,6 +46,19 @@
  *
  * 两条都只对指挥者生效；teammate 通过 `isDelegatedAgent` 排除。逻辑在 `lib/sync.js`。
  *
+ * ## 工单与计划授权（0.6.0）
+ *
+ * 借鉴 Super-agent 原型的 Ticket / Mandate / Assignment / Report 形状，把"派活"变成有状态、
+ * 可审计的工单：
+ *
+ * - 三个工单工具（`lib/ticket-tools.js`）读写配置行提供的 `commanderLedger` 服务；
+ * - `tools/pre-execute` 在 `lib/guard.js` 的执行门禁之后再加一道**派发门禁**
+ *   （`lib/dispatch-gate.js`）：没有计划授权 / 不带工单 / 旧授权工单 → 确定性拒绝；
+ * - `tools/post-execute` 观测计划确认（记录 Mandate）、执行者 `STATUS:` 回报、派发结算；
+ * - `systemPrompt.context` 追加「指挥者·工单看板」（`lib/tickets.js` 的纯函数渲染）。
+ *
+ * 所有新增能力都可配置关闭（`ledger:false` 回退 0.5.0 行为），失败一律降级为 warning。
+ *
  * 同样是为了 teammate：preset scope 是共享的，所以在这个 scope 上注册的 prompt section
  * 也会进 teammate 的系统提示（实测 0.3.x 就是这样 —— 执行者被灌了整份"你不执行操作"）。
  * 0.4.0 起 section 的 text 按 agent 判定，子级一律返回空串：既省 token，也不再和它们的人设打架。
@@ -60,6 +73,12 @@
 import { randomUUID } from 'node:crypto';
 
 import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluatePreExecute, isDelegatedAgent } from './lib/guard.js';
+import {
+  evaluateDispatchGate,
+  isNewWorkTool,
+  sessionIdOf,
+  ticketFromDispatchArgs,
+} from './lib/dispatch-gate.js';
 import { resolveConfig } from './lib/config.js';
 import {
   COMMANDER_PROTOCOL,
@@ -68,7 +87,15 @@ import {
   SKILL_WHEN_TO_USE,
   renderModeOpening,
 } from './lib/protocol.js';
+import { buildTicketTools } from './lib/ticket-tools.js';
 import { installSpecialist } from './lib/specialists.js';
+import {
+  findPlanQuestion,
+  isPlanConfirmed,
+  parseReportStatus,
+  planHash,
+  renderTicketBoard,
+} from './lib/tickets.js';
 import {
   DELEGATION_CHANNELS,
   SYNC_CONTEXT_NAME,
@@ -278,6 +305,198 @@ export function apply(ctx) {
   };
 
   /**
+   * 取工单账本服务（配置行提供；可能因配置关闭或初始化失败而缺失）。
+   *
+   * @returns {object | undefined} `commanderLedger` 实例。
+   */
+  const getLedger = () => getService('commanderLedger');
+
+  /**
+   * 计划确认 → 记录 Mandate（0.6.0 的授权来源）。
+   *
+   * 只认**显式确认**：`ask_user_question` 里问题 id 必须是 `commander-plan`，答案的
+   * `selected` 必须精确包含「确认，开始执行」（或用户自定义答案以"确认"开头）。
+   * 其余情况（跳过、选"需要调整"、自定义否定）都不授权。
+   *
+   * @param {object} exec - `tools/post-execute` 的执行上下文。
+   * @param {object} result - 工具结果（`{ isError, value, content }`）。
+   * @returns {void}
+   */
+  const observePlanConfirmation = (exec, result) => {
+    try {
+      if (exec?.name !== 'ask_user_question' || result?.isError === true) return;
+      const question = findPlanQuestion(exec.arguments);
+      if (question === undefined) return;
+      const sessionId = sessionIdOf(exec.agent);
+      const ledger = getLedger();
+      if (sessionId === undefined || ledger === undefined) return;
+      const { confirmed } = isPlanConfirmed(question, result?.value);
+      if (!confirmed) {
+        ctx.logger?.info?.('commander-mode: 计划确认未通过（用户未选择「确认，开始执行」），不记录授权');
+        return;
+      }
+      const mandate = ledger.recordMandate({
+        sessionId,
+        planHash: planHash(question),
+        planSummary: typeof question.question === 'string' ? question.question : '',
+      });
+      ctx.logger?.info?.('commander-mode: 已记录计划授权 %s（会话 %s）', mandate.id, sessionId);
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 记录计划授权失败：%o', error);
+    }
+  };
+
+  /**
+   * 从工具返回值里尽力提取文本（不同通道返回形状不同）。
+   *
+   * @param {unknown} value - 工具返回值。
+   * @returns {string} 文本。
+   */
+  const extractText = (value) => {
+    if (typeof value === 'string') return value;
+    if (value === null || typeof value !== 'object') return '';
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.result === 'string') return value.result;
+    if (typeof value.output === 'string') return value.output;
+    if (Array.isArray(value.content)) {
+      return value.content
+        .map((block) => (block !== null && typeof block === 'object' && typeof block.text === 'string' ? block.text : ''))
+        .join('\n');
+    }
+    return '';
+  };
+
+  /**
+   * 执行者结算 → 解析 `STATUS:` 行并更新工单（0.6.0 的结构化回报）。
+   *
+   * @param {object} exec - `tools/post-execute` 的执行上下文。
+   * @param {object} result - 工具结果。
+   * @returns {void}
+   */
+  const observeWorkerReport = (exec, result) => {
+    try {
+      const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      const isSpecialist = toolName.startsWith('subagent_');
+      const isManagedSubagent = toolName === 'subagent' || toolName === 'subagent_fork' || toolName === 'workflow';
+      if (!isSpecialist && !isManagedSubagent) return;
+      if (result?.isError === true) return;
+      const ticketId = ticketFromDispatchArgs(exec.arguments);
+      if (ticketId === undefined) return;
+      const sessionId = sessionIdOf(exec.agent);
+      const ledger = getLedger();
+      if (sessionId === undefined || ledger === undefined) return;
+      const text = extractText(result?.value);
+      const parsed = parseReportStatus(text);
+      if (parsed !== undefined) {
+        ledger.recordReport(ticketId, sessionId, { status: parsed.status, summary: parsed.summary });
+      } else {
+        // 没有结构化回报：如实记一条 progress，并在摘要里点名"格式缺失"，让看板/下一轮知道
+        // 这次结算没有可解析的状态，而不是假装它 ready。
+        ledger.recordReport(ticketId, sessionId, {
+          status: 'progress',
+          summary: `执行者结算但未按约定给出 STATUS 行；结果见会话。${text.slice(0, 400)}`,
+        });
+      }
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 记录执行者回报失败：%o', error);
+    }
+  };
+
+  /**
+   * 派发工具结算 → 补写 Assignment 的执行者引用（childId / teammate 名）。
+   *
+   * @param {object} exec - `tools/post-execute` 的执行上下文。
+   * @param {object} result - 工具结果。
+   * @returns {void}
+   */
+  const settleObservedDispatch = (exec, result) => {
+    try {
+      const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      if (!isNewWorkTool(toolName) || result?.isError === true) return;
+      const ticketId = ticketFromDispatchArgs(exec.arguments);
+      if (ticketId === undefined) return;
+      const sessionId = sessionIdOf(exec.agent);
+      const ledger = getLedger();
+      if (sessionId === undefined || ledger === undefined) return;
+      const value = result?.value;
+      const ref = typeof value?.childId === 'string'
+        ? value.childId
+        : typeof value?.name === 'string'
+          ? value.name
+          : undefined;
+      ledger.markAssignmentSettled(ticketId, sessionId, ref);
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 结算工单派发失败：%o', error);
+    }
+  };
+
+  /**
+   * 渲染本会话的工单看板（无内容时返回空串）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {string} 看板文本。
+   */
+  const renderLedgerBoard = (agent) => {
+    try {
+      if (!ledgerEnabled()) return '';
+      const ledger = getLedger();
+      const sessionId = sessionIdOf(agent);
+      if (ledger === undefined || sessionId === undefined) return '';
+      const options = readOptions();
+      return renderTicketBoard({
+        tickets: ledger.listTickets(sessionId),
+        mandate: ledger.activeMandate(sessionId),
+        now: Date.now(),
+        stallMs: options.ticketStallMs,
+      });
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 渲染工单看板失败：%o', error);
+      return '';
+    }
+  };
+
+  /**
+   * 这次配置是否启用了工单账本。
+   *
+   * @returns {boolean} 是否启用。
+   */
+  const ledgerEnabled = () => {
+    try {
+      return readOptions().ledger !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  /**
+   * 把一次派发记到工单上（尽力而为：账本写失败不影响派发本身）。
+   *
+   * @param {object} exec - `tools/pre-execute` 的执行上下文。
+   * @returns {void}
+   */
+  const observeAssignment = (exec) => {
+    if (!ledgerEnabled()) return;
+    try {
+      const agent = exec?.agent;
+      if (agent === undefined || isDelegatedAgent(agent)) return;
+      const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      if (!isNewWorkTool(toolName)) return;
+      const ticketId = ticketFromDispatchArgs(exec.arguments);
+      if (ticketId === undefined) return; // 门禁关闭/降级时允许无工单派发，这里不记账。
+      const sessionId = sessionIdOf(agent);
+      const ledger = getLedger();
+      if (sessionId === undefined || ledger === undefined) return;
+      const channel = toolName.startsWith('subagent_')
+        ? 'specialist'
+        : classifyDelegation(toolName) === DELEGATION_CHANNELS.TEAM ? 'team' : 'one-shot';
+      ledger.recordAssignment(ticketId, sessionId, { channel, toolName });
+    } catch (error) {
+      // 记账失败不能影响派发；门禁已经单独校验过授权。
+      ctx.logger?.debug?.('commander-mode: 记录工单派发失败：%o', error);
+    }
+  };
+
+  /**
    * 观测一次派发（只统计指挥者自己的派活动作）。
    *
    * @param {object} exec - `tools/pre-execute` 的执行上下文。
@@ -337,12 +556,20 @@ export function apply(ctx) {
         try {
           const agent = context?.agent;
           if (agent === undefined || isDelegatedAgent(agent)) return '';
-          if (!syncBoardEnabled()) return '';
-          const { view, members } = inspectSync(agent);
-          return renderSyncBoard(view, members);
+          const parts = [];
+          if (syncBoardEnabled()) {
+            const { view, members } = inspectSync(agent);
+            const syncText = renderSyncBoard(view, members);
+            if (syncText !== '') parts.push(syncText);
+          }
+          // 0.6.0：工单看板（计划授权 / 进行中 / 待人工 / 停滞）独立于同步看板 ——
+          // 即使部署里没有「智能体团队」，工单状态也照样要出现在每一步。
+          const ticketText = renderLedgerBoard(agent);
+          if (ticketText !== '') parts.push(ticketText);
+          return parts.join('\n');
         } catch (error) {
           // 运行时上下文抛错会让每个请求都失败；读不到就当没有可报的。
-          ctx.logger?.warn?.('commander-mode: 渲染同步看板失败：%o', error);
+          ctx.logger?.warn?.('commander-mode: 渲染看板失败：%o', error);
           return '';
         }
       },
@@ -353,6 +580,12 @@ export function apply(ctx) {
   // ① 判断"任务结算之后计划清单有没有更新过"；② 看板里给出清单的完成进度。
   ctx.on('tools/post-execute', (exec, _result, next) => {
     try {
+      const agent = exec?.agent;
+      if (agent !== undefined && !isDelegatedAgent(agent) && ledgerEnabled()) {
+        observePlanConfirmation(exec, _result);
+        observeWorkerReport(exec, _result);
+        settleObservedDispatch(exec, _result);
+      }
       if (exec?.name === 'todo_write') {
         const agent = exec.agent;
         if (agent !== undefined && !isDelegatedAgent(agent) && readOptions().syncGuard !== false) {
@@ -460,6 +693,26 @@ export function apply(ctx) {
           ctx.logger?.info?.('commander-mode: 拒绝指挥者自己调用 %s（已要求改为派发）', toolName);
           return decision;
         }
+      }
+
+      // 0.6.0 派发门禁：没有计划授权 / 没有工单 → 确定性拒绝。
+      // 只对指挥者本人生效；子代理、缺失账本、身份不明一律放行（宁可漏拦）。
+      if (ledgerEnabled()) {
+        const options = readOptions();
+        const mandateDecision = evaluateDispatchGate({
+          agent: exec?.agent,
+          name: toolName,
+          args: exec?.arguments,
+          requireMandate: options.requireMandate !== false,
+          requireTicket: options.requireTicket !== false,
+          ledger: getLedger(),
+        });
+        if (mandateDecision !== undefined) {
+          ctx.logger?.info?.('commander-mode: 派发被计划授权/工单门禁拒绝（%s）', toolName);
+          return mandateDecision;
+        }
+        // 门禁通过后记一次 Assignment（写失败不影响派发）。
+        observeAssignment(exec);
       }
     } catch (error) {
       // 门禁自己出错时绝不能让工具调用失败——放行，交回默认行为。
@@ -600,6 +853,38 @@ export function apply(ctx) {
         // 接线层自己出错时只损失 specialist 通道，**不能**让整行 broken ——
         // 那会让指挥者协议与门禁一起消失，模式整个失效。
         ctx.logger?.warn?.('commander-mode: specialist 接线失败，本会话退化为无 specialist 通道：%o', error);
+      }
+    });
+  }
+
+  // ------------------------------------------------------------ 工单工具 ---
+
+  // 0.6.0：把工单账本暴露成三个模型可见工具。注册失败只损失工单通道，不影响模式本身。
+  if (typeof ctx.inject === 'function' && readOptions().ledger !== false) {
+    ctx.inject(['tools'], (toolCtx) => {
+      try {
+        toolCtx.effect(() => {
+          const disposers = [];
+          for (const definition of buildTicketTools({ getLedger })) {
+            try {
+              disposers.push(toolCtx.tools.register(definition));
+            } catch (error) {
+              toolCtx.logger?.warn?.('commander-mode: 注册工单工具 %s 失败：%o', definition.name, error);
+            }
+          }
+          return () => {
+            for (const dispose of disposers.splice(0).reverse()) {
+              try {
+                dispose?.();
+              } catch {
+                // 工具可能已随作用域销毁。
+              }
+            }
+          };
+        }, 'commander-mode: ticket tools');
+        toolCtx.logger?.info?.('commander-mode: 工单工具已注册（commander_ticket_create/update/list）');
+      } catch (error) {
+        ctx.logger?.warn?.('commander-mode: 工单工具接线失败，本会话没有工单通道：%o', error);
       }
     });
   }

@@ -63,9 +63,9 @@ function makeCtx() {
 }
 
 /** 一份带名册的配置（模拟 Loader 解析后的形态：specialists 是 volatile 引用）。 */
-function configWith(roster = []) {
+function configWith(roster = [], overrides = {}) {
   return {
-    ...Config({ specialists: roster }),
+    ...Config({ specialists: roster, ...overrides }),
     // 模拟 volatile 引用的读法：resolveRoster 通过 readSpecialists 读 .get()
     specialists: { get: () => roster },
   };
@@ -163,7 +163,24 @@ test('配置行不注册任何工具（能力泄漏会污染别的模式）', ()
   // 若配置行试图 provide 未知服务或调 tools，我们只能从代码结构上保证：这里断言
   // 它没有 require tools 服务（inject 列表为空）。
   assert.doesNotThrow(() => apply(ctx, configWith()));
-  assert.deepEqual(Object.keys(record.services), ['commanderSettings']);
+  assert.deepEqual(Object.keys(record.services), ['commanderSettings', 'commanderLedger']);
+  assert.equal(typeof record.services.commanderLedger.createTicket, 'function');
+  assert.equal(typeof record.services.commanderSettings.options, 'function');
   // CAPABILITY_ROWS 是模式行（specialist preset）用的，配置行不该引用它注册任何东西。
   assert.ok(CAPABILITY_ROWS.length > 0);
+});
+
+test('0.6.0 账本服务：默认载入，文件位于 commander 目录', () => {
+  const { ctx, record } = makeCtx();
+  assert.doesNotThrow(() => apply(ctx, configWith()));
+  const ledger = record.services.commanderLedger;
+  assert.ok(ledger, '默认应提供 commanderLedger');
+  assert.equal(ledger.loaded, true);
+  assert.match(ledger.filePath, /commander[\\/].*\.json$/u);
+});
+
+test('0.6.0 ledger:false 时不提供账本服务（降级到 0.5.0）', () => {
+  const { ctx, record } = makeCtx();
+  assert.doesNotThrow(() => apply(ctx, configWith([], { ledger: false })));
+  assert.deepEqual(Object.keys(record.services), ['commanderSettings']);
 });

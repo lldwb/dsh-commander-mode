@@ -117,6 +117,23 @@
           - plugin_manager
         # 是否把长文协议注册成 skill。
         registerSkill: true
+        # ---- 0.6.0 工单账本与计划授权 --------------------------------
+        # 工单账本：commander_ticket_* 工具 + 看板 + 计划授权门禁。
+        # 关掉后退化为 0.5.0 行为（只有同步看板与协议）。
+        ledger: true
+        # 账本文件位置。空 = <DSH_HOME>/commander/<profile>.json。
+        # 相对路径以 DSH_HOME 为基准；以 .json 结尾视为文件，否则视为目录。
+        stateDir: ''
+        # 派发新工作前必须有用户确认的计划授权（Mandate）。
+        # 没有 ask_user_question（id=commander-plan，选项「确认，开始执行」）的确认，
+        # 派发 specialist / subagent / workflow / spawn_teammate 会被确定性拒绝。
+        requireMandate: true
+        # 是否要求每次派发都带工单 id（specialist 的 ticket 参数 / Team 的 [ticket:t-N]）。
+        requireTicket: true
+        # 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理）。
+        ticketStallMs: 600000
+        # 账本最多保留多少张工单（超出后裁剪最老的已结束工单）。
+        maxTickets: 100
         # 可配置的多模型 specialist 名册：每项一个 `subagent_<id>` 前台工具。
         #
         # 这里**故意不写** `specialists`：默认值就是出厂预置名册（lib/presets.js，按主流

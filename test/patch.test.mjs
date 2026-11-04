@@ -148,6 +148,12 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'blockedTools',
     'registerSkill',
     'maxSpecialists',
+    'ledger',
+    'stateDir',
+    'requireMandate',
+    'requireTicket',
+    'ticketStallMs',
+    'maxTickets',
   ]) {
     assert.match(PATCH, new RegExp(`\\n {8}${key}:`, 'u'), `config 里缺 ${key}`);
   }
@@ -161,4 +167,15 @@ test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', ()
   assert.match(PATCH, /maxSpecialists: 20/u);
   // patch 不覆盖 specialists → schema 默认值（出厂预置名册）生效。
   assert.ok(!/\n {8}specialists:/u.test(PATCH));
+});
+
+test('0.6.0：patch 写全账本与计划授权配置（默认开）', () => {
+  assert.match(PATCH, /\n {8}ledger: true/u);
+  assert.match(PATCH, /\n {8}requireMandate: true/u);
+  assert.match(PATCH, /\n {8}requireTicket: true/u);
+  assert.match(PATCH, /\n {8}stateDir: ''/u);
+  assert.match(PATCH, /\n {8}ticketStallMs: 600000/u);
+  assert.match(PATCH, /\n {8}maxTickets: 100/u);
+  // 为什么默认开：注释要能让用户知道关掉后的后果（回退 0.5 行为）。
+  assert.match(PATCH, /关掉后退化为 0\.5\.0/u);
 });
