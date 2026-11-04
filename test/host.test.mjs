@@ -13,12 +13,23 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 import { apply, Config, name } from '../index.js';
 import { CAPABILITY_ROWS } from '../lib/capabilities.js';
 import { SpecialistSchema } from '../lib/config.js';
 import { defaultSpecialistIds } from '../lib/presets.js';
+
+/**
+ * 本文件所有 `apply()` 共用的临时 stateDir（1.1.1）。
+ *
+ * ⚠️ 不能用默认 `stateDir: ''`：那会解析成**真实** `<DSH_HOME>/commander/<profile>.json`，
+ * 于是这一行的 `apply()` 会在用户的真实账本里建工单/授权（0.6.0 起就潜伏，2026-11-04
+ * 的 1.1.0 装配时被发现：真实 `~/.dsh/commander/desktop.json` 里多了 15 张标题 `x`、
+ * 会话 `s-1` 的测试夹具工单）。测试必须自带隔离目录。
+ */
+const STATE_DIR = mkdtempSync(join(tmpdir(), 'commander-host-state-'));
+after(() => rmSync(STATE_DIR, { recursive: true, force: true }));
 
 /** 一个最小 Cordis 上下文替身（配置行只用这几样）。 */
 function makeCtx() {
@@ -70,6 +81,8 @@ function configWith(roster = [], overrides = {}) {
   return {
     ...Config({
       specialists: roster,
+      // 默认用临时 stateDir：绝不让单测写用户真实账本（见文件头 STATE_DIR 注释）。
+      stateDir: STATE_DIR,
       // 默认关掉外部事件轮询：否则每个 host 用例都会在真实 HOME 下建目录并起定时器。
       // 事件投递器本身由下面专门的用例（临时 DSH_HOME + 显式 close）覆盖。
       eventInbox: false,
@@ -133,7 +146,9 @@ test('apply 关掉自动生成的设置页（本包自带 client 半）', () => 
 test('volatile 变化通过服务广播给订阅者', () => {
   const roster = [];
   const { ctx, record } = makeCtx();
-  apply(ctx, { ...Config(), specialists: { get: () => roster } });
+  // ⚠️ 不要直接 `apply(ctx, Config())`：默认 stateDir/eventInbox 会写真实 HOME
+  // （1.1.1 的污染就是这么来的）。临时 stateDir + 关事件轮询。
+  apply(ctx, { ...Config({ stateDir: STATE_DIR, eventInbox: false }), specialists: { get: () => roster } });
   const service = record.services.commanderSettings;
 
   const seen = [];
@@ -181,13 +196,15 @@ test('配置行不注册任何工具（能力泄漏会污染别的模式）', ()
   assert.ok(CAPABILITY_ROWS.length > 0);
 });
 
-test('0.6.0 账本服务：默认载入，文件位于 commander 目录', () => {
+test('0.6.0 账本服务：默认载入，文件跟随配置的 stateDir', () => {
   const { ctx, record } = makeCtx();
   assert.doesNotThrow(() => apply(ctx, configWith()));
   const ledger = record.services.commanderLedger;
   assert.ok(ledger, '默认应提供 commanderLedger');
   assert.equal(ledger.loaded, true);
-  assert.match(ledger.filePath, /commander[\\/].*\.json$/u);
+  // 用临时 stateDir，断言"路径跟着配置走"——**不要**断言真实 ~/.dsh 路径：
+  // 那正是 1.1.1 发现的污染（单测写用户真实账本）。
+  assert.equal(ledger.filePath, join(STATE_DIR, 'ledger.json'));
 });
 
 test('0.6.0 ledger:false 时不提供账本服务（降级到 0.5.0）', () => {
@@ -218,7 +235,8 @@ test('1.1.0 eventInbox 开启时提供 commanderEvents，并在账本同级建�
   });
   const { ctx, record } = makeCtx();
   // 轮询间隔拉长：本用例只关心服务与目录，扫描由 event-inbox 单测覆盖。
-  assert.doesNotThrow(() => apply(ctx, configWith([], { eventInbox: true, eventPollMs: 60000 })));
+  // `stateDir: ''` 让账本/事件目录都落到上面临时 DSH_HOME 下（而不是共享 STATE_DIR）。
+  assert.doesNotThrow(() => apply(ctx, configWith([], { eventInbox: true, eventPollMs: 60000, stateDir: '' })));
   const events = record.services.commanderEvents;
   assert.ok(events, '默认应提供 commanderEvents 服务');
   assert.equal(typeof events.scanOnce, 'function');

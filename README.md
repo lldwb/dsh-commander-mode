@@ -701,6 +701,19 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **1.1.1 第十五轮（测试隔离修复 + 桌面版安装）**：
+  - 安装桌面版时发现真实账本 `~/.dsh/commander/desktop.json` 里有 15 张标题 `x`、
+    会话 `s-1` 的工单——全是**单测夹具**，不是真实会话。复现：跑 `test/host.test.mjs`
+    前后对比真实账本 hash，确认是它改写的（根因：`host.test.mjs` 用默认 `stateDir: ''`，
+    `apply()` 于是解析到**真实** `<DSH_HOME>/commander/<profile>.json`；0.6.0 起潜伏）。
+  - 修复：该测试文件统一用 `mkdtemp` 的临时 `stateDir`，并在文件末清理；事件相关用例显式
+    `stateDir: ''` 落到临时 DSH_HOME。验证：全量测试前后对 `~/.dsh/commander` 做文件 hash
+    快照，**零变化**。`node --test` 432/432。
+  - 真实账本已备份（`.scratch/real-ledger-desktop-pollution-backup.json`）后删除；空的
+    `events/` 目录一并清掉，用户首次启动是干净状态。
+  - 桌面版 profile 的插件副本从 0.5.0 同步为 1.1.0（`link:./plugins/dsh-commander-mode`，
+    保留 `node_modules`），需要重启桌面版加载——宿主侧实时的 `Config` schema 仍是 0.5.0
+    的旧键，这就是"没重载"的直接证据。
 - **1.1.0 第十四轮（外部事件接入）**：
   - **`node --test` 432/432 通过**（407 → 432，+25）：新增 `test/events.test.mjs`（路径解析 /
     字段校验 / 缺省与截断 / 渲染文本 / 文件名安全）、`test/event-inbox.test.mjs`（按 ticket
@@ -974,6 +987,11 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **1.1.1** —— 测试隔离修复（无用户可见行为变化）：`test/host.test.mjs` 之前用默认
+  `stateDir`，`apply()` 会解析到**真实** `<DSH_HOME>/commander/<profile>.json`，于是每次
+  跑单测都会往用户账本里写测试夹具工单（1.1.0 装配时发现真实账本被写进 15 张标题 `x` 的
+  记录）。改为临时 stateDir，并加"测试前后真实 commander 目录 hash 不变"的验证。
+  测试 432/432。**用户要做什么**：无需操作；被污染的真实账本已备份后清理。
 - **1.1.0** —— 外部事件接入（轻量 Trigger，中版本，无破坏性变更）：
   外部系统（CI / 告警 / 定时巡检）用新 CLI `bin/commander-event.mjs` 往
   `<账本目录>/events/inbox/` 写事件；配置行轮询（默认 15 秒）取走并 `steer` 对应指挥者
