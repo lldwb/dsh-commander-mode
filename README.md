@@ -522,6 +522,47 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   放行（避免死锁），模式退化成"只会做协议的普通 agent"。
 - **协议是概率性的。** "规划后先确认"与"分歧上报"由协议保证，模型偶尔可能跳过。门禁只兜住
   "不执行操作"这一条——那一条是确定性的。
+- **`commander-status` 只读账本，不做恢复（0.9.0）。** 它不会重启 dsh、不会重派/结算工单，
+  也不会备份损坏文件（损坏时退出 3）。真正的"恢复动作"仍要由人或下一次会话完成。
+
+## 运维：外部巡检（0.9.0）
+
+账本是文件，所以可以在**指挥者进程之外**巡检——这是 Super-agent "外部 Watchdog" 的最小可用
+形态（基础设施层；任务层"有没有实质进展"仍靠看板的停滞提示）。
+
+### `commander-status`
+
+```powershell
+node <本插件目录>\bin\commander-status.mjs --profile desktop
+# 或指定账本文件：--ledger <path>；机器可读：--json；停滞阈值：--stall-minutes 10
+```
+
+| 退出码 | 含义 |
+|---|---|
+| `0` | 没有未结束工单（空闲） |
+| `1` | 有未结束工单，但没有待人工项（在跑） |
+| `2` | 有待人工项（待验收 / 受阻 / 失败 / 等回答 / 停滞）——需要人 |
+| `3` | 账本不可读（损坏 / 读失败 / schema 不支持）——需要人检查 |
+
+**只读**：不写账本、不清理、不备份损坏文件。它适合被 schedule / 任务计划程序 / CI cron 调用，
+按退出码决定"沉默 / 提醒 / 报告"。
+
+### 定时巡检配方（可选，不自动改状态）
+
+在**你日常用的 dsh profile**（不是指挥者会话）里建一个定时任务，提示词示例：
+
+```text
+检查指挥者账本：运行
+node <本插件目录>/bin/commander-status.mjs --profile desktop --json
+退出码 0：什么都不说。
+退出码 1：只说一句"指挥者在做 N 项"。
+退出码 2：把 attention 明细逐条列出来提醒我。
+退出码 3：报告账本损坏，让我检查（不要自己改账本）。
+不要自动重启 dsh，不要修改或删除账本。
+```
+
+Windows 可用「任务计划程序」跑同一条命令；它不依赖 tmux/ps（与 Super-agent 原型的 POSIX
+脚本不同）。**不要把巡检放进被监督的指挥者进程**：进程挂掉时它也不会跑。
 
 ## 开发
 
@@ -573,6 +614,21 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.9.0 第十一轮（运维 status CLI）**：
+  - **`node --test` 403/403 通过**（397 → 403）：新增 `test/status-cli.test.mjs`，用真实子进程
+    跑 `bin/commander-status.mjs`，覆盖退出码 0/1/2/3、`--json` 输出、人类可读输出、`--help`，
+    以及**只读性**：损坏账本返回 3 且目录里没有 `.corrupt-*` 备份。
+  - 顺手修复：`lib/ledger.js` 新增 `backupCorrupt:false` 选项供只读巡检用；并把内部
+    `backupCorrupt` 函数改名，避免参数遮蔽（测试抓到的 TypeError）。
+  - **真实 Loader（headless 沙箱 `commander-090`）**：`compose` 出现 `commander-mode` /
+    `preset-commander` / `commander-mode-agent` 三行；真实模型回合里 `commander_ticket_create`
+    返回 `t-1` 的完整 JSON 并落盘 `<DSH_HOME>/commander/default.json`；随后用
+    `bin/commander-status.mjs --ledger <该文件>` 读同一账本——人类可读输出
+    `- t-1 [queued] 0.9.0 巡检验证`、退出码 **1**，`--json` 的 `open: 1 / concerns: 0`
+    与账本事实一致。沙箱已 destroy（`preset-commander … pending (waiting for service:
+    agentPresets)` 是 headless 模板的已知限制，不是 0.9.0 回归）。
+  - 范围说明：`bin/` 脚本由 Node 直接运行、不参与 Loader 组合；这一轮的沙箱回归验证的是
+    "插件运行时写出的账本 → 外部只读巡检读得懂"这条跨进程链路。
 - **0.8.1 第十轮（真实模型 E2E 探针 + 修复）**：
   - **真实 Loader + 真实模型 + 注入凭据**（headless 沙箱 `commander-e2e`，用 `--patch` 把配置行/
     模式行临时挂到顶层，并关闭 `requireMandate`）：模型自然调用 `commander_ticket_create`
@@ -754,6 +810,13 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.9.0** —— 外部巡检（`bin/commander-status.mjs`，plan 第 4 阶段/1.1 的最小可用形态）：
+  只读账本，输出未结束工单 / 待人工项 / 停滞项，退出码 **0 空闲 / 1 在跑 / 2 需要人 / 3
+  账本不可读**；支持 `--json` / `--ledger` / `--profile` / `--stall-minutes`；只读巡检
+  **不备份**损坏文件（备份仍由插件运行时做）。README 附 schedule / 任务计划程序配方。
+  测试 397 → 403（新增 `test/status-cli.test.mjs`，含损坏账本只读验证）。
+  说明：原计划把它编为 1.1.0；因 1.0 的"默认开启 Worker Session"仍缺真实 worker 回合验证，
+  先把不依赖模型、可独立测试的运维面交付为 0.9.0。
 - **0.8.1** —— 真实模型 E2E 探针抓到的修复：① `index.js` 同 tick `ctx.get()` 读不到刚
   `provide` 的账本，导致 Worker 服务静默不发布 → 用本地变量传递（`0.8.0` 的 bug）；② 派发
   工具报错后工单停在 `working` 幽灵状态 → `agent.js` 新增 `reportDispatchFailure`：有未结算
