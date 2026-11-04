@@ -309,7 +309,7 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       requireTicket: true,
       asyncDelegation: true,
       maxAsyncTasks: 4,
-      workerSessions: false,
+      workerSessions: true,
       workRoot: '',
       maxWorkers: 3,
       prepareCommand: '',
@@ -375,7 +375,7 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     requireTicket: true,
     asyncDelegation: true,
     maxAsyncTasks: 4,
-    workerSessions: false,
+    workerSessions: true,
     workRoot: '',
     maxWorkers: 3,
     prepareCommand: '',
@@ -454,9 +454,9 @@ test('0.7.0 异步配置：默认开、可关、上限夹到 1–12', () => {
   assert.ok(KNOWN_CONFIG_KEYS.includes('maxAsyncTasks'));
 });
 
-test('0.8.0 Worker 配置：默认关闭、目录/上限/权限读取', () => {
+test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限读取', () => {
   const config = Config();
-  assert.equal(config.workerSessions, false, 'Worker Session 必须 opt-in');
+  assert.equal(config.workerSessions, true, '1.0.0 起默认开启（真实 E2E 已验）');
   assert.equal(config.workRoot, '');
   assert.equal(config.maxWorkers, 3);
   assert.equal(config.prepareCommand, '');

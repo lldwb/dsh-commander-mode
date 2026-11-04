@@ -163,9 +163,11 @@ test('配置行不注册任何工具（能力泄漏会污染别的模式）', ()
   // 若配置行试图 provide 未知服务或调 tools，我们只能从代码结构上保证：这里断言
   // 它没有 require tools 服务（inject 列表为空）。
   assert.doesNotThrow(() => apply(ctx, configWith()));
-  assert.deepEqual(Object.keys(record.services), ['commanderSettings', 'commanderLedger']);
+  // 1.0.0：workerSessions 默认开启，配置行还会提供 commanderWorkers（仍然是服务，不是工具）。
+  assert.deepEqual(Object.keys(record.services), ['commanderSettings', 'commanderLedger', 'commanderWorkers']);
   assert.equal(typeof record.services.commanderLedger.createTicket, 'function');
   assert.equal(typeof record.services.commanderSettings.options, 'function');
+  assert.equal(typeof record.services.commanderWorkers.spawn, 'function');
   // CAPABILITY_ROWS 是模式行（specialist preset）用的，配置行不该引用它注册任何东西。
   assert.ok(CAPABILITY_ROWS.length > 0);
 });

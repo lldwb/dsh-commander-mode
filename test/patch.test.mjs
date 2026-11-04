@@ -176,14 +176,15 @@ test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', ()
   assert.ok(!/\n {8}specialists:/u.test(PATCH));
 });
 
-test('0.8.0：patch 写全 Worker Session 配置（默认关闭 opt-in）', () => {
-  assert.match(PATCH, /\n {8}workerSessions: false/u);
+test('1.0.0：patch 写全 Worker Session 配置（默认开启）', () => {
+  assert.match(PATCH, /\n {8}workerSessions: true/u);
   assert.match(PATCH, /\n {8}workRoot: ''/u);
   assert.match(PATCH, /\n {8}maxWorkers: 3/u);
   assert.match(PATCH, /\n {8}prepareCommand: ''/u);
   assert.match(PATCH, /\n {8}workerPermission: danger-full-access/u);
-  // 默认关闭的原因要写在注释里：改变执行模型，需要显式接受。
-  assert.match(PATCH, /默认关闭（改变执行模型，需显式开启）/u);
+  // 默认开启的依据与"怎么关"要写在注释里（1.0.0 的行为变化）。
+  assert.match(PATCH, /1\.0\.0 起默认开启/u);
+  assert.match(PATCH, /显式写 false/u);
 });
 
 test('0.7.0：patch 写全异步派工配置（默认开）', () => {

@@ -29,10 +29,11 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   结算时用一条「【指挥者·派工完成】」通知**唤醒**指挥者（带工单、`STATUS:`、摘要与下一步），
   并同时写账本。派活后可以继续做别的或结束回合，不要 `wait_agent` / `list_agents` 轮询；
   在飞数量有上限（`maxAsyncTasks`，默认 4），`asyncDelegation: false` 可回退前台阻塞行为。
-- **Worker Session（0.8.0，默认关闭）**：`workerSessions: true` 后，`commander_worker_spawn`
-  可给一张工单开**独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），
-  worker 只拿工作工具、结束时用 `commander_report` 汇报并用通知唤醒你；有槽位上限（`maxWorkers`）
-  与重启恢复提示。它改变执行模型（会话列表会出现 worker 会话），所以**默认关闭**，需显式开启。
+- **Worker Session（0.8.0；1.0.0 起默认开启）**：`commander_worker_spawn` 可给一张工单开
+  **独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），worker 只拿工作
+  工具、结束时用 `commander_report` 汇报并用通知唤醒你；有槽位上限（`maxWorkers`）与重启恢复
+  提示。它改变执行模型（会话列表会出现 `执行 <ticket>：<标题>` 会话），不需要时在 profile
+  patch 里显式写 `workerSessions: false` 即可回退（关闭后不注册四个 `commander_worker_*` 工具）。
 
 ```text
 30 秒上手
@@ -213,13 +214,16 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 为什么不用 runtime 的 `delivery:'parent'` 完成通知：它的通知内容与工单映射不可控，而且会多一条
 模型可见消息；`delivery:'caller'` + 后台 await + `steer` 让我们完全控制通知格式、去重与账本写入。
 
-### Worker Session（0.8.0，opt-in）
+### Worker Session（0.8.0；1.0.0 起默认开启）
 
 0.6/0.7 让派活有状态、有通知，但所有执行者仍**共享 cwd**——长任务并行会互相踩文件。
-0.8.0 提供第三种执行通道（默认关闭）：**每张工单一个独立 DSH Session + 独立目录**。
+0.8.0 提供第三种执行通道：**每张工单一个独立 DSH Session + 独立目录**。0.8.0 曾默认关闭
+（改变执行模型）；0.9.1 在真实 Web profile + 真实模型里跑通全链路后，**1.0.0 起默认开启**。
 
-- **开启**：配置 `workerSessions: true`（profile patch 或插件页配置；需重载）。默认关闭是因为它
-  改变执行模型：会话列表里会出现 `worker-<ticket>` 会话，且 worker 以操作员身份执行。
+- **关闭**：在 profile patch 的 `commander-mode` 配置里显式写 `workerSessions: false`（需重载）。
+  关闭后不注册四个 `commander_worker_*` 工具、不会出现 worker 会话，派工语义回到 0.7
+  （specialist / Team 两条通道）。想改 `workRoot` / `maxWorkers` / `prepareCommand` /
+  `workerPermission` 同理。
 - **四个工具**：
   - `commander_worker_spawn`：给已有工单开 worker。建目录（`workRoot/<ticket>`，可跑一次
     `prepareCommand`，可用 `DSH_COMMANDER_*` 环境变量）→ `workspaceRegistry.create` →
@@ -439,7 +443,7 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `requireTicket` | `true` | 每次派发必须带工单（specialist 的 `ticket` 参数 / Team 的 `[ticket:t-N]`） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
 | `maxAsyncTasks` | `4` | 同一会话同时在飞的一次性 specialist 上限（1–12） |
-| `workerSessions` | `false` | **opt-in**：每工单独立 Worker Session + 独立目录（改变执行模型） |
+| `workerSessions` | `true` | 每工单独立 Worker Session + 独立目录（1.0.0 起默认开启；`false` 回退到 specialist/Team） |
 | `workRoot` | `''` | Worker 目录根；空 = `<DSH_HOME>/commander/work`。相对路径以 `DSH_HOME` 为基准 |
 | `maxWorkers` | `3` | 每个指挥者会话同时最多几个 Worker Session（1–12） |
 | `prepareCommand` | `''` | 建 worker 目录后执行一次的 prepare 命令（可用 `DSH_COMMANDER_*` 环境变量） |
@@ -508,13 +512,15 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束。
 - **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
   判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
-- **Worker 工具收敛是"尽力 + 兜底"（0.9.1）。** 静态 `tools.restrict({allow})` 让模型少看到
+- **Worker 会话会出现在会话列表（0.8.0；1.0.0 默认开启后更常见）。** 名字是
+  `执行 <ticket>：<标题>`，没有 UI 过滤；它们各自落在 `workRoot/<ticket>` 对应的 workspace 里
+  （不是默认工作区）。不想要这类会话就把 `workerSessions: false`，worker 通道与四个工具一起
+  消失，派工回到 specialist / Team。
+- **Worker 工具收敛不是安全边界（0.9.1）。** 静态 `tools.restrict({allow})` 让模型少看到
   无关工具；但装饰发生在 agent 组装早期，restrict 可能因"未知全局工具"抛错，所以再加
-  `tools.guard` 白名单——非工作工具的调用会被确定性拒绝。两者都不是安全边界。0.9.1 的真机
-  E2E 曾经把这条做错：按 `tools.get()` 过滤 allow，组装未完成时得到空数组，worker 连
-  `write` 都没有（只能开子代理代写文件）。
-- **Worker 会话会出现在会话列表（0.8.0）。** 名字是 `执行 <ticket>：<标题>`；没有 UI 过滤。
-  这是默认关闭的原因之一；1.0 再决定是否/如何隐藏。
+  `tools.guard` 白名单——非工作工具的调用会被确定性拒绝。0.9.1 的真机 E2E 曾经把这条做错：
+  按 `tools.get()` 过滤 allow，组装未完成时得到空数组，worker 连 `write` 都没有（只能开子
+  代理代写文件）。
 - **Worker 恢复是"提示"，不是队列（0.8.0）。** 重启后只有指挥者会话再次创建时才会为 open
   工单的 worker 投递恢复提示；进程内没人触发就不会自动恢复。`worker-<ticket>` Session 依赖
   DSH 自己的会话持久化，会话被删就只剩账本记录（看板按停滞提示）。
@@ -622,6 +628,19 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **1.0.0 第十三轮（默认开启的 Loader 回归）**：
+  - `node --test` **407/407 通过**；新增/改写的用例钉住新默认值：`config`（`workerSessions`
+    默认 `true`、显式 `false` 仍可关）、`patch`（`cordis.patch.yml` 写 `workerSessions: true`
+    且注释写明"1.0.0 起默认开启 / 显式写 false"）、`host`（默认提供 `commanderWorkers` 服务）、
+    `plugin`（默认注册四个 `commander_worker_*` 工具；显式 `false` 时不注册）。
+  - **真实 Loader（headless 沙箱 `commander-100`）**：`compose` 里
+    `workerSessions: true` 来自插件 patch 的默认值；用 `--patch` 只挂「配置行 + 模式行」且
+    **不写 `workerSessions`**，真实模型回合里 `commander_worker_spawn` 确实存在并返回可执行
+    错误——逐字：`Error: 这个部署缺少宿主服务：sessionController、workspaceRegistry，
+    Worker Session 不可用（headless 模板不含这些行；桌面版 / Web profile 才有）。改用
+    specialist 或 Team。` 这证明 1.0.0 的默认值在真实 Loader 里生效（工具注册 + 缺服务时
+    精确降级），而不是只在 schema 里改了数字。沙箱已 destroy。
+  - 真实 worker 回合的全链路证据仍来自 0.9.1 第十二轮（Web profile + 真实模型）。
 - **0.9.1 第十二轮（真实 Web profile + 真实模型：Worker Session 端到端，抓到 3 个真 bug）**：
   这是 0.8.0 欠下的那次验证。环境：devkit **web** 沙箱（`commander-100-web`，profile 由
   `dsh-web-app` 模板生成，含 `sessionController` / `workspaceRegistry` / `agentPresets` /
@@ -860,6 +879,16 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **1.0.0** —— Worker Session 转正（大版本，**默认行为变化**）：
+  `workerSessions` 默认值从 `false` 改为 `true`（`cordis.patch.yml` 同步）。真实 Web profile +
+  真实模型已在 0.9.1 跑通 `commander_ticket_create → commander_worker_spawn → worker 在自己
+  目录写文件 → commander_report → steer 唤醒 → commander_ticket_update(done)`，
+  因此把「每张工单一个独立 DSH Session + 独立目录」从 opt-in 变成默认派工通道。
+  **用户要做什么**：不需要改配置即可用；如果不想让会话列表出现 `执行 <ticket>：<标题>`
+  这类 worker 会话（或不想让 worker 以操作员身份执行），在 profile patch 的 `commander-mode`
+  配置里显式写 `workerSessions: false` 并重载——四个 `commander_worker_*` 工具会一起消失，
+  派工回到 specialist / Team。默认上限仍是 `maxWorkers: 3`、权限 `danger-full-access`
+  （目录不是安全边界）。测试 407/407 通过。
 - **0.9.1** —— 真实 Web profile + 真实模型的 Worker Session 端到端验证抓到的三处修复：
   ① `ticketView()` 空问题返回 `question: undefined`，被 dsh-tools 的 lossless-JSON 校验
   判为 invalid output → 工单三工具（及依赖 `ticketView` 的 worker_status）在有回报后全部失败；
@@ -870,8 +899,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   被全部屏蔽；改为静态 allow + `tools.guard` 白名单兜底。
   测试 403 → 407；真实回合证据（spawn 不阻塞 56 ms、目录隔离、`commander_report` → steer →
   `commander_ticket_update(done)`、status CLI 退出 0）写进「验证过什么」。
-  **默认仍不开启 workerSessions**：是否默认开启（1.0.0）取决于 worker 会话在会话列表里
-  如何呈现，见「已知边界」。
+  这一版当时**仍默认关闭** workerSessions；1.0.0 起默认开启（见上条）。
 - **0.9.0** —— 外部巡检（`bin/commander-status.mjs`，plan 第 4 阶段/1.1 的最小可用形态）：
   只读账本，输出未结束工单 / 待人工项 / 停滞项，退出码 **0 空闲 / 1 在跑 / 2 需要人 / 3
   账本不可读**；支持 `--json` / `--ledger` / `--profile` / `--stall-minutes`；只读巡检

@@ -135,9 +135,11 @@
         asyncDelegation: true
         # 同一会话同时在飞的一次性 specialist 上限（1–12）。
         maxAsyncTasks: 4
-        # ---- 0.8.0 Worker Session（opt-in） -------------------------
-        # 每张工单一个独立 DSH Session + 独立目录；默认关闭（改变执行模型，需显式开启）。
-        workerSessions: false
+        # ---- 0.8.0 / 1.0.0 Worker Session ------------------------
+        # 每张工单一个独立 DSH Session + 独立目录。0.8.0 曾默认关闭；0.9.1 真机 Web E2E
+        # 跑通全链路后，1.0.0 起默认开启。不想要就在 profile patch 里显式写 false——
+        # 关闭后不注册 commander_worker_* 四个工具，派工语义回到 0.7（specialist / Team）。
+        workerSessions: true
         # Worker 工作目录根；空 = <DSH_HOME>/commander/work。
         workRoot: ''
         # 每个指挥者会话同时最多几个 Worker Session（1–12）。

@@ -50,7 +50,7 @@ function makeSettings(initial = {}) {
     requireTicket: true,
     asyncDelegation: true,
     maxAsyncTasks: 4,
-    workerSessions: false,
+    workerSessions: true,
     workRoot: '',
     maxWorkers: 3,
     prepareCommand: '',
@@ -744,9 +744,14 @@ test('空名册不注册任何 specialist preset 或工具', async () => {
   assert.equal(record.presets.length, 0);
   assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('subagent_')), []);
   // 0.6.0：工单工具与名册无关，空名册也应注册（它们是模式自身的能力）。
+  // 1.0.0：workerSessions 默认开启，默认还会多出四个 commander_worker_* 工具。
   assert.deepEqual(
-    record.tools.map((tool) => tool.name).sort(),
+    record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_ticket')).sort(),
     ['commander_ticket_create', 'commander_ticket_update', 'commander_tickets'],
+  );
+  assert.deepEqual(
+    record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')).sort(),
+    ['commander_worker_send', 'commander_worker_spawn', 'commander_worker_status', 'commander_worker_stop'],
   );
 });
 
@@ -1147,8 +1152,9 @@ test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment'
 
 // ---------------------------------------------------------------- 0.8.0 Worker ---
 
-test('0.8.0：默认（workerSessions:false）不注册 Worker 工具', async () => {
-  const { record } = boot({ ledger: memoryLedger() });
+test('1.0.0：显式 workerSessions:false 不注册 Worker 工具', async () => {
+  const settings = makeSettings({ options: { workerSessions: false } });
+  const { record } = boot({ settings, ledger: memoryLedger() });
   await flush();
   assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')), []);
 });
