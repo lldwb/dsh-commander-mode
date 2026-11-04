@@ -227,18 +227,24 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
     重命名 → 账本记录 `execution` → 投递派工消息。
   - `commander_worker_send`：追加指令；`commander_worker_stop`：停止当前回合（记 blocked）；
     `commander_worker_status`：看 session/目录/是否可解析。
-- **worker 侧**：`agent/created` 时装饰——注入「你只负责这张工单」人设 + 目录/验收判据，
-  用 `tools.restrict` 收紧到工作工具，注册 `commander_report`，并加"工单已结束"guard。
-  结束前必须 `commander_report`（status + summary；blocked/failed 用 question）；汇报会写账本并
-  `steer` 唤醒指挥者。worker 空转未汇报时，idle 兜底每 10 分钟提醒一次。
+- **worker 侧（0.9.1 修正时序）**：spawn 在账本记下 `execution` 之后**显式**装饰 worker
+  （不能只靠 `agent/created`：该事件在 `sessionController.create()` 期间就可能触发，那时账本
+  还没有 execution 记录，装饰会被静默跳过）。装饰内容：注入「你只负责这张工单」人设 +
+  目录/验收判据、静态 `tools.restrict({allow: WORKER_TOOLS})`（模型少看到无关工具）、
+  `tools.guard` 白名单兜底（restrict 在 agent 组装早期可能抛"unknown global tool"）、
+  注册 `commander_report`，并加"工单已结束"guard。结束前必须 `commander_report`
+  （status + summary；blocked/failed 用 question）；汇报会写账本并 `steer` 唤醒指挥者。
+  worker 空转未汇报时，idle 兜底每 10 分钟提醒一次。
 - **槽位与恢复**：`maxWorkers`（默认 3）在启动前检查；DSH 重启后，指挥者会话创建时会为
   open 工单的 worker 投递恢复提示（先检查目录/产物再继续）并标记 `resumedAt`。
 - **边界**：worker 目录与工具收敛**不是安全边界**（worker 仍以操作员身份执行，默认
   `danger-full-access`，可用 `workerPermission` 改）；没有 worktree/文件锁；prepare 命令来自
   用户配置、按用户 shell 执行。
-- **为什么不是 1.0.0**：原计划 1.0 在 Worker Session 隔离之外还包括"默认开启 + UI + 完整恢复"。
-  真实会话里 worker 的端到端（模型自然 spawn/汇报）尚未验证，所以先以 **0.8.0 opt-in** 交付，
-  1.0.0 留待真实验证后再默认开启并补 UI。
+- **端到端已验证（0.9.1）**：真实 Web profile + 真实模型走完
+  `commander_ticket_create → commander_worker_spawn → worker 在自己目录直接写文件 →
+  commander_report → steer 唤醒 → commander_ticket_update(done)`，见「验证过什么」。
+  默认仍关闭：是否默认开启（1.0.0）是**产品决定**，需要先决定 worker 会话在会话列表里
+  如何呈现（目前会直接出现 `执行 <ticket>：<标题>`）。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -502,9 +508,11 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束。
 - **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
   判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
-- **Worker Session 默认关闭，且不是安全边界（0.8.0）。** 开启后 worker 用 `standard` preset
-  建 Session，再 `tools.restrict` 收紧到工作工具 + 注入人设；它仍以操作员身份执行、默认
-  `danger-full-access`，`workRoot` 下的目录只是默认值，不是隔离边界。
+- **Worker 工具收敛是"尽力 + 兜底"（0.9.1）。** 静态 `tools.restrict({allow})` 让模型少看到
+  无关工具；但装饰发生在 agent 组装早期，restrict 可能因"未知全局工具"抛错，所以再加
+  `tools.guard` 白名单——非工作工具的调用会被确定性拒绝。两者都不是安全边界。0.9.1 的真机
+  E2E 曾经把这条做错：按 `tools.get()` 过滤 allow，组装未完成时得到空数组，worker 连
+  `write` 都没有（只能开子代理代写文件）。
 - **Worker 会话会出现在会话列表（0.8.0）。** 名字是 `执行 <ticket>：<标题>`；没有 UI 过滤。
   这是默认关闭的原因之一；1.0 再决定是否/如何隐藏。
 - **Worker 恢复是"提示"，不是队列（0.8.0）。** 重启后只有指挥者会话再次创建时才会为 open
@@ -614,6 +622,48 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.9.1 第十二轮（真实 Web profile + 真实模型：Worker Session 端到端，抓到 3 个真 bug）**：
+  这是 0.8.0 欠下的那次验证。环境：devkit **web** 沙箱（`commander-100-web`，profile 由
+  `dsh-web-app` 模板生成，含 `sessionController` / `workspaceRegistry` / `agentPresets` /
+  `permissionPresets`）+ 真实模型 `deepseek-flash`（provider `sub2api`），用
+  `devkit_ui_open` 起真实 Web 服务器与 headless Chrome，在页面里选「指挥者模式」、输入任务、
+  发真实回合。**注意**：devkit 的 web 服务器启动时**不注入凭据**（只有
+  `devkit_sandbox_run` 注入），所以沙箱自己的 `.credentials.yaml` 里临时放了一个
+  `SUB2API_API_KEY`（仅这一个 ref，沙箱用完即 `destroy`）。
+  - **第一轮（0.9.0 代码）抓到 bug A**：worker 一汇报，`commander_ticket_update` /
+    `commander_tickets` / `commander_worker_status` 全部报
+    `tool "... " returned invalid output: value is not lossless JSON`。根因：
+    `ticketView()` 对空问题返回 `question: undefined`，而 dsh-tools 的
+    `snapshotJsonValue()` 认定 `undefined` 不是 lossless JSON → 整个工具失败。用真实账本
+    跑诊断脚本，精确到 `ticketView(t-1).last_report.question = undefined`。
+  - **第一轮同时抓到 bug B（更严重）**：worker Session 的工具清单里**没有
+    `commander_report`**，system prompt 里也没有 Worker 人设——worker 做完任务就静默结束，
+    指挥者只好自己只读核对产物。根因：`agent/created` 在 `sessionController.create()`
+    期间（早于 `ledger.setExecution()`）触发，`decorate()` 里
+    `findByWorkerSession()` 找不到工单 → 装饰被静默跳过。
+  - **第二轮（修 A/B 后）**：worker 拿到人设与 `commander_report`，并真的调用了两次
+    （`status: ready` + hello.txt 绝对路径）。但它的工具清单**只剩
+    `commander_report` + `subagent`**：`decorate()` 用 `tools.get()` 过滤 `allow`，而装饰
+    发生在 agent 组装早期、全局工具还没就绪，过滤结果是空数组 → `restrict({allow: []})`
+    把**所有**工作工具屏蔽了，worker 只能用子代理代写文件（bug C）。
+  - **第三轮（修 C 后，最终证据）**：worker 工具清单 **32 个**，含 `write` / `read` /
+    `pwsh` / `commander_report`；它**直接**在自己目录写出 `hello.txt`、`read` 回读确认、
+    `commander_report(status: ready, summary=绝对路径)`；汇报通知 steer 唤醒空闲指挥者，
+    指挥者只读核验后 `commander_ticket_update(status: done)` 成功——原始返回里
+    `"last_report": {..., "question": null}`（修复后的形状）、`"status": "done"`、
+    `"stage": "ended"`。账本落盘 `status: done`；`bin/commander-status.mjs --ledger <该账本>`
+    退出码 **0**（无未结束工单）；`work/<ticket>/hello.txt` 在 worker 目录、指挥者工作目录
+    没有该文件，**目录隔离成立**。`commander_worker_spawn` 的 assignment
+    `started_at → ended_at` 差 **56 ms**（不阻塞回合）。
+  - **`node --test` 403 → 407 通过**：新增 `test/tool-output.test.mjs`——按 dsh-tools 的
+    判定口径递归扫描**每个工具的原始返回值**（`undefined` / `NaN` / `±Infinity` / `-0` /
+    函数 / symbol / 非普通对象 / 环全部拒绝），覆盖工单三工具与 worker 四工具；新增
+    `worker-sessions.test.mjs` 用例：spawn 后立即装饰、restrict 用静态 allow、工具白名单
+    guard 拒绝 `subagent`、放行 `write`。**先红后绿**：把 `lib/` 回退到 0.9.0 后这 4 个新
+    用例全部失败，再恢复修复后全绿。
+  - 修复：`lib/tickets.js`（空 question → `null`）、`lib/worker-sessions.js`（spawn 在
+    `setExecution` 后显式 `decorate()`；restrict 改静态 allow + `tools.guard` 兜底）。
+  - 沙箱已 `devkit_ui_close` + `devkit_sandbox_destroy`（凭据文件随沙箱删除）。
 - **0.9.0 第十一轮（运维 status CLI）**：
   - **`node --test` 403/403 通过**（397 → 403）：新增 `test/status-cli.test.mjs`，用真实子进程
     跑 `bin/commander-status.mjs`，覆盖退出码 0/1/2/3、`--json` 输出、人类可读输出、`--help`，
@@ -810,6 +860,18 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.9.1** —— 真实 Web profile + 真实模型的 Worker Session 端到端验证抓到的三处修复：
+  ① `ticketView()` 空问题返回 `question: undefined`，被 dsh-tools 的 lossless-JSON 校验
+  判为 invalid output → 工单三工具（及依赖 `ticketView` 的 worker_status）在有回报后全部失败；
+  改为 `null`，并新增 `test/tool-output.test.mjs` 递归守护**所有工具返回值**。
+  ② `spawn()` 依赖 `agent/created` 装饰 worker，而该事件早于 `ledger.setExecution()`，
+  worker 始终拿不到 `commander_report` 与人设 → 改为 setExecution 后显式 `decorate()`。
+  ③ 装饰时用 `tools.get()` 过滤 restrict 的 allow，组装早期得到空数组 → worker 的工作工具
+  被全部屏蔽；改为静态 allow + `tools.guard` 白名单兜底。
+  测试 403 → 407；真实回合证据（spawn 不阻塞 56 ms、目录隔离、`commander_report` → steer →
+  `commander_ticket_update(done)`、status CLI 退出 0）写进「验证过什么」。
+  **默认仍不开启 workerSessions**：是否默认开启（1.0.0）取决于 worker 会话在会话列表里
+  如何呈现，见「已知边界」。
 - **0.9.0** —— 外部巡检（`bin/commander-status.mjs`，plan 第 4 阶段/1.1 的最小可用形态）：
   只读账本，输出未结束工单 / 待人工项 / 停滞项，退出码 **0 空闲 / 1 在跑 / 2 需要人 / 3
   账本不可读**；支持 `--json` / `--ledger` / `--profile` / `--stall-minutes`；只读巡检

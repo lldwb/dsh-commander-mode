@@ -153,6 +153,22 @@ test('spawn：建目录、workspace、独立 Session、权限、重命名、账�
   assert.ok(text.includes('能运行'), '派工消息要带验收判据');
 });
 
+test('spawn：创建后立即装饰 worker（不依赖 agent/created 事件；0.9.1 真机 bug）', async () => {
+  const { ledger, ticket } = ledgerWithTicket();
+  const { service, parent, record } = workersOf({ ledger });
+  await service.spawn({ parentAgent: parent, ticketId: ticket.id, task: '做' });
+  const worker = record.workers.get(`worker-${ticket.id}`);
+  // 真机 E2E 里 `agent/created` 在 `sessionController.create()` 期间触发，而那时账本还没有
+  // execution 记录 → decorate() 找不到工单、静默跳过：worker 拿到的是 standard 工具集，
+  // 没有 commander_report，于是任务做完也不汇报。spawn 必须在 setExecution 后自己装饰。
+  assert.equal(worker.record.sections.length, 1, 'worker 要有人设 section');
+  assert.match(worker.record.sections[0].text(), /Worker Session/u);
+  assert.equal(worker.record.restricts.length, 1, 'worker 工具要收紧');
+  assert.ok(worker.record.restricts[0].allow.includes('commander_report'));
+  assert.equal(worker.record.tools[0].name, 'commander_report', 'worker 必须拿到 commander_report');
+  assert.equal(worker.record.guards.length, 2, 'worker 要有工具白名单 + 工单结束两个 guard');
+});
+
 test('spawn：同一工单只能一个 Worker；超过 maxWorkers 拒绝', async () => {
   const { ledger, ticket } = ledgerWithTicket();
   const { service, parent } = workersOf({ ledger, options: { maxWorkers: 1 } });
@@ -175,9 +191,17 @@ test('decorate：worker 创建后注入人设、收紧工具、注册 commander_
   assert.equal(worker.record.restricts.length, 1);
   assert.ok(worker.record.restricts[0].allow.includes('commander_report'));
   assert.ok(worker.record.restricts[0].allow.includes('write'));
+  // ⚠️ 静态清单，不能按 decorate 时刻的 `tools.get()` 过滤：那一刻 preset 的全局工具可能还
+  // 没组装完，过滤出来是空数组 → restrict 会把所有工作工具都屏蔽（0.9.1 web E2E 踩过）。
+  // 假 ctx 的 `get()` 只认识 read/write/commander_report，这里的 pwsh 就是回归证据。
+  assert.ok(worker.record.restricts[0].allow.includes('pwsh'), 'restrict 的 allow 必须是静态清单');
   assert.equal(worker.record.tools[0].name, 'commander_report');
-  assert.equal(worker.record.guards.length, 1);
-  assert.equal(worker.record.guards[0](), undefined, '工单未结束时应放行');
+  assert.equal(worker.record.guards.length, 2);
+  // 第一个是工具白名单 guard：非工作工具一律拒绝，工作工具放行。
+  assert.match(worker.record.guards[0]({ name: 'subagent' }), /只允许工作工具/u);
+  assert.equal(worker.record.guards[0]({ name: 'write' }), undefined);
+  // 第二个是工单结束 guard：工单未结束时应放行。
+  assert.equal(worker.record.guards[1](), undefined, '工单未结束时应放行');
 });
 
 test('report：写账本并 steer 指挥者；工单结束后 report 返回 ticket-ended', async () => {
