@@ -70,12 +70,15 @@ import {
 } from './lib/protocol.js';
 import { installSpecialist } from './lib/specialists.js';
 import {
+  DELEGATION_CHANNELS,
   SYNC_CONTEXT_NAME,
   SYNC_CONTEXT_ORDER,
   buildSyncNudge,
+  consumeStaleNudge,
   createSyncLedger,
   evaluateSync,
   recordBoard,
+  recordDelegation,
   recordPlan,
   renderSyncBoard,
 } from './lib/sync.js';
@@ -247,8 +250,52 @@ export function apply(ctx) {
   const inspectSync = (agent) => {
     const ledger = ledgerOf(agent);
     const team = readTeam(agent);
-    if (team !== undefined) recordBoard(ledger, team.tasks);
-    return { view: evaluateSync(ledger), members: team?.members ?? [] };
+    const now = Date.now();
+    if (team !== undefined) recordBoard(ledger, team.tasks, now);
+    return { ledger, view: evaluateSync(ledger, { members: team?.members ?? [], now }), members: team?.members ?? [] };
+  };
+
+  /**
+   * Team 通道的**派活**动作（`wait_agent` / `list_agents` 不算派活，它们是等待与读状态）。
+   *
+   * 0.5.0 用这两个集合统计"派发通道配比"，发现"任务板还开着、派活却全走一次性 specialist"。
+   */
+  const TEAM_DISPATCH_TOOLS = new Set(['spawn_teammate', 'send_message']);
+  /** 一次性前台的派活动作：`subagent_<id>` 由前缀识别。 */
+  const ONE_SHOT_DISPATCH_TOOLS = new Set(['subagent', 'subagent_fork', 'workflow']);
+
+  /**
+   * 判断一次工具调用是哪条派发通道。
+   *
+   * @param {string} toolName - 工具名。
+   * @returns {string | undefined} `'team'` / `'one-shot'`；不是派活动作时 undefined。
+   */
+  const classifyDelegation = (toolName) => {
+    if (TEAM_DISPATCH_TOOLS.has(toolName)) return DELEGATION_CHANNELS.TEAM;
+    if (ONE_SHOT_DISPATCH_TOOLS.has(toolName)) return DELEGATION_CHANNELS.ONE_SHOT;
+    if (toolName.startsWith('subagent_')) return DELEGATION_CHANNELS.ONE_SHOT;
+    return undefined;
+  };
+
+  /**
+   * 观测一次派发（只统计指挥者自己的派活动作）。
+   *
+   * @param {object} exec - `tools/pre-execute` 的执行上下文。
+   * @returns {void}
+   */
+  const observeDelegation = (exec) => {
+    try {
+      const agent = exec?.agent;
+      if (agent === undefined || isDelegatedAgent(agent)) return;
+      if (readOptions().syncGuard === false) return;
+      const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      const kind = classifyDelegation(toolName);
+      if (kind === undefined) return;
+      recordDelegation(ledgerOf(agent), kind, toolName);
+    } catch (error) {
+      // 观测失败不影响派活本身。
+      ctx.logger?.debug?.('commander-mode: 记录派发通道失败：%o', error);
+    }
   };
 
   // ---------------------------------------------------------------- 提示词 ---
@@ -317,7 +364,7 @@ export function apply(ctx) {
             // 算 epoch，这次已经完全同步的写入会被误判成"清单落后于结算"。
             // 所以写清单时先把**当时真实的板**记成新基线：它代表"这次同步之后"的状态。
             const team = readTeam(agent);
-            if (team !== undefined) recordBoard(ledger, team.tasks);
+            if (team !== undefined) recordBoard(ledger, team.tasks, Date.now());
             recordPlan(ledger, todos);
           }
         }
@@ -343,8 +390,10 @@ export function apply(ctx) {
       const key = `${String(agent.session?.id ?? agent.id)}:${String(turn)}`;
       if (nudgedTurns.has(key)) return; // 同一回合只兜一次，否则会死循环
 
-      const { view } = inspectSync(agent);
-      const text = buildSyncNudge(view);
+      const { ledger, view } = inspectSync(agent);
+      // 孤儿任务（未结算 + 无人认领/主人已停手）每条会话强制提醒一次；之后它仍会留在
+      // 每一步的看板里，但不该每回合都用注入拦人。
+      const text = buildSyncNudge(view, { includeStale: consumeStaleNudge(ledger, view) });
       if (text === '') return;
 
       // 账本只需要覆盖那些还可能正在收尾的轮次。
@@ -394,6 +443,8 @@ export function apply(ctx) {
   ctx.on('tools/pre-execute', (exec, next) => {
     try {
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      // 0.5.0：先记一笔派发通道（Team / 一次性），供"团队闲置"判定使用。
+      observeDelegation(exec);
       const blockedSet = new Set(readOptions().blockedTools ?? DEFAULT_BLOCKED_TOOLS);
       // 快路径：绝大多数调用既不在拦截清单里，也不是 Lead 发起的。
       if (blockedSet.has(toolName) && !isDelegatedAgent(exec?.agent)) {

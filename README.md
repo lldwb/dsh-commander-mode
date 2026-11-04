@@ -16,6 +16,10 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   时直接给纠正指令）；万一还是忘了，回合结束前的兜底钩子会把它拽回来。0.4.0 起生效。
 - **a2a 有纪律**：派活一次写全、开工前先约定回报格式、`wait_agent` 超时**不算异常**
   （别紧接着 `list_agents` + `team_task_list` 复查）—— 少一轮就是一个回合。0.4.0 起生效。
+- **Team 优先（0.5.0）**：多阶段 / 长任务 / 需要中途追加指令或任务板进度 → 走「智能体团队」
+  （`spawn_teammate` + `team_task_*` + `send_message`）；一次性单点任务才用 `subagent_<id>`。
+  看板会显示**派发通道配比**并点名**孤儿任务**（没人认领 / 主人已停手），防止"重启后队友没了
+  就退化成只用一次性 specialist、任务板留下 6 项没收尾"。
 
 ```text
 30 秒上手
@@ -94,6 +98,37 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
 顺带修掉一个真实的**系统提示泄漏**：teammate 与指挥者共用同一个 preset scope，0.3.x 里
 每个执行者的系统提示都带着整份「指挥者模式 … 你不执行操作」（约 4.4 KB/请求），既浪费
 token 又和它自己的执行者人设冲突。0.4.0 起 prompt section 按 agent 判定，子级返回空串。
+
+### Team 优先与通道配比（0.5.0）
+
+0.4.0 让 Agent Teams 的**状态**可见，但没有解决"**干脆不用 Team**"。真实会话
+（`session-7064696b`，4 天、1374 个事件、21 个子代理）的形状：
+
+| 阶段 | Team 工具调用 | 一次性 specialist | 任务板 |
+|---|---|---|---|
+| seq 0–1000 | **118 次**（6 `spawn_teammate` / 14 建板 / 22 `send_message` / 37 `wait_agent`） | 0 | 正常推进 |
+| seq 1000–1333（运行时重启后） | 13 次 | **13 次** | 开始漂移 |
+| seq 1333–结束 | **0 次** | **2 次** | 留了 6 项没收尾 |
+
+结局：`task-3` / `task-4` / `task-14` **从未被认领**，`task-5` / `task-12` / `task-13`
+的主人已经 `inactive`，而指挥者还在用一次性 specialist 派新活 —— 长活被切成一堆互不相干的
+一次性调用，任务板成了"假进度"。0.5.0 从三个地方一起堵：
+
+1. **决策点提示**：每个 `subagent_<id>` 的**工具描述**里写明"一次性通道：没有持续对话 /
+   任务板 / 后台通知，每次新 child；多阶段 / 长任务 / 需中途追加指令 → 改用 Team"。
+   通道选择是在**选工具的那一刻**做的，提示放在那里比埋在长协议里有效。
+2. **协议新增「通道配比：Team 优先，specialist 只做单点」**（两条通道都存在时才出现）：
+   按任务形状选通道、**建板必有主**、复用同一个 teammate、**重启后先看团队再决定用谁**、
+   teammate 静默结束时**先查产物**再判（别一次就得出"Team 不好用"）。
+3. **看板新增两类告警**：
+   - **派发通道配比**：`派发通道：Team N 次 / 一次性 specialist M 次`；最近 3 次派活全是
+     一次性 specialist 且任务板还有未结算 → `⚠️ 团队闲置`，提示改用 Team；
+   - **孤儿任务**（`⚠️ 任务板有孤儿任务`）：未结算 + 超过 10 分钟宽限期 + （无人认领 或
+     主人已 `inactive`）→ 提示"用 `spawn_teammate` 补人认领，或自己 `team_task_update`
+     结算/删除"。这类任务每条会话**强制兜底提醒一次**，之后留在看板里常驻。
+
+宽限期 10 分钟是刻意留的：规划阶段一次建 5–15 个任务是常态，过早报警只会有噪声；
+而那次会话里的孤儿任务躺了**两天**，10 分钟足够区分。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -314,6 +349,14 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   "先 `team_task_update` 再 `todo_write`"会被误判成清单落后。
 - **协议 section 不再注入给 teammate（0.4.0）。** 之前执行者会被灌整份指挥者协议；现在
   子级返回空串。副作用：teammate 也看不到「结算同步」等条款——它们不需要，指挥者负责。
+- **孤儿任务与团队闲置是"提示"，不是强拦（0.5.0）。** 孤儿任务（无人认领 / 主人已停手超过
+  10 分钟）每条会话只**强制兜底提醒一次**，之后只留在看板里；团队闲置（最近 3 次派活全是
+  一次性 specialist 且有未结算任务）**不拦回合**，只在看板里常驻。阈值都写死在
+  `lib/sync.js`（`STALE_OPEN_GRACE_MS`、最近 3 次），有单测覆盖。
+- **派发配比只统计指挥者自己的派活动作。** `spawn_teammate` / `send_message` 记 Team；
+  `subagent_<id>` / `subagent` / `subagent_fork` / `workflow` 记一次性。
+  `wait_agent` / `list_agents` / `team_task_*` 不计入（它们是等待、读状态与建板，不是派活）。
+  重启会重置计数（账本是进程内的），重启后第一次派发的配比从零开始。
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -370,6 +413,33 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.5.0 第六轮（Team 优先 / 通道配比 / 孤儿任务）**：
+  - **`node --test` 285/285 通过**：新增通道配比（`recordDelegation` / `channel-drift`）、
+    孤儿任务（`board-stale-open`：宽限期、依赖未满足、主人 running vs inactive、结算后消失）、
+    `consumeStaleNudge`（每条会话只强提醒一次）、以及接线用例（`tools/pre-execute` 观测派发、
+    `syncGuard: false` 不记账、teammate 自己的派发不计入指挥者账本）。
+  - **依据来自真实会话审计**（`session-7064696b`，1374 个事件）：按 seq 分段统计出
+    `Team 118 次 → 13 次 → 0 次` 与 `一次性 specialist 0 → 13 → 2` 的漂移曲线，
+    以及最终 **6/14 未结算**（3 项 unowned、3 项 owner inactive）。这条曲线是 0.5.0 的设计输入，
+    已写进 `README` 与 skill 长文（测试钉住数字，防止以后被悄悄删掉）。
+  - **真实 Loader 端到端（headless 沙箱，真实 `agentTeams` 服务）**：让模型
+    ① `team_task_create` 建一个未结算任务；② 连续做 3 次**一次性派发**；③ 复述下一步的
+    运行时上下文。模型逐字贴出的看板原文：
+    ```text
+    【指挥者·同步看板】任务板 0/1 已结算（未结算 1 项：task-1 pending）；计划清单：未建立；团队：**无 teammate**（重启后旧队友不会自动复活，需要人时用 spawn_teammate 补）；派发通道：Team 0 次 / 一次性 specialist 3 次。
+    ⚠️ 最近 3 次派活都走一次性 specialist，而任务板还有 1 项未结算（task-1） → 长任务 / 多阶段工作改用 Team 通道（spawn_teammate + team_task_*，续做用 send_message），一次性 specialist 只用于"前台等一会就拿到结果"的单点任务。
+    ```
+    中间轮次的计数依次为 `一次性 specialist 1 次 → 2 次 → 3 次`，第 3 次触发告警 —— 说明
+    "派发观测 → 账本 → 看板提示"这条链路在真实运行时是通的。
+  - **该沙箱里的 specialist 通道不可用（harness 限制，非回归）**：headless 模板没有
+    `agentPresets` 服务（stderr 原文 `preset-commander … pending (waiting for service:
+    agentPresets)`），而模式行的 specialist 安装要 `inject(['tools','subagents','agentPresets',
+    'commanderSettings'])`，缺一个回调就不执行 → 没有 `subagent_<id>` 工具。所以上面那三次
+    一次性派发是用 `workflow` 执行的（0.5.0 账本里 `workflow` 同样记 one-shot），
+    **不是**用 specialist 工具；真实部署里 specialist 通道由 preset 组合提供，0.2.0 起的
+    四轮回归已单独验证过。
+  - **未验证的**：真实会话里"看板提示真的把人拉回 Team 通道"的长期效果（需要多次真实使用才能
+    观察）；`channel-drift` 的 3 次阈值也只是基于该会话的先验选择（不是 A/B 结果）。
 - **0.4.0 第五轮（结算同步 / a2a 效率，真实 Loader 端到端）**，证据全部来自 headless 沙箱
   真跑（`dsh --profile <sandbox>`，把模式行临时挂到 profile 顶层——headless 的一次性 runner
   拒绝"已绑定 preset"的会话，见 `dsh-headless/lib/index.js`）：
@@ -438,6 +508,15 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.5.0** —— 解决「Agent Teams 用得太少」（依据 `session-7064696b`：Team 工具调用
+  118 → 13 → 0 的漂移曲线，任务板最终 6/14 未结算）：① **决策点提示** —— 每个
+  `subagent_<id>` 的工具描述写明"一次性通道，多阶段/长任务改用 Team"；② 协议新增
+  **「通道配比：Team 优先，specialist 只做单点」**五条（按任务形状选通道 / 建板必有主 /
+  复用同一个 teammate / 重启后先看团队 / teammate 静默结束先查产物），只有两条通道都在时出现；
+  ③ 看板新增 **派发通道配比** 与 **孤儿任务** 告警（未结算 + 超过 10 分钟 + 无人认领或主人
+  inactive），孤儿任务每条会话强制兜底提醒一次；④ `lib/sync.js` 新增
+  `recordDelegation` / `channel-drift` / `board-stale-open` / `consumeStaleNudge`，测试
+  265 → 285。
 - **0.4.0** —— 修「任务完成后不同步」并优化 a2a 效率（依据 2026-11-02 一次 1111 事件、
   三小时的指挥者会话）：① 新增**结算同步**体系 —— 每轮运行时上下文里的「指挥者·同步看板」
   （任务板 / 计划清单 / 团队状态实时快照 + 未同步项的纠正指令）+ `agent/turn-stopping`

@@ -644,6 +644,59 @@ test('syncGuard: false 时看板与兜底一起关掉（协议仍要求同步）
   assert.ok(record.sections[0].text({ agent: LEAD }).includes('结算同步'));
 });
 
+test('派发通道观测：连续三次一次性 specialist 后，看板报"团队闲置"', () => {
+  // 0.5.0 的依据：session-7064696b 里重启后 15 次派活全走一次性 specialist，Team 通道归零，
+  // 任务板留着 6 项没收尾。这里验证"派活时记通道 → 看板据此提示 Team 优先"的接线。
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-14', status: 'pending', subject: '核验', ready: true }] });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const preExecuteListener = preExecute(record);
+
+  context.text({ agent: LEAD }); // 建看板基线（同时把任务板记进账本）
+  for (let index = 0; index < 3; index += 1) {
+    preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next);
+  }
+  const text = context.text({ agent: LEAD });
+  assert.ok(text.includes('派发通道：Team 0 次 / 一次性 specialist 3 次'), text);
+  assert.ok(text.includes('一次性 specialist'), text);
+  // 提示要给出 Team 通道的出路，而且不能把内部 issue code 泄漏到模型看得到的地方。
+  assert.ok(text.includes('spawn_teammate'), text);
+  assert.ok(!text.includes('channel-drift'), text);
+});
+
+test('Team 通道派活会记进配比；等待/读状态/子级派发都不记', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'in_progress', subject: '实现' }] });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const preExecuteListener = preExecute(record);
+  context.text({ agent: LEAD });
+
+  for (const exec of [
+    { name: 'send_message', agent: LEAD },
+    { name: 'spawn_teammate', agent: LEAD },
+    { name: 'wait_agent', agent: LEAD }, // 等待不算派活
+    { name: 'list_agents', agent: LEAD }, // 读状态不算派活
+    { name: 'team_task_create', agent: LEAD }, // 建板不算派活
+    { name: 'subagent_implementer', agent: TEAMMATE }, // 子级自己的派发
+  ]) {
+    preExecuteListener(exec, spyNext({ kind: 'allow' }).next);
+  }
+  const text = context.text({ agent: LEAD });
+  assert.ok(text.includes('Team 2 次 / 一次性 specialist 0 次'), text);
+});
+
+test('syncGuard: false 时完全不记派发通道', () => {
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'pending', subject: 'x', ready: true }] });
+  const settings = makeSettings({ options: { syncGuard: false } });
+  const { record } = boot({ agentTeams, settings });
+  const preExecuteListener = preExecute(record);
+  for (let index = 0; index < 3; index += 1) {
+    preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next);
+  }
+  // 看板整体关闭，自然也不该有派发统计。
+  assert.equal(syncContext(record).text({ agent: LEAD }), '');
+});
+
 test('看板里带上团队状态（teammate 的 running/inactive），但过滤掉 Lead 自己', () => {
   const agentTeams = makeAgentTeams({
     tasks: [{ id: 'task-1', status: 'completed' }],

@@ -14,17 +14,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DELEGATION_CHANNELS,
   OPEN_TASK_STATUSES,
+  STALE_OPEN_GRACE_MS,
   SYNC_CONTEXT_NAME,
   SYNC_CONTEXT_ORDER,
   TERMINAL_TASK_STATUSES,
   buildSyncNudge,
+  consumeStaleNudge,
   createSyncLedger,
   evaluateSync,
   isOpenTaskStatus,
   isOpenTodoStatus,
   isTerminalTaskStatus,
   recordBoard,
+  recordDelegation,
   recordPlan,
   renderSyncBoard,
 } from '../lib/sync.js';
@@ -223,4 +227,172 @@ test('没有未同步项时兜底提醒是空串', () => {
   recordBoard(ledger, [task('task-1', 'completed')]);
   recordPlan(ledger, [{ content: '实现', status: 'completed' }]);
   assert.equal(buildSyncNudge(evaluateSync(ledger)), '');
+});
+
+// ------------------------------------------------------ 孤儿任务（0.5.0） ---
+
+/** 宽限期之后的时间戳。 */
+const LATER = STALE_OPEN_GRACE_MS + 60_000;
+
+test('宽限期内的未认领任务不算孤儿（规划阶段一次建很多任务是常态）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-3', 'pending', { ready: true })], 0);
+  const view = evaluateSync(ledger, { now: 60_000 }); // 1 分钟
+  assert.ok(!view.issues.some((issue) => issue.code === 'board-stale-open'), JSON.stringify(view.issues));
+});
+
+test('超过宽限期仍无人认领的任务算孤儿，并点名到任务 id', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-3', 'pending', { ready: true }), task('task-4', 'pending', { ready: true })], 0);
+  const view = evaluateSync(ledger, { now: LATER });
+  const issue = view.issues.find((entry) => entry.code === 'board-stale-open');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('从未被认领'), issue.detail);
+  assert.ok(issue.detail.includes('task-3'), issue.detail);
+  // 兜底提醒要点名"建板必有主"的两个出路。
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('spawn_teammate'), nudge);
+  assert.ok(nudge.includes('team_task_update'), nudge);
+});
+
+test('依赖未满足的 pending 任务不是孤儿（它在排队，不是没人管）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-9', 'pending', { ready: false, blockedBy: ['task-8'] })], 0);
+  const view = evaluateSync(ledger, { now: LATER });
+  assert.ok(!view.issues.some((issue) => issue.code === 'board-stale-open'));
+});
+
+test('主人在跑的任务不算孤儿；主人已 inactive 才算', () => {
+  const tasks = [task('task-5', 'in_progress', { ownerName: 'ledger-builder' })];
+  const ledger = createSyncLedger();
+  recordBoard(ledger, tasks, 0);
+
+  const running = evaluateSync(ledger, { members: [member('ledger-builder', 'running')], now: LATER });
+  assert.ok(!running.issues.some((issue) => issue.code === 'board-stale-open'));
+
+  const idle = evaluateSync(ledger, { members: [member('ledger-builder', 'inactive')], now: LATER });
+  const issue = idle.issues.find((entry) => entry.code === 'board-stale-open');
+  assert.ok(issue, JSON.stringify(idle.issues));
+  assert.ok(issue.detail.includes('ledger-builder'), issue.detail);
+  assert.ok(issue.detail.includes('已停手'), issue.detail);
+});
+
+test('任务在宽限期内动过就不算孤儿（changedAt 会刷新）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-5', 'pending', { ready: true })], 0);
+  // 第 9 分钟认领 → 刷新 changedAt
+  recordBoard(ledger, [task('task-5', 'in_progress', { ownerName: 'x' })], STALE_OPEN_GRACE_MS - 60_000);
+  const view = evaluateSync(ledger, { members: [member('x', 'running')], now: STALE_OPEN_GRACE_MS + 60_000 });
+  assert.ok(!view.issues.some((issue) => issue.code === 'board-stale-open'));
+});
+
+test('孤儿任务被结算后问题消失', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-3', 'pending', { ready: true })], 0);
+  assert.ok(evaluateSync(ledger, { now: LATER }).issues.some((issue) => issue.code === 'board-stale-open'));
+  recordBoard(ledger, [task('task-3', 'completed')], LATER);
+  assert.ok(!evaluateSync(ledger, { now: LATER + 1000 }).issues.some((issue) => issue.code === 'board-stale-open'));
+});
+
+test('孤儿任务兜底默认包含，可用 includeStale:false 降级为看板常驻', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-3', 'pending', { ready: true })], 0);
+  const view = evaluateSync(ledger, { now: LATER });
+  assert.ok(buildSyncNudge(view).includes('孤儿任务'));
+  assert.equal(buildSyncNudge(view, { includeStale: false }), '');
+});
+
+// ------------------------------------------------------ 团队闲置（0.5.0） ---
+
+test('最近三次派活全走一次性 specialist、且任务板还开着 → 报团队闲置', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-14', 'pending', { ready: true })], 0);
+  for (const name of ['subagent_implementer', 'subagent_implementer', 'subagent_implementer']) {
+    recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, name);
+  }
+  const view = evaluateSync(ledger, { now: 60_000 });
+  const issue = view.issues.find((entry) => entry.code === 'channel-drift');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('一次性 specialist'), issue.detail);
+  assert.ok(issue.detail.includes('task-14'), issue.detail);
+  // 提示要给出正确出路：Team 通道。
+  assert.ok(renderSyncBoard(view).includes('spawn_teammate'));
+});
+
+test('团队通道有派活 / 任务板已清空 / 次数不够 → 都不报团队闲置', () => {
+  const cases = [
+    // 混了 Team 派发
+    (ledger) => {
+      recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+      recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message');
+      recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+      recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+    },
+    // 只有两次
+    (ledger) => {
+      recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+      recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+    },
+  ];
+  for (const arrange of cases) {
+    const ledger = createSyncLedger();
+    recordBoard(ledger, [task('task-14', 'pending', { ready: true })], 0);
+    arrange(ledger);
+    assert.ok(!evaluateSync(ledger, { now: 60_000 }).issues.some((issue) => issue.code === 'channel-drift'));
+  }
+  // 任务板没有未结算任务 → 通道怎么用都无所谓。
+  const settled = createSyncLedger();
+  recordBoard(settled, [task('task-1', 'completed')], 0);
+  for (let index = 0; index < 3; index += 1) recordDelegation(settled, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+  assert.ok(!evaluateSync(settled, { now: 60_000 }).issues.some((issue) => issue.code === 'channel-drift'));
+});
+
+test('团队闲置不拦回合（只在看板里常驻提醒）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-14', 'pending', { ready: true })], 0);
+  for (let index = 0; index < 3; index += 1) recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+  // 60 秒内没有孤儿任务、也没有计划清单，因此不该注入兜底。
+  assert.equal(buildSyncNudge(evaluateSync(ledger, { now: 60_000 })), '');
+});
+
+test('派发计数与最近序列：只收两种通道，序列有上限', () => {
+  const ledger = createSyncLedger();
+  recordDelegation(ledger, 'bogus', 'x'); // 非法类别忽略
+  for (let index = 0; index < 12; index += 1) {
+    recordDelegation(ledger, index % 2 === 0 ? DELEGATION_CHANNELS.TEAM : DELEGATION_CHANNELS.ONE_SHOT, 't');
+  }
+  assert.equal(ledger.delegations.team, 6);
+  assert.equal(ledger.delegations.oneShot, 6);
+  assert.equal(ledger.recentDelegations.length, 8);
+  // 非法入参不炸。
+  assert.doesNotThrow(() => recordDelegation(null, DELEGATION_CHANNELS.TEAM));
+  assert.doesNotThrow(() => recordDelegation({}, DELEGATION_CHANNELS.TEAM));
+});
+
+test('看板给出派发通道配比；没有 teammate 时点名"重启不会自动复活"', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-14', 'pending', { ready: true })], 0);
+  recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message');
+  recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
+  const text = renderSyncBoard(evaluateSync(ledger, { now: 60_000 }), []);
+  assert.ok(text.includes('派发通道：Team 1 次 / 一次性 specialist 1 次'), text);
+  assert.ok(text.includes('无 teammate'), text);
+  assert.ok(text.includes('spawn_teammate'), text);
+});
+
+test('孤儿任务每条会话只强提醒一次，之后降级为看板常驻', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-3', 'pending', { ready: true })], 0);
+  const view = evaluateSync(ledger, { now: LATER });
+  assert.equal(consumeStaleNudge(ledger, view), true, '第一次应强制提醒');
+  assert.equal(ledger.staleNudged, true);
+  // 第二次：纳入提醒的选项关掉，但看板里仍然能看到孤儿任务。
+  assert.equal(consumeStaleNudge(ledger, view), false);
+  assert.ok(renderSyncBoard(view).includes('孤儿任务'));
+  // 没有孤儿任务时不会误置标志。
+  const clean = createSyncLedger();
+  assert.equal(consumeStaleNudge(clean, evaluateSync(clean, { now: LATER })), true);
+  assert.equal(clean.staleNudged, false);
+  // 异常入参不炸。
+  assert.equal(consumeStaleNudge(null, undefined), true);
 });

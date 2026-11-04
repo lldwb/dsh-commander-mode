@@ -435,6 +435,42 @@ test('标准流程的监控/收尾步与同步语义一致，且不再教轮询'
   assert.ok(FLOW_STEPS[5].detail.includes('三查'), FLOW_STEPS[5].detail);
 });
 
+// ---------------------------------------------------------------- Team 优先 ---
+
+test('两条通道都在时，紧凑版给出「通道配比：Team 优先，specialist 只做单点」', () => {
+  // 0.5.0 依据：session-7064696b 里 Team 通道在重启后被彻底放弃（后 300 个事件 0 次），
+  // 任务板留下 6 项没收尾。所以通道选择必须是 section 的一部分，而不是只在 skill 长文里。
+  assert.ok(ROSTER_SECTION.includes('通道配比：Team 优先'), ROSTER_SECTION);
+  for (const phrase of ['按任务形状选通道', '建板必有主', '复用同一个 teammate', '重启后先看团队', '静默结束']) {
+    assert.ok(ROSTER_SECTION.includes(phrase), `Team 优先缺少：${phrase}`);
+  }
+  // 必须点名"多阶段/长任务走 Team"，否则 specialist 还是会被当万能通道。
+  assert.ok(ROSTER_SECTION.includes('多阶段'), ROSTER_SECTION);
+  assert.ok(ROSTER_SECTION.includes('spawn_teammate'), ROSTER_SECTION);
+});
+
+test('没有专职子代理工具时不提「通道配比」（没有选择，就不制造选择）', () => {
+  const teamOnly = renderCommanderSection({ specialists: [], hasSpecialistTools: false });
+  assert.ok(!teamOnly.includes('通道配比'), teamOnly);
+  // 但标准流程仍然要求"建板必须有主"。
+  assert.ok(teamOnly.includes('建板必有主') || teamOnly.includes('建了板就必须有 owner'), teamOnly);
+});
+
+test('长文给出通道配比的完整论证（含会话数字与三种翻车点）', () => {
+  for (const phrase of ['通道配比：Team 优先', '建板必有主', '重启后先看团队', '静默结束先查产物', 'session-7064696b']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少：${phrase}`);
+  }
+  // 事故规模：118 次 Team 调用 → 0 次。
+  assert.ok(COMMANDER_PROTOCOL.includes('118'), '长文应写明前期的 Team 调用次数');
+  assert.ok(COMMANDER_PROTOCOL.includes('task-3'), '长文应点名从未被认领的孤儿任务');
+});
+
+test('长文写明一次性 specialist 的三条硬约束（无任务板/无后台通知/每次新 child）', () => {
+  for (const phrase of ['没有任务板', '没有后台通知', '每次调用都是新 child']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少：${phrase}`);
+  }
+});
+
 // ---------------------------------------------------------------- 长度与兼容 ---
 
 test('紧凑版长度受控：每轮注入，必须短于长文', () => {
