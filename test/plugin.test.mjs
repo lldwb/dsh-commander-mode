@@ -48,6 +48,8 @@ function makeSettings(initial = {}) {
     stateDir: '',
     requireMandate: true,
     requireTicket: true,
+    asyncDelegation: true,
+    maxAsyncTasks: 4,
     ticketStallMs: 10 * 60 * 1000,
     maxTickets: 100,
     ...(initial.options ?? {}),
@@ -770,7 +772,9 @@ test('maxSpecialists 从配置服务读，名册被截断', async () => {
 });
 
 test('工具执行会带 agentPreset 与模型覆盖，并返回子代理结算文本', async () => {
-  const { record } = boot({ specialists: [ROSTER[1]] });
+  // 同步回退路径（0.5.0 行为）：显式关掉异步。
+  const settings = makeSettings({ specialists: [ROSTER[1]], options: { asyncDelegation: false } });
+  const { record } = boot({ settings });
   await flush();
   const tool = specialistTools(record)[0];
   assert.equal(tool.name, 'subagent_reviewer');
@@ -1005,4 +1009,132 @@ test('ledger:false 时没有工单工具，也不拦截派发（0.5.0 行为）'
     spyNext({ kind: 'allow' }).next,
   );
   assert.equal(decision?.kind, 'allow');
+});
+
+// ---------------------------------------------------------------- 0.7.0 异步 ---
+
+/** 一个可手动结算的 Promise（不需要额外依赖）。 */
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** 记录 `agent.steer()` 的指挥者（会话 id 与 ledgerWithWork 一致）。 */
+function steeringAgent(steers) {
+  return {
+    id: 'session-lead',
+    session: { id: 'session-lead', header: { id: 'session-lead' } },
+    steer: (message) => steers.push(message),
+  };
+}
+
+test('0.7.0 异步：工具立即返回 started；完成后写账本并 steer 唤醒指挥者', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const settlement = deferred();
+  const settings = makeSettings({ specialists: [ROSTER[0]] });
+  const { record } = boot({ settings, ledger, settlement: settlement.promise });
+  await flush();
+  const tool = specialistTools(record)[0];
+  const steers = [];
+  const agent = steeringAgent(steers);
+
+  // 真实顺序：pre-execute 先记 Assignment，工具再异步启动。
+  await preExecute(record)(
+    { name: tool.name, agent, arguments: { task: '实现 X', ticket: ticket.id } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  const started = await tool.execute(
+    { task: '实现 X', ticket: ticket.id },
+    { agent, signal: new AbortController().signal },
+  );
+  assert.equal(started.async, true);
+  assert.equal(started.stopReason, 'started');
+  assert.match(started.text, /已启动/u);
+  assert.equal(record.activations.length, 1);
+  assert.equal(record.activations[0].delivery, 'caller');
+  // 工具返回时不应有完成通知，也不应写完成状态。
+  assert.equal(steers.length, 0);
+  assert.equal(ledger.getTicket(ticket.id, 'session-lead').status, 'working');
+
+  settlement.resolve({ output: [{ type: 'text', text: '改完了\nSTATUS: ready\n验证：单测通过' }], stopReason: 'completed' });
+  await flush();
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.status, 'review');
+  assert.equal(stored.lastReport.status, 'ready');
+  assert.equal(stored.assignments[0].ref, 'child-1');
+  assert.notEqual(stored.assignments[0].endedAt, null);
+  assert.equal(steers.length, 1);
+  const notice = steers[0].content[0].text;
+  assert.match(notice, /【指挥者·派工完成】/u);
+  assert.ok(notice.includes(ticket.id), notice);
+  assert.match(notice, /STATUS: ready/u);
+  assert.match(notice, /不要用 `wait_agent`/u);
+  assert.equal(steers[0].source.kind, 'dsh-commander-mode');
+});
+
+test('0.7.0 异步：结算失败记 failed 并 steer（带工单与错误）', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const settlement = deferred();
+  const settings = makeSettings({ specialists: [ROSTER[0]] });
+  const { record } = boot({ settings, ledger, settlement: settlement.promise });
+  await flush();
+  const steers = [];
+  const agent = steeringAgent(steers);
+  await specialistTools(record)[0].execute(
+    { task: '实现 X', ticket: ticket.id },
+    { agent, signal: new AbortController().signal },
+  );
+  settlement.reject(new Error('child 崩了'));
+  await flush();
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.status, 'failed');
+  assert.match(stored.lastReport.summary, /child 崩了/u);
+  assert.equal(steers.length, 1);
+  assert.match(steers[0].content[0].text, /失败/u);
+  assert.match(steers[0].content[0].text, /child 崩了/u);
+});
+
+test('0.7.0 异步：容量上限在启动前拒绝（不会先启动 child）', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const settlement = deferred();
+  const settings = makeSettings({ specialists: [ROSTER[0]], options: { maxAsyncTasks: 1 } });
+  const { record } = boot({ settings, ledger, settlement: settlement.promise });
+  await flush();
+  const tool = specialistTools(record)[0];
+  const agent = steeringAgent([]);
+  await tool.execute({ task: 'A', ticket: ticket.id }, { agent, signal: new AbortController().signal });
+  await assert.rejects(
+    async () => tool.execute({ task: 'B', ticket: ticket.id }, { agent, signal: new AbortController().signal }),
+    /在飞的一次性派发已达上限/u,
+  );
+  assert.equal(record.activations.length, 1, '超限时不应再启动第二个 child');
+  settlement.resolve({ output: [{ type: 'text', text: 'done\nSTATUS: ready' }], stopReason: 'completed' });
+  await flush();
+});
+
+test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  await preExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  const before = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(before.assignments.length, 1);
+  assert.equal(before.assignments[0].endedAt, null);
+
+  await postExecute(record)(
+    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { isError: false, value: { childId: 'child-1', stopReason: 'started', text: '已启动', truncated: false, async: true } },
+    spyNext().next,
+  );
+  const after = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(after.assignments[0].endedAt, null, '异步受理不应结束 Assignment');
+  assert.equal(after.lastReport, null, '异步受理不应记录回报');
 });

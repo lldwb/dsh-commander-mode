@@ -1,4 +1,4 @@
-# dsh-commander-mode —— bundle patch 层。
+﻿# dsh-commander-mode —— bundle patch 层。
 #
 # 这份 patch 只声明**一个 agent preset**：指挥者模式。在 DSH 里，一个模式**就是**一个
 # agent preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。这一行用
@@ -130,6 +130,11 @@
         requireMandate: true
         # 是否要求每次派发都带工单 id（specialist 的 ticket 参数 / Team 的 [ticket:t-N]）。
         requireTicket: true
+        # 一次性 specialist 是否异步派发（0.7.0 默认开）：工具立即返回，完成时用一条
+        # 「【指挥者·派工完成】」通知唤醒指挥者并写账本；关掉回退 0.5.0 的前台阻塞行为。
+        asyncDelegation: true
+        # 同一会话同时在飞的一次性 specialist 上限（1–12）。
+        maxAsyncTasks: 4
         # 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理）。
         ticketStallMs: 600000
         # 账本最多保留多少张工单（超出后裁剪最老的已结束工单）。

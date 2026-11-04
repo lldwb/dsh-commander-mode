@@ -1,4 +1,4 @@
-/**
+﻿/**
  * `dsh-commander-mode/agent` —— 「指挥者模式」的**模式行**（agent preset 子行）。
  *
  * ## 它是什么
@@ -88,7 +88,7 @@ import {
   renderModeOpening,
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
-import { installSpecialist } from './lib/specialists.js';
+import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
   findPlanQuestion,
   isPlanConfirmed,
@@ -311,6 +311,213 @@ export function apply(ctx) {
    */
   const getLedger = () => getService('commanderLedger');
 
+  // ------------------------------------------------------ 异步派工（0.7.0） ---
+
+  /** 异步 activation 的生命周期 signal（与工具调用脱钩；作用域销毁时中止）。 */
+  const asyncController = new AbortController();
+  try {
+    if (typeof ctx.effect === 'function') {
+      ctx.effect(() => () => {
+        try {
+          asyncController.abort(new Error('commander-mode scope disposed'));
+        } catch {
+          // 已中止不影响释放。
+        }
+      }, 'commander-mode: async delegation lifetime');
+    }
+  } catch {
+    // 没有 effect 的宿主：最多是作用域销毁时 child 继续跑，不影响正常路径。
+  }
+
+  /**
+   * 在飞异步派发：childId → 元数据。
+   *
+   * 只用于**展示与上限**；真正的状态写在账本里（工单 Assignment）。进程重启后这里清空，
+   * 但工单仍会以"派发后没有新回报"出现在看板（停滞检测兜底）。
+   */
+  const inFlight = new Map();
+
+  /** 某会话在飞数量。 */
+  const asyncCount = (sessionId) => {
+    let count = 0;
+    for (const entry of inFlight.values()) {
+      if (entry.sessionId === sessionId) count += 1;
+    }
+    return count;
+  };
+
+  /**
+   * 异步容量理由：超过 `maxAsyncTasks` 时拒绝（在启动前调用，避免先记 Assignment）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {string | undefined} 拒绝理由。
+   */
+  const asyncCapacityReason = (agent) => {
+    try {
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return undefined;
+      const limit = Number(readOptions().maxAsyncTasks);
+      const max = Number.isSafeInteger(limit) && limit >= 1 ? limit : 4;
+      if (asyncCount(sessionId) < max) return undefined;
+      return [
+        `指挥者模式：在飞的一次性派发已达上限（${max} 个）。`,
+        '不要重复派同一任务；等完成通知，或把多阶段/长任务改用 Team 通道（spawn_teammate）——它是常驻队友，不受这个上限限制。',
+      ].join('\n');
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * 用一条运行时通知唤醒指挥者（异步完成 / 失败时）。
+   *
+   * 用 `agent.steer()`（不是 inject）：steer 会**唤醒**空闲 agent，inject 只写历史。
+   * 消息形状与原型 `src/app/delivery.ts` 对齐：id + user role + source。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @param {string} text - 通知正文。
+   * @param {string} summary - 一行摘要（UI/inbox 用）。
+   * @returns {boolean} 是否投递成功。
+   */
+  const steerCommander = (agent, text, summary) => {
+    try {
+      if (agent === null || typeof agent !== 'object' || typeof agent.steer !== 'function') return false;
+      agent.steer({
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text }],
+        source: { kind: 'dsh-commander-mode', form: 'notice', summary },
+      });
+      return true;
+    } catch (error) {
+      ctx.logger?.warn?.('commander-mode: 投递异步完成通知失败（会话可能已关闭）：%o', error);
+      return false;
+    }
+  };
+
+  /**
+   * 异步派发启动成功：登记在飞，并挂后台结算处理。
+   *
+   * @param {object} info - 参数。
+   * @param {object} info.agent - 指挥者 agent（发起派发者）。
+   * @param {string} info.childId - 子会话 id。
+   * @param {string} info.ticketId - 工单 id（可为空串）。
+   * @param {string} info.toolName - 工具名。
+   * @param {string} info.specialistId - specialist id。
+   * @param {Promise<object>} info.result - activation 的结算 Promise。
+   * @returns {void}
+   */
+  const asyncStarted = ({ agent, childId, ticketId, toolName, specialistId, result }) => {
+    const sessionId = sessionIdOf(agent);
+    if (sessionId === undefined) throw new Error('无法定位指挥者会话（agent.session.id 为空）');
+    const entry = { agent, sessionId, childId, ticketId, toolName, specialistId, startedAt: Date.now() };
+    inFlight.set(childId, entry);
+    ctx.logger?.info?.('commander-mode: 异步派发已启动 %s（%s，工单 %s）', childId, specialistId, ticketId || '无');
+    Promise.resolve(result).then(
+      (settled) => asyncCompleted(entry, settled),
+      (error) => asyncFailed(entry, error),
+    );
+  };
+
+  /** 清理在飞记录（幂等）。 */
+  const finishInFlight = (entry) => {
+    if (entry?.childId !== undefined && inFlight.get(entry.childId) === entry) inFlight.delete(entry.childId);
+  };
+
+  /** 把结算文本压成通知里的摘要（截断到预算）。 */
+  const settleTextOf = (settled) => {
+    let text = outputText(settled?.output).trim();
+    if (text === '') {
+      const reason = typeof settled?.stopReason === 'string' ? settled.stopReason : 'unknown';
+      text = reason === 'completed' ? '（子代理没有留下收尾文本）' : `（没有收尾文本；停止原因：${reason}）`;
+    }
+    if (text.length > MAX_RESULT_CHARS) text = `${text.slice(0, MAX_RESULT_CHARS)}\n…（已截断，原始 ${text.length} 字符）`;
+    return text;
+  };
+
+  /**
+   * 异步结算成功：写账本 + 唤醒指挥者。
+   *
+   * @param {object} entry - 在飞记录。
+   * @param {object} settled - activation 结算结果。
+   * @returns {void}
+   */
+  const asyncCompleted = (entry, settled) => {
+    try {
+      finishInFlight(entry);
+      const text = settleTextOf(settled);
+      const stopReason = typeof settled?.stopReason === 'string' ? settled.stopReason : 'unknown';
+      const parsed = parseReportStatus(text);
+      const ledger = getLedger();
+      if (ledger !== undefined && entry.ticketId !== '') {
+        try {
+          ledger.markAssignmentSettled(entry.ticketId, entry.sessionId, entry.childId);
+          ledger.recordReport(entry.ticketId, entry.sessionId, {
+            status: parsed?.status ?? 'progress',
+            summary: parsed === undefined
+              ? `异步执行者结算但未按约定给出 STATUS 行；结果见会话。${text.slice(0, 400)}`
+              : text.slice(0, 2000),
+          });
+        } catch (error) {
+          ctx.logger?.debug?.('commander-mode: 写异步结算到账本失败：%o', error);
+        }
+      }
+      const statusLine = parsed === undefined ? '未给出 STATUS 行' : `STATUS: ${parsed.status}`;
+      const ticketLine = entry.ticketId === '' ? '工单：无' : `工单：${entry.ticketId}`;
+      const notice = [
+        `【指挥者·派工完成】${entry.toolName} 已结算（child ${entry.childId}，stopReason ${stopReason}）。`,
+        `${ticketLine}；${statusLine}。`,
+        '',
+        text,
+        '',
+        '下一步：核对产物与验收判据 → 用 `commander_ticket_update` 更新工单；'
+          + '需要用户决策就 `ask_user_question`；不要用 `wait_agent` / `list_agents` 轮询。',
+      ].join('\n');
+      steerCommander(entry.agent, notice, `派工完成：${entry.toolName}`);
+    } catch (error) {
+      ctx.logger?.warn?.('commander-mode: 处理异步结算失败：%o', error);
+    }
+  };
+
+  /**
+   * 异步结算失败：记 failed（若挂了工单）+ 唤醒指挥者。
+   *
+   * @param {object} entry - 在飞记录。
+   * @param {unknown} error - 错误。
+   * @returns {void}
+   */
+  const asyncFailed = (entry, error) => {
+    try {
+      finishInFlight(entry);
+      const message = error instanceof Error ? error.message : String(error);
+      const ledger = getLedger();
+      if (ledger !== undefined && entry.ticketId !== '') {
+        try {
+          ledger.markAssignmentSettled(entry.ticketId, entry.sessionId, entry.childId);
+          ledger.recordReport(entry.ticketId, entry.sessionId, {
+            status: 'failed',
+            summary: `异步执行者结算失败：${message}`,
+            question: '这个任务接下来怎么办：重派、改派，还是先看产物？',
+          });
+        } catch (ledgerError) {
+          ctx.logger?.debug?.('commander-mode: 写异步失败到账本失败：%o', ledgerError);
+        }
+      }
+      steerCommander(
+        entry.agent,
+        [
+          `【指挥者·派工完成】${entry.toolName} 异步结算**失败**（child ${entry.childId}）。`,
+          `工单：${entry.ticketId === '' ? '无' : entry.ticketId}；错误：${message}`,
+          '',
+          '下一步：先只读核对产物；能继续就补派，需要用户决定就用 `ask_user_question` 上报。不要重复派同一任务。',
+        ].join('\n'),
+        `派工失败：${entry.toolName}`,
+      );
+    } catch (error_) {
+      ctx.logger?.warn?.('commander-mode: 处理异步失败通知时出错：%o', error_);
+    }
+  };
+
   /**
    * 计划确认 → 记录 Mandate（0.6.0 的授权来源）。
    *
@@ -375,6 +582,8 @@ export function apply(ctx) {
    */
   const observeWorkerReport = (exec, result) => {
     try {
+      // 异步受理结果不是"结算"：真正的回报在 asyncCompleted 里记录（带 childId/ticket）。
+      if (result?.value?.async === true) return;
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
       const isSpecialist = toolName.startsWith('subagent_');
       const isManagedSubagent = toolName === 'subagent' || toolName === 'subagent_fork' || toolName === 'workflow';
@@ -411,6 +620,8 @@ export function apply(ctx) {
    */
   const settleObservedDispatch = (exec, result) => {
     try {
+      // 异步受理时 Assignment 才刚开始，结算要等 asyncCompleted（否则看板会立刻显示"已结算"）。
+      if (result?.value?.async === true) return;
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
       if (!isNewWorkTool(toolName) || result?.isError === true) return;
       const ticketId = ticketFromDispatchArgs(exec.arguments);
@@ -695,6 +906,16 @@ export function apply(ctx) {
         }
       }
 
+      // 0.7.0 异步容量：一次性 specialist 在飞数量达上限时**在启动前**拒绝，
+      // 避免"先启动 child、再发现超限"或"先记 Assignment 再失败"。
+      if (toolName.startsWith('subagent_') && readOptions().asyncDelegation !== false) {
+        const capacityReason = asyncCapacityReason(exec?.agent);
+        if (typeof capacityReason === 'string' && capacityReason !== '') {
+          ctx.logger?.info?.('commander-mode: 异步派发达到上限，拒绝 %s', toolName);
+          return { kind: 'deny', reason: capacityReason };
+        }
+      }
+
       // 0.6.0 派发门禁：没有计划授权 / 没有工单 → 确定性拒绝。
       // 只对指挥者本人生效；子代理、缺失账本、身份不明一律放行（宁可漏拦）。
       if (ledgerEnabled()) {
@@ -822,6 +1043,12 @@ export function apply(ctx) {
                     specialist,
                     getSubagents,
                     isEnabled: () => enabled.has(specialist.id) && settings.specialists().some((entry) => entry.id === specialist.id),
+                    // 0.7.0：默认异步派发（工具立即返回，完成通知 steer 唤醒指挥者）；
+                    // 配置 asyncDelegation:false 回退 0.5.0 的前台阻塞行为。
+                    asyncMode: readOptions().asyncDelegation !== false,
+                    onAsyncStarted: asyncStarted,
+                    asyncCapacityReason,
+                    asyncSignal: () => asyncController.signal,
                   }),
                 );
                 installed.push(specialist);

@@ -152,6 +152,8 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'stateDir',
     'requireMandate',
     'requireTicket',
+    'asyncDelegation',
+    'maxAsyncTasks',
     'ticketStallMs',
     'maxTickets',
   ]) {
@@ -167,6 +169,13 @@ test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', ()
   assert.match(PATCH, /maxSpecialists: 20/u);
   // patch 不覆盖 specialists → schema 默认值（出厂预置名册）生效。
   assert.ok(!/\n {8}specialists:/u.test(PATCH));
+});
+
+test('0.7.0：patch 写全异步派工配置（默认开）', () => {
+  assert.match(PATCH, /\n {8}asyncDelegation: true/u);
+  assert.match(PATCH, /\n {8}maxAsyncTasks: 4/u);
+  // 关掉后的语义要写清楚：回退 0.5.0 的前台阻塞行为。
+  assert.match(PATCH, /回退 0\.5\.0 的前台阻塞行为/u);
 });
 
 test('0.6.0：patch 写全账本与计划授权配置（默认开）', () => {

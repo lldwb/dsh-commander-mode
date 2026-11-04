@@ -307,6 +307,8 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       stateDir: '',
       requireMandate: true,
       requireTicket: true,
+      asyncDelegation: true,
+      maxAsyncTasks: 4,
       ticketStallMs: 600000,
       maxTickets: 100,
     },
@@ -366,6 +368,8 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     stateDir: '',
     requireMandate: true,
     requireTicket: true,
+    asyncDelegation: true,
+    maxAsyncTasks: 4,
     ticketStallMs: 600000,
     maxTickets: 100,
   });
@@ -387,6 +391,8 @@ test('0.6.0 默认：账本与计划授权/工单门禁默认开启', () => {
   assert.equal(config.ledger, true);
   assert.equal(config.requireMandate, true);
   assert.equal(config.requireTicket, true);
+  assert.equal(config.asyncDelegation, true);
+  assert.equal(config.maxAsyncTasks, 4);
   assert.equal(config.stateDir, '');
   assert.equal(config.ticketStallMs, 10 * 60 * 1000);
   assert.equal(config.maxTickets, 100);
@@ -424,4 +430,16 @@ test('0.6.0 已知键包含新配置，未知键警告仍列出完整清单', ()
   }
   const { warnings } = resolveConfig({ maxTemmates: 4 });
   assert.match(warnings[0], /requireMandate/u);
+});
+
+test('0.7.0 异步配置：默认开、可关、上限夹到 1–12', () => {
+  const config = Config();
+  assert.equal(config.asyncDelegation, true);
+  assert.equal(config.maxAsyncTasks, 4);
+  const disabled = resolveConfig({ asyncDelegation: false }).options;
+  assert.equal(disabled.asyncDelegation, false);
+  assert.equal(resolveConfig({ maxAsyncTasks: 0 }).options.maxAsyncTasks, 4, '非正数回退默认');
+  assert.equal(resolveConfig({ maxAsyncTasks: 99 }).options.maxAsyncTasks, 99, '读取器不夹上限，schema 负责 1–12');
+  assert.ok(KNOWN_CONFIG_KEYS.includes('asyncDelegation'));
+  assert.ok(KNOWN_CONFIG_KEYS.includes('maxAsyncTasks'));
 });

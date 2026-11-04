@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  ASYNC_RULES,
   COMMANDER_PROTOCOL,
   ESCALATION_TRIGGERS,
   FLOW_STEPS,
@@ -525,4 +526,25 @@ test('0.6.0：工单规则不提到具体 specialist 工具名（空名册也安
   const joined = TICKET_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
   assert.ok(!/subagent_/u.test(joined), '工单规则不应出现 subagent_ 工具名');
   assert.ok(!/specialist/iu.test(joined), '工单规则不应出现 specialist');
+});
+
+test('0.7.0：默认 section 带异步派工契约（完成通知唤醒、不要轮询）', () => {
+  assert.ok(SECTION.includes('### 异步派工（0.7.0：完成通知会唤醒你）'), SECTION);
+  for (const phrase of ['派活即返回', '完成通知会自己回来', '【指挥者·派工完成】', '不要** `wait_agent`', '在飞任务不重派']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
+  }
+});
+
+test('0.7.0：asyncDelegation:false 时不出现异步契约', () => {
+  const text = renderCommanderSection({ asyncDelegation: false });
+  assert.ok(!text.includes('异步派工'));
+  assert.ok(!text.includes('【指挥者·派工完成】'));
+  // 同步语义仍在（specialist 是前台阻塞）。
+  assert.ok(text.includes('绝对边界'));
+});
+
+test('0.7.0：异步规则不提到具体 specialist 工具名（空名册也安全）', () => {
+  const joined = ASYNC_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
+  assert.ok(!/subagent_/u.test(joined), '异步规则不应出现 subagent_ 工具名');
+  assert.ok(!/specialist/iu.test(joined), '异步规则不应出现 specialist（配置键也不行）');
 });

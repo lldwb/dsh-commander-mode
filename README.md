@@ -25,6 +25,10 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   没有授权或不带工单的派发会被**确定性拒绝**；每轮看板显示「**指挥者·工单看板**」——
   计划授权状态、进行中工单、待验收 / 受阻 / 停滞 / 等你回答的项与下一步动作。
   账本落在 `<DSH_HOME>/commander/<profile>.json`（原子写、损坏自动备份、重启不丢）。
+- **异步派工与完成唤醒（0.7.0）**：一次性 specialist 不再阻塞等待——工具立即返回 childId，
+  结算时用一条「【指挥者·派工完成】」通知**唤醒**指挥者（带工单、`STATUS:`、摘要与下一步），
+  并同时写账本。派活后可以继续做别的或结束回合，不要 `wait_agent` / `list_agents` 轮询；
+  在飞数量有上限（`maxAsyncTasks`，默认 4），`asyncDelegation: false` 可回退前台阻塞行为。
 
 ```text
 30 秒上手
@@ -184,6 +188,26 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 - 只存工单/授权/派发/回报这类状态事实；**不存**会话正文或子代理输出（以 DSH 会话日志为准）；
 - 写盘失败降级为"内存继续 + warning"，绝不把工具调用弄挂；
 - 关掉 `ledger: false` 时退化为 0.5.0 行为（没有工单工具、没有授权门禁、只有同步看板与协议）。
+
+### 异步派工与完成唤醒（0.7.0）
+
+0.4/0.5 的派活是**前台阻塞**：`subagent_<id>` 会一直等到 specialist 结算才把结果返回。任务一长，
+指挥者就在空转，用户也只能等。0.7.0 把一次性 specialist 改成**异步**（默认开）：
+
+- **派活即返回**：工具立即返回 childId（`stopReason: started`），指挥者在同一回合可以继续做
+  只读核对、规划下一项，或结束回合。
+- **完成会自己回来**：插件在后台等待结算（`delivery:'caller'` + 插件作用域持有的 signal，
+  不随工具调用中止），拿到结果后：① 解析最后一行 `STATUS: ...`；② 写账本（结算 Assignment +
+  Report）；③ 用 `agent.steer()` 发一条「【指挥者·派工完成】」通知（**会唤醒空闲的指挥者**），
+  带工单、STATUS、摘要与"下一步"。
+- **失败也一样**：结算 reject 时记 `failed` + 一条带错误与工单的通知。
+- **容量上限**：`maxAsyncTasks`（默认 4）在**启动前**检查；超限拒绝并提示等完成或改 Team，
+  不会先启动 child 再失败。
+- **在飞不重派**：同一工单已有在飞派发时不要重复派同一任务；要追加/纠偏走 Team 的 `send_message`。
+- **回退**：`asyncDelegation: false` 回到 0.5.0 的前台阻塞行为。
+
+为什么不用 runtime 的 `delivery:'parent'` 完成通知：它的通知内容与工单映射不可控，而且会多一条
+模型可见消息；`delivery:'caller'` + 后台 await + `steer` 让我们完全控制通知格式、去重与账本写入。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -376,6 +400,8 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
 | `requireMandate` | `true` | 派发新工作前必须有用户确认的计划授权（`commander-plan`） |
 | `requireTicket` | `true` | 每次派发必须带工单（specialist 的 `ticket` 参数 / Team 的 `[ticket:t-N]`） |
+| `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
+| `maxAsyncTasks` | `4` | 同一会话同时在飞的一次性 specialist 上限（1–12） |
 | `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
@@ -431,6 +457,15 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   检查。这样规划阶段可以先建工单，但"建了工单≠可以派活"。
 - **工单工具依赖配置行的账本服务（0.6.0）。** 账本初始化失败 / `ledger:false` 时工具不可用或
   报可执行错误，模式其余部分（门禁、看板降级）仍工作。
+- **异步完成通知依赖指挥者 agent 仍存活（0.7.0）。** 会话关闭后再结算：账本仍会写入，但 `steer`
+  投递失败（只记 warning），通知丢失——该工单属于旧会话，新会话的看板看不到它。这是"会话内
+  模式"的边界，不是队列；要跨会话必须等 1.0 的 Worker Session / 常驻服务。
+- **进程重启会清空"在飞"表（0.7.0）。** 重启后未结算的 Assignment 不会自动恢复；工单会以
+  "派发后没有新回报"出现在看板（停滞提示），需要指挥者只读核对后补派或标记受阻。真正的恢复
+  属于 1.0 的 Worker Session。
+- **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束。
+- **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
+  判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -492,6 +527,24 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.7.0 第八轮（异步派工 / 完成唤醒）**：
+  - **`node --test` 375/375 通过**（366 → 375，+9）：新增异步接线用例——工具立即返回
+    `started`（不阻塞）、完成后写账本（`ready` + Assignment 结算 + childId）并 `steer` 一条
+    「【指挥者·派工完成】」通知、结算失败记 `failed` 并通知、容量超限在启动前拒绝（不会先
+    启动 child）、异步受理结果不会被 `post-execute` 提前结算 Assignment；另有
+    `protocol`（异步契约出现/关闭、规则不点名 specialist）、`config`（异步默认值与读取）、
+    `patch`（新配置键）断言。
+  - **本轮抓到的两个问题**：① 配置键原名 `maxAsyncSpecialists` 会被渲染进协议，触发既有的
+    "空名册 section 不得出现 specialist"回归 → 改名 `maxAsyncTasks`；② 既有同步 specialist
+    用例在默认异步后语义不再成立 → 测试显式 `asyncDelegation:false` 区分同步/异步两条路径，
+    并把夹具默认值对齐真实默认（异步开）。
+  - **真实 Loader**：headless 沙箱重新 `compose`，确认 `asyncDelegation` / `maxAsyncTasks`
+    出现在合成配置、三行仍在；`preset-commander` 仍因模板缺 `agentPresets` 停在 pending
+    （已知限制）。web 沙箱在 0.6.0 已验 preset 注册/绑定，本轮未重复跑 UI（无模型凭据，
+    跑不了异步端到端）。
+  - **未验证**：真实会话里"异步完成通知真的唤醒空闲指挥者、指挥者不再轮询"的端到端。单元/
+    接线测试用可控 Promise + `steer` spy 覆盖了逻辑，但**不等于真实 runtime**；需要一次
+    桌面手动会话（选指挥者模式 → 派 specialist → 结束回合 → 等通知到达）。不当作已验证。
 - **0.6.0 第七轮（工单 / 计划授权 / 注意力看板）**：
   - **`node --test` 366/366 通过**（285 → 366，+81）：新增 `test/tickets.test.mjs`（状态迁移、
     六态映射、停滞、计划确认、`STATUS:` 解析、看板渲染）、`test/ledger.test.mjs`（路径解析、
@@ -615,6 +668,14 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.7.0** —— 异步派工与完成唤醒：① 一次性 specialist 默认改为**异步**（`lib/specialists.js`：
+  工具立即返回 `stopReason:'started'`，后台 `delivery:'caller'` + 插件作用域 signal 等结算）；
+  ② `agent.js` 新增异步登记/容量/完成处理：解析 `STATUS:` → 写账本（Assignment 结算 + Report）
+  → `agent.steer()` 发「【指挥者·派工完成】」通知唤醒指挥者（失败也发）；③ `post-execute` 区分
+  异步受理与真实结算，避免提前结算 Assignment；④ 协议新增「异步派工」四条（派活即返回 /
+  完成通知会回来 / 收到先核对再结算 / 在飞不重派）；⑤ 配置新增 `asyncDelegation`（默认 true）
+  与 `maxAsyncTasks`（默认 4，启动前检查）；⑥ 测试 366 → 375，新增异步接线用例；
+  ⑦ 未验证真实会话里的"通知唤醒 + 不再轮询"端到端（无模型凭据/桌面未跑，见「验证过什么」）。
 - **0.6.0** —— 借鉴 DeepSeek Harness 团队 Super-agent 原型的 Ticket / Mandate / Assignment /
   Report 形状（裁剪到指挥者场景），把"派活"变成有状态、可审计、可恢复的工单：① 新增
   `commanderLedger` 服务与账本（`lib/{ledger,ledger-service}.js`，默认
