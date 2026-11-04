@@ -10,6 +10,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { apply, Config, name } from '../index.js';
@@ -65,7 +68,13 @@ function makeCtx() {
 /** 一份带名册的配置（模拟 Loader 解析后的形态：specialists 是 volatile 引用）。 */
 function configWith(roster = [], overrides = {}) {
   return {
-    ...Config({ specialists: roster, ...overrides }),
+    ...Config({
+      specialists: roster,
+      // 默认关掉外部事件轮询：否则每个 host 用例都会在真实 HOME 下建目录并起定时器。
+      // 事件投递器本身由下面专门的用例（临时 DSH_HOME + 显式 close）覆盖。
+      eventInbox: false,
+      ...overrides,
+    }),
     // 模拟 volatile 引用的读法：resolveRoster 通过 readSpecialists 读 .get()
     specialists: { get: () => roster },
   };
@@ -192,6 +201,38 @@ test('0.8.1 workerSessions:true 时在同一 apply 里提供 commanderWorkers（
   assert.doesNotThrow(() => apply(ctx, configWith([], { workerSessions: true })));
   assert.ok(record.services.commanderWorkers, '必须提供 commanderWorkers 服务');
   assert.ok(record.services.commanderLedger, '账本仍要提供');
+});
+
+test('1.1.0 eventInbox 开启时提供 commanderEvents，并在账本同级建好 inbox/delivered/rejected', (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'commander-host-events-'));
+  const previousHome = process.env.DSH_HOME;
+  const previousProfile = process.env.DSH_PROFILE;
+  process.env.DSH_HOME = home;
+  process.env.DSH_PROFILE = 'host-test';
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previousHome;
+    if (previousProfile === undefined) delete process.env.DSH_PROFILE;
+    else process.env.DSH_PROFILE = previousProfile;
+    rmSync(home, { recursive: true, force: true });
+  });
+  const { ctx, record } = makeCtx();
+  // 轮询间隔拉长：本用例只关心服务与目录，扫描由 event-inbox 单测覆盖。
+  assert.doesNotThrow(() => apply(ctx, configWith([], { eventInbox: true, eventPollMs: 60000 })));
+  const events = record.services.commanderEvents;
+  assert.ok(events, '默认应提供 commanderEvents 服务');
+  assert.equal(typeof events.scanOnce, 'function');
+  for (const name of ['inbox', 'delivered', 'rejected']) {
+    assert.ok(existsSync(join(home, 'commander', 'events', name)), `缺少事件目录 ${name}`);
+  }
+  // 释放定时器，避免测试进程留下定时器（unref 的，但显式清理更干净）。
+  events.close();
+});
+
+test('1.1.0 eventInbox:false 时不提供 commanderEvents（也不起轮询）', () => {
+  const { ctx, record } = makeCtx();
+  assert.doesNotThrow(() => apply(ctx, configWith([], { eventInbox: false })));
+  assert.equal(record.services.commanderEvents, undefined);
 });
 
 test('0.8.1 Worker spawn 缺宿主服务时精确点名（headless 场景）', async () => {

@@ -20,7 +20,9 @@
  */
 
 import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
+import { readInbox } from '../lib/event-inbox.js';
 import { resolveLedgerFile } from '../lib/ledger.js';
 import { loadLedgerFile } from '../lib/ledger.js';
 import { attentionOf, isTerminal, ticketStage, ticketView } from '../lib/tickets.js';
@@ -73,14 +75,27 @@ function main() {
         ...(options.profile === undefined ? {} : { DSH_PROFILE: options.profile }),
       },
     });
+  // 外部事件目录与账本同级（1.1.0）：即使账本不存在，也可能有积压事件。
+  const eventDir = join(dirname(file), 'events');
+  const pendingEvents = readInbox(eventDir, { withEvents: false }).entries.length;
   if (!existsSync(file)) {
-    const empty = { ledger: file, schema_version: null, open: 0, tickets: [], attention: [], note: '账本不存在（尚未使用指挥者模式）' };
-    process.stdout.write(options.json ? `${JSON.stringify(empty, null, 2)}\n` : `commander-status: ${file} 不存在（空闲）\n`);
+    const empty = {
+      ledger: file,
+      schema_version: null,
+      open: 0,
+      tickets: [],
+      attention: [],
+      events_pending: pendingEvents,
+      note: '账本不存在（尚未使用指挥者模式）',
+    };
+    process.stdout.write(options.json
+      ? `${JSON.stringify(empty, null, 2)}\n`
+      : `commander-status: ${file} 不存在（空闲）${pendingEvents === 0 ? '' : `；外部事件 ${pendingEvents} 条待投递`}\n`);
     return 0;
   }
   const loaded = loadLedgerFile({ file, backupCorrupt: false });
   if (typeof loaded.warning === 'string' && loaded.warning !== '') {
-    const failed = { ledger: file, error: loaded.warning, open: null, tickets: [], attention: [] };
+    const failed = { ledger: file, error: loaded.warning, open: null, tickets: [], attention: [], events_pending: pendingEvents };
     process.stderr.write(options.json ? `${JSON.stringify(failed, null, 2)}\n` : `commander-status: 账本不可读：${loaded.warning}\n`);
     return 3;
   }
@@ -105,6 +120,7 @@ function main() {
       ...(attentionOf(ticket, now, options.stallMs) === undefined ? {} : { concern: attentionOf(ticket, now, options.stallMs) }),
     })),
     attention: attention.map((item) => ({ id: item.id, code: item.code, detail: item.detail })),
+    events_pending: pendingEvents,
   };
   if (options.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -114,6 +130,7 @@ function main() {
       lines.push(`- ${ticket.id} [${ticket.stage}] ${ticket.title}${ticket.execution === null ? '' : `（${ticket.execution}）`}`);
     }
     for (const item of report.attention) lines.push(`⚠️ ${item.detail}`);
+    if (pendingEvents > 0) lines.push(`外部事件：${pendingEvents} 条待投递（${eventDir}）—— 需要 dsh 进程在跑才会投递`);
     process.stdout.write(`${lines.join('\n')}\n`);
   }
   if (attention.length > 0) return 2;

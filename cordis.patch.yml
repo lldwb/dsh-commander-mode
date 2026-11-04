@@ -152,6 +152,12 @@
         ticketStallMs: 600000
         # 账本最多保留多少张工单（超出后裁剪最老的已结束工单）。
         maxTickets: 100
+        # ---- 1.1.0 外部事件（轻量 Trigger）-----------------------------
+        # 外部系统（CI / 告警 / 定时巡检）往 <账本目录>/events/inbox/ 写 JSON 事件，
+        # 本行轮询取走并 steer 对应指挥者会话（空闲会被唤醒）。默认开启。
+        eventInbox: true
+        # 轮询间隔（ms，最小 1000）。事件是分钟级，15 秒足够。
+        eventPollMs: 15000
         # 可配置的多模型 specialist 名册：每项一个 `subagent_<id>` 前台工具。
         #
         # 这里**故意不写** `specialists`：默认值就是出厂预置名册（lib/presets.js，按主流

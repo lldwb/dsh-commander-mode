@@ -37,6 +37,7 @@
  */
 
 import { Config, resolveConfig } from './lib/config.js';
+import { CommanderEventInbox, EVENTS_SERVICE_NAME } from './lib/event-inbox.js';
 import { resolveLedgerFile } from './lib/ledger.js';
 import { CommanderLedger, LEDGER_SERVICE_NAME } from './lib/ledger-service.js';
 import { hidePresetsFromCatalog, isSpecialistPresetId } from './lib/preset-catalog.js';
@@ -122,6 +123,30 @@ export function apply(ctx, config) {
       ctx.logger?.info?.('commander-mode: Worker Session 执行器就绪（opt-in）');
     } catch (error) {
       ctx.logger?.warn?.('commander-mode: Worker Session 初始化失败（模式其余部分不受影响）：%o', error);
+    }
+  }
+
+  // ①.7 外部事件投递器（1.1.0，默认开）：轮询 `<stateDir>/events/inbox/`，把外部系统
+  //     （CI / 告警 / 定时巡检）写来的事件 `steer` 给对应的指挥者会话，空闲会话会被唤醒。
+  //     与 worker 不同，这里**不需要**宿主额外服务就能起来（steer 时才去 ctx.get）；
+  //     agents/sessions 缺失时事件留在 inbox，等环境恢复或用户手工处理。
+  if (options.eventInbox !== false && ledgerService !== null) {
+    try {
+      const events = new CommanderEventInbox({
+        ctx,
+        ledger: ledgerService,
+        getOptions: () => resolveConfig(config).options,
+        logger: ctx.logger,
+      });
+      if (typeof ctx.effect === 'function') {
+        ctx.effect(() => events.install(), 'commander-mode: external events');
+      } else {
+        events.install();
+      }
+      ctx.provide(EVENTS_SERVICE_NAME, events);
+      ctx.logger?.info?.('commander-mode: 外部事件投递器就绪（%s）', events.directory());
+    } catch (error) {
+      ctx.logger?.warn?.('commander-mode: 外部事件投递器初始化失败（模式其余部分不受影响）：%o', error);
     }
   }
 

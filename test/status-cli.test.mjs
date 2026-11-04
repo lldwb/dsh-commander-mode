@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +113,26 @@ test('人类可读输出包含工单与 attention 行', async (t) => {
   assert.match(result.stdout, /在跑/u);
   assert.match(result.stdout, /t-1 \[/u);
   assert.match(result.stdout, /一个任务/u);
+});
+
+test('1.1.0 外部事件：报告 events_pending 但不改退出码（待投递不是"待人工项"）', async (t) => {
+  const directory = tempDir(t);
+  const file = await ledgerFile(directory, (ledger) => {
+    ledger.createTicket({ sessionId: 's-1', title: '在跑' });
+  });
+  // 事件目录 = 账本同级 events/inbox（1.1.0 契约）。
+  const inbox = join(directory, 'events', 'inbox');
+  mkdirSync(inbox, { recursive: true });
+  writeFileSync(join(inbox, 'evt-1.json'), JSON.stringify({ kind: 'ci', summary: 'x', ticket: 't-1' }), 'utf8');
+  writeFileSync(join(inbox, 'evt-2.json'), JSON.stringify({ kind: 'ci', summary: 'y', session: 's-1' }), 'utf8');
+
+  const json = await run('--ledger', file, '--json');
+  assert.equal(json.code, 1, '待投递事件不算待人工项，退出码保持"在跑"');
+  assert.equal(JSON.parse(json.stdout).events_pending, 2);
+
+  const human = await run('--ledger', file);
+  assert.equal(human.code, 1);
+  assert.match(human.stdout, /外部事件：2 条待投递/u);
 });
 
 test('--help：退出 0 并给出退出码说明', async () => {

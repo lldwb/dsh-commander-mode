@@ -316,6 +316,8 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       workerPermission: 'danger-full-access',
       ticketStallMs: 600000,
       maxTickets: 100,
+      eventInbox: true,
+      eventPollMs: 15000,
     },
     warnings: [],
   });
@@ -382,6 +384,8 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     workerPermission: 'danger-full-access',
     ticketStallMs: 600000,
     maxTickets: 100,
+    eventInbox: true,
+    eventPollMs: 15000,
   });
   assert.deepEqual(warnings, []);
 });
@@ -474,6 +478,20 @@ test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限�
   assert.equal(options.prepareCommand, 'git init');
   assert.equal(options.workerPermission, 'workspace-write');
   for (const key of ['workerSessions', 'workRoot', 'maxWorkers', 'prepareCommand', 'workerPermission']) {
+    assert.ok(KNOWN_CONFIG_KEYS.includes(key), `KNOWN_CONFIG_KEYS 缺少 ${key}`);
+  }
+});
+
+test('1.1.0 外部事件配置：默认开启、15 秒轮询、可关、低于下限回退默认', () => {
+  const config = Config();
+  assert.equal(config.eventInbox, true);
+  assert.equal(config.eventPollMs, 15000);
+  const options = resolveConfig({ eventInbox: false, eventPollMs: 2000 }).options;
+  assert.equal(options.eventInbox, false);
+  assert.equal(options.eventPollMs, 2000);
+  assert.equal(resolveConfig({ eventPollMs: 0 }).options.eventPollMs, 15000, '非正数回退默认');
+  assert.equal(resolveConfig({ eventPollMs: 1 }).options.eventPollMs, 15000, '低于 1s 回退默认（读取器不夹值）');
+  for (const key of ['eventInbox', 'eventPollMs']) {
     assert.ok(KNOWN_CONFIG_KEYS.includes(key), `KNOWN_CONFIG_KEYS 缺少 ${key}`);
   }
 });

@@ -34,6 +34,10 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   工具、结束时用 `commander_report` 汇报并用通知唤醒你；有槽位上限（`maxWorkers`）与重启恢复
   提示。它改变执行模型（会话列表会出现 `执行 <ticket>：<标题>` 会话），不需要时在 profile
   patch 里显式写 `workerSessions: false` 即可回退（关闭后不注册四个 `commander_worker_*` 工具）。
+- **外部事件接入（1.1.0）**：CI / 告警 / 定时巡检可以用
+  `bin/commander-event.mjs` 往 `events/inbox/` 写事件，插件轮询取走并 `steer` 对应指挥者
+  会话——**空闲的指挥者会被外部事件唤醒**（不需要人先说话）。事件不建工单、不派活，
+  只把"外面发生了什么"送到指挥者眼前；待投递数量在 `commander-status` 里可见。
 
 ```text
 30 秒上手
@@ -450,6 +454,8 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `workerPermission` | `danger-full-access` | Worker Session 的权限预设；目录不是安全边界 |
 | `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
+| `eventInbox` | `true` | 外部事件投递（1.1.0）：轮询 `events/inbox/` 并 `steer` 对应指挥者会话；关掉不轮询 |
+| `eventPollMs` | `15000` | 外部事件轮询间隔（ms，≥1000） |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
 | `maxSpecialists` | `20` | 名册条数上限（每项 = 一个 preset + 一个工具） |
 
@@ -538,6 +544,14 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   "不执行操作"这一条——那一条是确定性的。
 - **`commander-status` 只读账本，不做恢复（0.9.0）。** 它不会重启 dsh、不会重派/结算工单，
   也不会备份损坏文件（损坏时退出 3）。真正的"恢复动作"仍要由人或下一次会话完成。
+- **外部事件需要 dsh 进程在跑（1.1.0）。** 事件是**文件队列**，不是守护进程：进程不在时
+  事件只会积压（`commander-status` 的 `events_pending` 可见），不会有人投递。它只投递给
+  **已存在 / 可恢复**的会话，不会新建会话或工单；目标会话被删掉时事件会一直留在 inbox。
+- **外部事件不做鉴权（1.1.0）。** 能写 `events/inbox/` 就等于能给指挥者发指令级通知；
+  单机场景可接受，多用户/共享目录部署要自己限制目录权限。格式坏的事件进 `rejected/`，
+  不会无限重试；投递成功进 `delivered/`（各保留最近 200 条）。
+- **外部事件的投递是"尽力而为"，不是事务（1.1.0）。** 投递后归档失败时，进程内用事件 id
+  去重；跨进程重启后同一个 id 仍可能被投递第二次（至少一次语义），事件正文本身应幂等。
 
 ## 运维：外部巡检（0.9.0）
 
@@ -577,6 +591,65 @@ node <本插件目录>/bin/commander-status.mjs --profile desktop --json
 
 Windows 可用「任务计划程序」跑同一条命令；它不依赖 tmux/ps（与 Super-agent 原型的 POSIX
 脚本不同）。**不要把巡检放进被监督的指挥者进程**：进程挂掉时它也不会跑。
+
+## 外部事件接入（1.1.0）
+
+0.9.0 的巡检是"人去看状态"；1.1.0 补上**反向通道**：外部系统（CI、告警、Issue 评论、
+定时巡检结果）可以把事件**推进**指挥者会话——空闲的指挥者会被唤醒，不需要人先说话。
+这是 Super-agent "事件驱动"在**会话内模式**下的最小形态：只做"事件 → 唤醒会话"，
+不引入 Source/Trigger/评估器那套框架。
+
+### 一条命令写事件
+
+```powershell
+node <本插件目录>\bin\commander-event.mjs --profile desktop `
+  --ticket t-3 --kind ci-failed `
+  --summary "build #42 失败：test/auth 3 个用例" `
+  --detail "https://ci.example.com/builds/42" --source github-actions
+```
+
+路由用 `--ticket`（反查该工单所属的指挥者会话）或 `--session`（直接指定会话，优先）。
+`--id` 可指定事件 id，让"至少一次投递"的外部系统重试时保持幂等（重复写入只算成功、不覆盖）。
+`--list` 列出待投递事件；`--json` 机器可读。退出码：`0` 已写入/列出，`2` 用法错误，
+`1` 写盘失败。
+
+事件落到 `<账本所在目录>/events/inbox/<id>.json`（空 `stateDir` 时 =
+`<DSH_HOME>/commander/events/`）。插件每 `eventPollMs`（默认 15 秒）扫一次：能路由到会话
+就投递（`steer`，空闲会话会被唤醒），成功移进 `delivered/`；格式坏了移进 `rejected/`；
+目标会话暂时不在就**留在 inbox 等下次重试**——不会静默丢事件，`commander-status` 的
+`events_pending` 能看到积压。
+
+事件文件就是契约（外部系统也可以直接写文件）：
+
+```json
+{
+  "version": 1,
+  "id": "evt-1793787000000-ab12",
+  "kind": "ci-failed",
+  "summary": "build #42 失败：test/auth 3 个用例",
+  "detail": "https://ci.example.com/builds/42",
+  "ticket": "t-3",
+  "source": "github-actions",
+  "createdAt": 1793787000000
+}
+```
+
+`kind` / `summary` 必填；`ticket` 与 `session` 至少一个。指挥者收到的是
+「【指挥者·外部事件】…」，消息里明确写着**这不是用户消息**，要它先只读核对再决定
+（更新工单 / 派活 / 标记受阻），需要用户决定时用 `ask_user_question`。
+
+### 配方（外部系统怎么接）
+
+- **CI**：在失败分支跑一条 `commander-event`（GitHub Actions / GitLab CI / Jenkins 都只是
+  "跑一条命令"）。没有 dsh 凭据时它也能跑——事件只是文件。
+- **Windows 任务计划程序**：定时检查某个健康端点，失败时写一条 `kind: alert` 的事件。
+- **dsh 自己的 schedule**：在**日常 profile** 里定时跑一条命令/提示词，把结果写成事件；
+  同样不要把巡检放进被监督的指挥者进程。
+- **人工补投**：事件文件放在 `events/inbox/` 就算投递，重启 dsh 后会补上（只要会话还能恢复）。
+
+**边界**：投递需要 dsh 进程在跑（文件是队列，不是守护进程）；只投递给**已存在/可恢复**的
+会话，不会新建会话或工单；不做鉴权（能写这个目录就等于能指挥，单机场景可接受）；
+`eventInbox: false` 可整体关闭。
 
 ## 开发
 
@@ -628,6 +701,28 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **1.1.0 第十四轮（外部事件接入）**：
+  - **`node --test` 432/432 通过**（407 → 432，+25）：新增 `test/events.test.mjs`（路径解析 /
+    字段校验 / 缺省与截断 / 渲染文本 / 文件名安全）、`test/event-inbox.test.mjs`（按 ticket
+    或 session 路由、`steer` 唤醒、目标会话不在时留队重试、坏格式进 `rejected/`、同 id 不重复
+    投递、轮询间隔与释放、只读 `--list`、归档裁剪）、`test/event-cli.test.mjs`（真实子进程：
+    写入格式、`--id` 幂等、`--list`、用法错误退出码 2）、`test/status-cli.test.mjs` 增
+    `events_pending`；`config/patch/host` 增新键与 `commanderEvents` 服务断言。
+  - **真实 Loader（web 沙箱 `commander-110-web` + 真实模型 `deepseek-flash`）**：
+    ① 在页面里选「指挥者模式」，让它只建一张工单（t-1「事件唤醒验证」）后**结束回合**；
+    ② 用 `bin/commander-event.mjs --ledger <沙箱账本> --ticket t-1 --kind ci-failed
+    --summary "build #42 失败：test/auth 3 个用例" --detail … --source github-actions`
+    写事件（退出 0，写入 `events/inbox/evt-…json`；`commander-status` 显示
+    `events_pending: 1`）；
+    ③ 轮询（沙箱里压到 1 秒）后事件被取走：inbox 空、`delivered/evt-….json` 出现、
+    `events_pending` 回到 **0**；会话日志在 `seq 25` 出现一条 `source.kind =
+    dsh-commander-mode` 的用户消息，正文逐字为「【指挥者·外部事件】ci-failed … 这是外部
+    系统推送的事件，不是用户消息 …」——**空闲会话被唤醒并开始新回合**；
+    ④ 指挥者按协议先只读核对（glob / commander_tickets / web_fetch），再
+    `commander_ticket_update(t-1, blocked)` + 结构化提问；账本落盘 `status: blocked`、
+    `lastReport.question` 写明"域名不可解析、工作区为空、无产物，请决定"。
+    （复用 0.9.1 的 web E2E 配方；沙箱与临时凭据已销毁。）
+  - 反例：事件目标会话不存在时文件**留在 inbox**（`events_pending` 保持 1），不会被丢弃。
 - **1.0.0 第十三轮（默认开启的 Loader 回归）**：
   - `node --test` **407/407 通过**；新增/改写的用例钉住新默认值：`config`（`workerSessions`
     默认 `true`、显式 `false` 仍可关）、`patch`（`cordis.patch.yml` 写 `workerSessions: true`
@@ -879,6 +974,15 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **1.1.0** —— 外部事件接入（轻量 Trigger，中版本，无破坏性变更）：
+  外部系统（CI / 告警 / 定时巡检）用新 CLI `bin/commander-event.mjs` 往
+  `<账本目录>/events/inbox/` 写事件；配置行轮询（默认 15 秒）取走并 `steer` 对应指挥者
+  会话——**空闲的指挥者会被外部事件唤醒**。按 `--ticket`（反查所属会话）或 `--session`
+  路由；`--id` 幂等；`--list` 查看待投递；事件成功投递进 `delivered/`，坏格式进
+  `rejected/`，目标会话不在则留队重试。`commander-status` 增加 `events_pending`。
+  **用户要做什么**：不需要任何配置（默认开）；想整体关闭写 `eventInbox: false`，
+  想改轮询间隔写 `eventPollMs`。README 增「外部事件接入（1.1.0）」章节与 CI / 任务计划
+  程序配方。测试 407 → 432；真实 Loader 里验证了"空闲会话被事件唤醒"。
 - **1.0.0** —— Worker Session 转正（大版本，**默认行为变化**）：
   `workerSessions` 默认值从 `false` 改为 `true`（`cordis.patch.yml` 同步）。真实 Web profile +
   真实模型已在 0.9.1 跑通 `commander_ticket_create → commander_worker_spawn → worker 在自己

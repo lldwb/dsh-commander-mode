@@ -187,6 +187,14 @@ test('1.0.0：patch 写全 Worker Session 配置（默认开启）', () => {
   assert.match(PATCH, /显式写 false/u);
 });
 
+test('1.1.0：patch 写全外部事件配置（默认开启 + 轮询间隔）', () => {
+  assert.match(PATCH, /\n {8}eventInbox: true/u);
+  assert.match(PATCH, /\n {8}eventPollMs: 15000/u);
+  // 注释里要说明事件从哪来、投递到哪，否则用户不知道 inbox 目录是什么。
+  assert.match(PATCH, /events\/inbox\//u);
+  assert.match(PATCH, /steer/u);
+});
+
 test('0.7.0：patch 写全异步派工配置（默认开）', () => {
   assert.match(PATCH, /\n {8}asyncDelegation: true/u);
   assert.match(PATCH, /\n {8}maxAsyncTasks: 4/u);
