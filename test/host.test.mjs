@@ -184,3 +184,24 @@ test('0.6.0 ledger:false 时不提供账本服务（降级到 0.5.0）', () => {
   assert.doesNotThrow(() => apply(ctx, configWith([], { ledger: false })));
   assert.deepEqual(Object.keys(record.services), ['commanderSettings']);
 });
+
+test('0.8.1 workerSessions:true 时在同一 apply 里提供 commanderWorkers（不能靠同 tick ctx.get 回读账本）', () => {
+  const { ctx, record } = makeCtx();
+  assert.doesNotThrow(() => apply(ctx, configWith([], { workerSessions: true })));
+  assert.ok(record.services.commanderWorkers, '必须提供 commanderWorkers 服务');
+  assert.ok(record.services.commanderLedger, '账本仍要提供');
+});
+
+test('0.8.1 Worker spawn 缺宿主服务时精确点名（headless 场景）', async () => {
+  const { ctx, record } = makeCtx();
+  apply(ctx, configWith([], { workerSessions: true }));
+  const ledger = record.services.commanderLedger;
+  const workers = record.services.commanderWorkers;
+  ledger.recordMandate({ sessionId: 's-1', planHash: 'h', planSummary: 'p' });
+  const ticket = ledger.createTicket({ sessionId: 's-1', title: 'x' });
+  const parent = { session: { id: 's-1', header: {} } };
+  await assert.rejects(
+    async () => workers.spawn({ parentAgent: parent, ticketId: ticket.id, task: 'x' }),
+    /缺少宿主服务：sessionController、workspaceRegistry/u,
+  );
+});

@@ -573,6 +573,26 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.8.1 第十轮（真实模型 E2E 探针 + 修复）**：
+  - **真实 Loader + 真实模型 + 注入凭据**（headless 沙箱 `commander-e2e`，用 `--patch` 把配置行/
+    模式行临时挂到顶层，并关闭 `requireMandate`）：模型自然调用 `commander_ticket_create`
+    成功（返回 `t-1` 的完整 JSON，含 `mandate_pending`/`mandate_required`/`note`）；
+    `commander_worker_spawn` 在 headless 不可用——但修复后错误**精确点名**
+    `缺少宿主服务：sessionController、workspaceRegistry（headless 模板不含这些行；桌面版 /
+    Web profile 才有）`。这证明 0.6/0.8 的工单/工具接线在真实模型回合里是通的，且降级是
+    可执行的，不是崩溃。
+  - **E2E 抓到的两个真实 bug（已修）**：① `index.js` 在 `apply()` 里 `ctx.provide(账本)`
+    之后**同 tick** 用 `ctx.get()` 回读返回 `undefined`，导致 worker 服务被误判"没有账本"而
+    静默不发布 → 改为本地变量传递账本（`index.js`）；② 派发工具报错后工单停在 `working`
+    幽灵状态（Assignment 已记、无 Report）→ 新增 `reportDispatchFailure`（`agent.js`）：
+    post-execute 遇到"新工作工具 + isError + 有未结算 Assignment + 无更新 Report"时结算
+    Assignment 并记 `failed` + 一个待用户决定的问题。
+  - **测试 392 → 397**：新增 host 用例（`workerSessions:true` 时同一 apply 内提供
+    `commanderWorkers` 且账本仍提供；spawn 缺服务精确点名）、worker 单测（缺服务点名）、
+    plugin 用例（派发报错记 failed、已有更新回报不被迟到错误覆盖）。
+  - **仍受环境限制**：headless 没有 `sessionController`/`workspaceRegistry`，Worker Session
+    的真实 spawn/目录/汇报无法在该模板跑；需要桌面版或 Web profile + 模型凭据才能完成
+    0.8.0 的端到端（见「已知边界」）。
 - **0.8.0 第九轮（Worker Session，opt-in）**：
   - **`node --test` 392/392 通过**（375 → 392，+17）：新增 `test/worker-sessions.test.mjs`——
     `resolveWorkRoot`、disabled 拒绝、spawn（目录/workspace/独立 Session/权限/重命名/账本
@@ -734,6 +754,13 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.8.1** —— 真实模型 E2E 探针抓到的修复：① `index.js` 同 tick `ctx.get()` 读不到刚
+  `provide` 的账本，导致 Worker 服务静默不发布 → 用本地变量传递（`0.8.0` 的 bug）；② 派发
+  工具报错后工单停在 `working` 幽灵状态 → `agent.js` 新增 `reportDispatchFailure`：有未结算
+  Assignment 且无更新 Report 时结算并记 `failed`（带错误摘要与待用户决定的问题）；
+  ③ `commander_ticket_create` 的提示与 `requireMandate:false` 一致（新增 `mandate_required`
+  与"本部署已关闭门禁"文案）；④ Worker spawn 缺宿主服务时精确点名 `sessionController` /
+  `workspaceRegistry`（不再笼统"服务不可用"）。测试 392 → 397。
 - **0.8.0** —— Worker Session（opt-in）：① 新增 `commanderWorkers` 服务
   （`lib/worker-sessions.js`）：每工单一个独立 DSH Session（`sessionController.create`）+
   独立目录（`workRoot/<ticket>`，可选 `prepareCommand`）+ `maxWorkers` 槽位；② 新增四个工具

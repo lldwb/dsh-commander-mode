@@ -75,6 +75,11 @@ export function apply(ctx, config) {
   //     agent 挂载期间存在；配置行是 profile 顶层、进程级常驻，是天然宿主。
   //     写盘失败只降级（内存继续），绝不因为账本坏了让模式起不来。
   const options = resolveConfig(config).options;
+
+  // ①.5 工单账本（0.6.0）：模式行/工单工具靠它读写，账本是唯一写者。
+  //     用本地变量把实例传给下面的 worker 块 —— **不要**在同一 apply 里用 ctx.get() 回读：
+  //     实测（0.8.0 E2E）provide 后同 tick 读不到，会误判"没有账本"而静默跳过 worker。
+  let ledgerService = null;
   if (options.ledger !== false) {
     try {
       const file = resolveLedgerFile({ stateDir: options.stateDir });
@@ -85,6 +90,7 @@ export function apply(ctx, config) {
       });
       const loaded = ledger.load();
       ctx.provide(LEDGER_SERVICE_NAME, ledger);
+      ledgerService = ledger;
       for (const warning of loaded.warnings) ctx.logger?.warn?.('commander-mode: %s', warning);
       ctx.logger?.info?.('commander-mode: 工单账本就绪（%s，%d 张工单）', file, ledger.state.tickets.length);
     } catch (error) {
@@ -93,37 +99,30 @@ export function apply(ctx, config) {
     }
   }
 
-  // ①.6 发布 Worker Session 执行器（0.8.0，opt-in）：每工单独立 Session + 目录。
+  // ①.6 发布 Worker Session 执行器（0.8.0+，opt-in）：每工单独立 Session + 目录。
   //
-  //     只在配置 workerSessions:true 时提供；依赖宿主的 sessionController / workspaceRegistry /
-  //     agents 三个服务（任一缺失就只记 warning，模式其余部分不受影响）。
-  if (options.workerSessions === true && options.ledger !== false && typeof ctx.inject === 'function') {
-    ctx.inject(['sessionController', 'workspaceRegistry', 'agents'], (workerCtx) => {
-      try {
-        const ledger = ctx.get?.(LEDGER_SERVICE_NAME);
-        if (ledger === undefined || ledger === null) {
-          ctx.logger?.warn?.('commander-mode: 没有账本服务，Worker Session 不启用');
-          return;
-        }
-        const workers = new CommanderWorkers({
-          ctx,
-          ledger,
-          getOptions: () => resolveConfig(config).options,
-          logger: ctx.logger,
-          deps: {
-            sessionController: workerCtx.sessionController,
-            workspaceRegistry: workerCtx.workspaceRegistry,
-            agents: workerCtx.agents,
-            permissionPresets: ctx.get?.('permissionPresets'),
-          },
-        });
-        workerCtx.effect(() => workers.install(), 'commander-mode: worker sessions');
-        ctx.provide(WORKERS_SERVICE_NAME, workers);
-        ctx.logger?.info?.('commander-mode: Worker Session 执行器就绪（opt-in）');
-      } catch (error) {
-        ctx.logger?.warn?.('commander-mode: Worker Session 初始化失败（模式其余部分不受影响）：%o', error);
+  //     依赖宿主的 sessionController / workspaceRegistry / agents，但**不用 ctx.inject**：
+  //     这些服务可能在 apply 之后才就绪，而服务内部每次都按需 ctx.get。这样：
+  //     - 桌面/Web profile 里正常可用；
+  //     - headless 等缺服务的部署里，spawn 会精确报告缺哪个服务，而不是整个服务不发布。
+  if (options.workerSessions === true && ledgerService !== null) {
+    try {
+      const workers = new CommanderWorkers({
+        ctx,
+        ledger: ledgerService,
+        getOptions: () => resolveConfig(config).options,
+        logger: ctx.logger,
+      });
+      if (typeof ctx.effect === 'function') {
+        ctx.effect(() => workers.install(), 'commander-mode: worker sessions');
+      } else {
+        workers.install();
       }
-    });
+      ctx.provide(WORKERS_SERVICE_NAME, workers);
+      ctx.logger?.info?.('commander-mode: Worker Session 执行器就绪（opt-in）');
+    } catch (error) {
+      ctx.logger?.warn?.('commander-mode: Worker Session 初始化失败（模式其余部分不受影响）：%o', error);
+    }
   }
 
   // ② 关掉自动生成的设置页：本包自带 client 半（「设置 → 插件 → 指挥者模式」）。

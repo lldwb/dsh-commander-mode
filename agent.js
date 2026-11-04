@@ -93,6 +93,7 @@ import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialis
 import {
   findPlanQuestion,
   isPlanConfirmed,
+  isTerminal,
   parseReportStatus,
   planHash,
   renderTicketBoard,
@@ -645,6 +646,46 @@ export function apply(ctx) {
   };
 
   /**
+   * 派发工具**报错** → 把工单从"working 幽灵"里拉回来：结算 Assignment 并记 failed。
+   *
+   * 0.8.0 E2E 抓到的真实问题：`commander_worker_spawn` 已记录 Assignment 后因缺宿主服务报错，
+   * 工单看板一直显示 `working`，但根本没有执行者。这里在 post-execute 兜住：
+   * 有未结算 Assignment、且没有比它更新的 Report 时，记 `failed` + 一个待用户决定的问题。
+   *
+   * @param {object} exec - `tools/post-execute` 的执行上下文。
+   * @param {object} result - 工具结果。
+   * @returns {void}
+   */
+  const reportDispatchFailure = (exec, result) => {
+    try {
+      if (result?.isError !== true) return;
+      const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      if (!isNewWorkTool(toolName)) return;
+      const ticketId = ticketFromDispatchArgs(exec.arguments);
+      if (ticketId === undefined) return;
+      const sessionId = sessionIdOf(exec.agent);
+      const ledger = getLedger();
+      if (sessionId === undefined || ledger === undefined) return;
+      const ticket = ledger.getTicket(ticketId, sessionId, { allowMissing: true });
+      if (ticket === null || isTerminal(ticket) || ticket.assignments.length === 0) return;
+      const last = ticket.assignments[ticket.assignments.length - 1];
+      if (last.endedAt !== null) return;
+      const reportedAt = ticket.lastReport?.at ?? 0;
+      if (reportedAt >= (last.startedAt ?? 0)) return; // 已有更新的回报，不覆盖
+      const raw = result?.error?.message ?? extractText(result);
+      const message = String(raw ?? '').trim().replace(/\s+/g, ' ').slice(0, 500) || '工具报错（无错误文本）';
+      ledger.markAssignmentSettled(ticketId, sessionId);
+      ledger.recordReport(ticketId, sessionId, {
+        status: 'failed',
+        summary: `派发失败（${toolName}）：${message}`,
+        question: '这一步要重试、换通道（specialist/Team/Worker），还是先核对产物？',
+      });
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 记录派发失败状态失败：%o', error);
+    }
+  };
+
+  /**
    * 渲染本会话的工单看板（无内容时返回空串）。
    *
    * @param {object} agent - 指挥者 agent。
@@ -801,6 +842,7 @@ export function apply(ctx) {
         observePlanConfirmation(exec, _result);
         observeWorkerReport(exec, _result);
         settleObservedDispatch(exec, _result);
+        reportDispatchFailure(exec, _result);
       }
       if (exec?.name === 'todo_write') {
         const agent = exec.agent;
@@ -1098,7 +1140,7 @@ export function apply(ctx) {
         toolCtx.effect(() => {
           const disposers = [];
           const definitions = [
-            ...buildTicketTools({ getLedger }),
+            ...buildTicketTools({ getLedger, getOptions: readOptions }),
             ...(readOptions().workerSessions === true
               ? buildWorkerTools({ getWorkers: () => getService('commanderWorkers') })
               : []),

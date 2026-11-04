@@ -1188,3 +1188,53 @@ test('0.8.0：worker 工具在服务缺失时给可执行错误（而不是假�
     /Worker Session 服务不可用/u,
   );
 });
+
+// ---------------------------------------------------------------- 0.8.1 派发失败记账 ---
+
+test('0.8.1 派发报错：结算未完成的 Assignment 并记 failed（不留 working 幽灵）', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  await preExecute(record)(
+    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  assert.equal(ledger.getTicket(ticket.id, 'session-lead').assignments[0].endedAt, null);
+
+  await postExecute(record)(
+    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { isError: true, content: [{ type: 'text', text: 'Error: 缺少宿主服务：sessionController、workspaceRegistry' }] },
+    spyNext().next,
+  );
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.status, 'failed');
+  assert.match(stored.lastReport.summary, /派发失败/u);
+  assert.match(stored.lastReport.summary, /sessionController/u);
+  assert.notEqual(stored.assignments[0].endedAt, null, '失败的 Assignment 必须结算');
+  assert.match(stored.lastReport.question, /重试|换通道/u);
+});
+
+test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
+  const { ledger, ticket } = ledgerWithWork();
+  const { record } = boot({ ledger });
+  await flush();
+  await preExecute(record)(
+    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    spyNext({ kind: 'allow' }).next,
+  );
+  // 模拟已有一次更新的回报（例如 worker 已汇报）。
+  await postExecute(record)(
+    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { isError: false, value: { sessionId: 'worker-t-1' } },
+    spyNext().next,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 2));
+  ledger.recordReport(ticket.id, 'session-lead', { status: 'ready', summary: '已就绪' });
+  await postExecute(record)(
+    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { isError: true, content: [{ type: 'text', text: 'Error: late failure' }] },
+    spyNext().next,
+  );
+  const stored = ledger.getTicket(ticket.id, 'session-lead');
+  assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
+});

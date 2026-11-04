@@ -239,6 +239,25 @@ test('idle 兜底：worker 空转未汇报时提醒指挥者（并节流）', as
   assert.equal(parent.record.steers.length, 1, '同一工单 10 分钟内不重复提醒');
 });
 
+test('缺宿主服务：spawn 精确点名 sessionController / workspaceRegistry', async () => {
+  const { ledger, ticket } = ledgerWithTicket();
+  const ctx = {
+    logger: { info: () => {}, debug: () => {}, warn: () => {} },
+    get: () => undefined,
+    on: () => () => {},
+  };
+  const service = new CommanderWorkers({
+    ctx,
+    ledger,
+    getOptions: () => ({ workerSessions: true, maxWorkers: 2 }),
+  });
+  const parent = makeAgent(PARENT);
+  await assert.rejects(
+    async () => service.spawn({ parentAgent: parent, ticketId: ticket.id, task: 'x' }),
+    /缺少宿主服务：sessionController、workspaceRegistry/u,
+  );
+});
+
 test('worker 工具：指挥者专用、schema 齐全、缺服务给可执行错误', async () => {
   const { ledger, ticket } = ledgerWithTicket();
   const { service, parent } = workersOf({ ledger });
