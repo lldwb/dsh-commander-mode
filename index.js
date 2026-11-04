@@ -41,6 +41,7 @@ import { resolveLedgerFile } from './lib/ledger.js';
 import { CommanderLedger, LEDGER_SERVICE_NAME } from './lib/ledger-service.js';
 import { hidePresetsFromCatalog, isSpecialistPresetId } from './lib/preset-catalog.js';
 import { provideSettings } from './lib/settings-service.js';
+import { CommanderWorkers, WORKERS_SERVICE_NAME } from './lib/worker-sessions.js';
 
 /** Cordis 插件名。**必须与 Loader 行 id、设置命名空间、客户端 `SETTINGS_NS` 一致**。 */
 export const name = 'commander-mode';
@@ -90,6 +91,39 @@ export function apply(ctx, config) {
       // 账本初始化失败：模式仍可用，只是没有工单/授权门禁（降级到 0.5 行为）。
       ctx.logger?.warn?.('commander-mode: 工单账本初始化失败，已降级为无账本模式：%o', error);
     }
+  }
+
+  // ①.6 发布 Worker Session 执行器（0.8.0，opt-in）：每工单独立 Session + 目录。
+  //
+  //     只在配置 workerSessions:true 时提供；依赖宿主的 sessionController / workspaceRegistry /
+  //     agents 三个服务（任一缺失就只记 warning，模式其余部分不受影响）。
+  if (options.workerSessions === true && options.ledger !== false && typeof ctx.inject === 'function') {
+    ctx.inject(['sessionController', 'workspaceRegistry', 'agents'], (workerCtx) => {
+      try {
+        const ledger = ctx.get?.(LEDGER_SERVICE_NAME);
+        if (ledger === undefined || ledger === null) {
+          ctx.logger?.warn?.('commander-mode: 没有账本服务，Worker Session 不启用');
+          return;
+        }
+        const workers = new CommanderWorkers({
+          ctx,
+          ledger,
+          getOptions: () => resolveConfig(config).options,
+          logger: ctx.logger,
+          deps: {
+            sessionController: workerCtx.sessionController,
+            workspaceRegistry: workerCtx.workspaceRegistry,
+            agents: workerCtx.agents,
+            permissionPresets: ctx.get?.('permissionPresets'),
+          },
+        });
+        workerCtx.effect(() => workers.install(), 'commander-mode: worker sessions');
+        ctx.provide(WORKERS_SERVICE_NAME, workers);
+        ctx.logger?.info?.('commander-mode: Worker Session 执行器就绪（opt-in）');
+      } catch (error) {
+        ctx.logger?.warn?.('commander-mode: Worker Session 初始化失败（模式其余部分不受影响）：%o', error);
+      }
+    });
   }
 
   // ② 关掉自动生成的设置页：本包自带 client 半（「设置 → 插件 → 指挥者模式」）。

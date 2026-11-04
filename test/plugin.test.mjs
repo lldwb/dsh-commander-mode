@@ -50,6 +50,11 @@ function makeSettings(initial = {}) {
     requireTicket: true,
     asyncDelegation: true,
     maxAsyncTasks: 4,
+    workerSessions: false,
+    workRoot: '',
+    maxWorkers: 3,
+    prepareCommand: '',
+    workerPermission: 'danger-full-access',
     ticketStallMs: 10 * 60 * 1000,
     maxTickets: 100,
     ...(initial.options ?? {}),
@@ -94,7 +99,7 @@ function makeSubagents(record, settlement = { output: [{ type: 'text', text: '�
  * `inject` 回调收到的子上下文带着该依赖对应的桩服务；`effect()` 立即执行回调（与 Cordis
  * 的挂载语义一致），返回的 disposer 被记录下来。
  */
-function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger } = {}) {
+function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, workers } = {}) {
   const record = {
     sections: [],
     contexts: [],
@@ -117,6 +122,7 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
   const services = {
     ...(agentTeams === undefined ? {} : { agentTeams }),
     ...(ledger === undefined ? {} : { commanderLedger: ledger }),
+    ...(workers === undefined ? {} : { commanderWorkers: workers }),
     ...(withSkills ? {
       skills: {
         register: (definition) => {
@@ -1137,4 +1143,48 @@ test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment'
   const after = ledger.getTicket(ticket.id, 'session-lead');
   assert.equal(after.assignments[0].endedAt, null, '异步受理不应结束 Assignment');
   assert.equal(after.lastReport, null, '异步受理不应记录回报');
+});
+
+// ---------------------------------------------------------------- 0.8.0 Worker ---
+
+test('0.8.0：默认（workerSessions:false）不注册 Worker 工具', async () => {
+  const { record } = boot({ ledger: memoryLedger() });
+  await flush();
+  assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')), []);
+});
+
+test('0.8.0：workerSessions:true 时注册四个 Worker 工具，spawn 委托给服务', async () => {
+  const calls = [];
+  const workers = {
+    spawn: async (args) => { calls.push(['spawn', args]); return { sessionId: 'worker-t-1' }; },
+    send: async (args) => { calls.push(['send', args]); return { ok: true }; },
+    status: async (args) => { calls.push(['status', args]); return { ticket: {} }; },
+    stop: async (args) => { calls.push(['stop', args]); return { ok: true }; },
+  };
+  const settings = makeSettings({ options: { workerSessions: true } });
+  const { record } = boot({ settings, ledger: memoryLedger(), workers });
+  await flush();
+  const names = record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_'));
+  assert.deepEqual(names.sort(), [
+    'commander_worker_send',
+    'commander_worker_spawn',
+    'commander_worker_status',
+    'commander_worker_stop',
+  ]);
+  const spawn = record.tools.find((tool) => tool.name === 'commander_worker_spawn');
+  const value = await spawn.execute({ ticket: 't-1', task: '实现 X' }, { agent: LEAD, signal: new AbortController().signal });
+  assert.equal(value.sessionId, 'worker-t-1');
+  assert.equal(calls[0][0], 'spawn');
+  assert.equal(calls[0][1].ticketId, 't-1');
+});
+
+test('0.8.0：worker 工具在服务缺失时给可执行错误（而不是假装成功）', async () => {
+  const settings = makeSettings({ options: { workerSessions: true } });
+  const { record } = boot({ settings, ledger: memoryLedger() });
+  await flush();
+  const spawn = record.tools.find((tool) => tool.name === 'commander_worker_spawn');
+  await assert.rejects(
+    async () => spawn.execute({ ticket: 't-1', task: '实现 X' }, { agent: LEAD, signal: new AbortController().signal }),
+    /Worker Session 服务不可用/u,
+  );
 });

@@ -309,6 +309,11 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       requireTicket: true,
       asyncDelegation: true,
       maxAsyncTasks: 4,
+      workerSessions: false,
+      workRoot: '',
+      maxWorkers: 3,
+      prepareCommand: '',
+      workerPermission: 'danger-full-access',
       ticketStallMs: 600000,
       maxTickets: 100,
     },
@@ -370,6 +375,11 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     requireTicket: true,
     asyncDelegation: true,
     maxAsyncTasks: 4,
+    workerSessions: false,
+    workRoot: '',
+    maxWorkers: 3,
+    prepareCommand: '',
+    workerPermission: 'danger-full-access',
     ticketStallMs: 600000,
     maxTickets: 100,
   });
@@ -442,4 +452,28 @@ test('0.7.0 异步配置：默认开、可关、上限夹到 1–12', () => {
   assert.equal(resolveConfig({ maxAsyncTasks: 99 }).options.maxAsyncTasks, 99, '读取器不夹上限，schema 负责 1–12');
   assert.ok(KNOWN_CONFIG_KEYS.includes('asyncDelegation'));
   assert.ok(KNOWN_CONFIG_KEYS.includes('maxAsyncTasks'));
+});
+
+test('0.8.0 Worker 配置：默认关闭、目录/上限/权限读取', () => {
+  const config = Config();
+  assert.equal(config.workerSessions, false, 'Worker Session 必须 opt-in');
+  assert.equal(config.workRoot, '');
+  assert.equal(config.maxWorkers, 3);
+  assert.equal(config.prepareCommand, '');
+  assert.equal(config.workerPermission, 'danger-full-access');
+  const options = resolveConfig({
+    workerSessions: true,
+    workRoot: '  my-work  ',
+    maxWorkers: 0,
+    prepareCommand: ' git init ',
+    workerPermission: 'workspace-write',
+  }).options;
+  assert.equal(options.workerSessions, true);
+  assert.equal(options.workRoot, 'my-work');
+  assert.equal(options.maxWorkers, 3, '非正数回退默认');
+  assert.equal(options.prepareCommand, 'git init');
+  assert.equal(options.workerPermission, 'workspace-write');
+  for (const key of ['workerSessions', 'workRoot', 'maxWorkers', 'prepareCommand', 'workerPermission']) {
+    assert.ok(KNOWN_CONFIG_KEYS.includes(key), `KNOWN_CONFIG_KEYS 缺少 ${key}`);
+  }
 });

@@ -24,6 +24,7 @@ import {
   FLOW_STEPS,
   SKILL_NAME,
   TICKET_RULES,
+  WORKER_RULES,
   renderCommanderSection,
   renderModeOpening,
   renderSpecialistRoster,
@@ -547,4 +548,16 @@ test('0.7.0：异步规则不提到具体 specialist 工具名（空名册也安
   const joined = ASYNC_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
   assert.ok(!/subagent_/u.test(joined), '异步规则不应出现 subagent_ 工具名');
   assert.ok(!/specialist/iu.test(joined), '异步规则不应出现 specialist（配置键也不行）');
+});
+
+test('0.8.0：Worker Session 规则默认不出现，workerSessions:true 才出现', () => {
+  assert.ok(!SECTION.includes('Worker Session（0.8.0'), '默认关闭时不应出现 Worker 契约');
+  const text = renderCommanderSection({ workerSessions: true });
+  assert.ok(text.includes('### Worker Session（0.8.0：每工单独立 Session + 目录）'), text);
+  for (const phrase of ['长任务用 Worker Session', '一工单一 Worker', 'Worker 汇报仍要验收', 'commander_worker_spawn']) {
+    assert.ok(text.includes(phrase), `Worker 契约缺少：${phrase}`);
+  }
+  for (const rule of WORKER_RULES) assert.ok(text.includes(rule.title), rule.title);
+  const joined = WORKER_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
+  assert.ok(!/specialist/iu.test(joined), 'Worker 规则不应出现 specialist');
 });

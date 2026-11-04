@@ -154,6 +154,11 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'requireTicket',
     'asyncDelegation',
     'maxAsyncTasks',
+    'workerSessions',
+    'workRoot',
+    'maxWorkers',
+    'prepareCommand',
+    'workerPermission',
     'ticketStallMs',
     'maxTickets',
   ]) {
@@ -169,6 +174,16 @@ test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', ()
   assert.match(PATCH, /maxSpecialists: 20/u);
   // patch 不覆盖 specialists → schema 默认值（出厂预置名册）生效。
   assert.ok(!/\n {8}specialists:/u.test(PATCH));
+});
+
+test('0.8.0：patch 写全 Worker Session 配置（默认关闭 opt-in）', () => {
+  assert.match(PATCH, /\n {8}workerSessions: false/u);
+  assert.match(PATCH, /\n {8}workRoot: ''/u);
+  assert.match(PATCH, /\n {8}maxWorkers: 3/u);
+  assert.match(PATCH, /\n {8}prepareCommand: ''/u);
+  assert.match(PATCH, /\n {8}workerPermission: danger-full-access/u);
+  // 默认关闭的原因要写在注释里：改变执行模型，需要显式接受。
+  assert.match(PATCH, /默认关闭（改变执行模型，需显式开启）/u);
 });
 
 test('0.7.0：patch 写全异步派工配置（默认开）', () => {

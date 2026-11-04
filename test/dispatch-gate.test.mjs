@@ -56,10 +56,10 @@ function gate(overrides = {}) {
 // ---------------------------------------------------------------- 识别 ---
 
 test('isNewWorkTool 只认开启新工作的工具', () => {
-  for (const name of ['subagent_implementer', 'subagent', 'subagent_fork', 'workflow', 'spawn_teammate']) {
+  for (const name of ['subagent_implementer', 'subagent', 'subagent_fork', 'workflow', 'spawn_teammate', 'commander_worker_spawn']) {
     assert.equal(isNewWorkTool(name), true, name);
   }
-  for (const name of ['send_message', 'wait_agent', 'list_agents', 'team_task_create', 'read', '']) {
+  for (const name of ['send_message', 'wait_agent', 'list_agents', 'team_task_create', 'commander_worker_send', 'read', '']) {
     assert.equal(isNewWorkTool(name), false, name);
   }
   assert.equal(isNewWorkTool(null), false);
@@ -166,5 +166,15 @@ test('合法派发 → 放行（specialist 参数或 Team 标记都算）', () =
   assert.equal(
     gate({ name: 'spawn_teammate', args: { prompt: '[ticket:t-1] 实现 X' }, ledger: makeLedger({ mandate: MANDATE, tickets: [ticket()] }) }),
     undefined,
+  );
+});
+
+test('Worker spawn 走同一道门禁：没授权/没工单都拒绝，带工单放行', () => {
+  assert.equal(gate({ name: 'commander_worker_spawn', args: { ticket: 't-1', task: 'x' }, ledger: makeLedger() }).kind, 'deny');
+  assert.equal(gate({ name: 'commander_worker_spawn', args: { ticket: 't-1', task: 'x' } }), undefined);
+  assert.equal(
+    gate({ name: 'commander_worker_spawn', args: { task: 'x' } }).kind,
+    'deny',
+    '没有 ticket 参数应拒绝（requireTicket）',
   );
 });

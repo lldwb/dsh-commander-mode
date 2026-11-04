@@ -1,4 +1,4 @@
-﻿# dsh-commander-mode —— bundle patch 层。
+# dsh-commander-mode —— bundle patch 层。
 #
 # 这份 patch 只声明**一个 agent preset**：指挥者模式。在 DSH 里，一个模式**就是**一个
 # agent preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。这一行用
@@ -135,6 +135,17 @@
         asyncDelegation: true
         # 同一会话同时在飞的一次性 specialist 上限（1–12）。
         maxAsyncTasks: 4
+        # ---- 0.8.0 Worker Session（opt-in） -------------------------
+        # 每张工单一个独立 DSH Session + 独立目录；默认关闭（改变执行模型，需显式开启）。
+        workerSessions: false
+        # Worker 工作目录根；空 = <DSH_HOME>/commander/work。
+        workRoot: ''
+        # 每个指挥者会话同时最多几个 Worker Session（1–12）。
+        maxWorkers: 3
+        # 建 worker 目录后执行一次的 prepare 命令（可选；可用 DSH_COMMANDER_* 环境变量）。
+        prepareCommand: ''
+        # Worker Session 的权限预设（默认 danger-full-access；目录不是安全边界）。
+        workerPermission: danger-full-access
         # 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理）。
         ticketStallMs: 600000
         # 账本最多保留多少张工单（超出后裁剪最老的已结束工单）。

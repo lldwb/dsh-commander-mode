@@ -1,4 +1,4 @@
-﻿/**
+/**
  * `dsh-commander-mode/agent` —— 「指挥者模式」的**模式行**（agent preset 子行）。
  *
  * ## 它是什么
@@ -88,6 +88,7 @@ import {
   renderModeOpening,
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
+import { buildWorkerTools } from './lib/worker-tools.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
   findPlanQuestion,
@@ -632,9 +633,11 @@ export function apply(ctx) {
       const value = result?.value;
       const ref = typeof value?.childId === 'string'
         ? value.childId
-        : typeof value?.name === 'string'
-          ? value.name
-          : undefined;
+        : typeof value?.sessionId === 'string'
+          ? value.sessionId
+          : typeof value?.name === 'string'
+            ? value.name
+            : undefined;
       ledger.markAssignmentSettled(ticketId, sessionId, ref);
     } catch (error) {
       ctx.logger?.debug?.('commander-mode: 结算工单派发失败：%o', error);
@@ -699,7 +702,9 @@ export function apply(ctx) {
       if (sessionId === undefined || ledger === undefined) return;
       const channel = toolName.startsWith('subagent_')
         ? 'specialist'
-        : classifyDelegation(toolName) === DELEGATION_CHANNELS.TEAM ? 'team' : 'one-shot';
+        : toolName === 'commander_worker_spawn'
+          ? 'worker'
+          : classifyDelegation(toolName) === DELEGATION_CHANNELS.TEAM ? 'team' : 'one-shot';
       ledger.recordAssignment(ticketId, sessionId, { channel, toolName });
     } catch (error) {
       // 记账失败不能影响派发；门禁已经单独校验过授权。
@@ -1092,7 +1097,13 @@ export function apply(ctx) {
       try {
         toolCtx.effect(() => {
           const disposers = [];
-          for (const definition of buildTicketTools({ getLedger })) {
+          const definitions = [
+            ...buildTicketTools({ getLedger }),
+            ...(readOptions().workerSessions === true
+              ? buildWorkerTools({ getWorkers: () => getService('commanderWorkers') })
+              : []),
+          ];
+          for (const definition of definitions) {
             try {
               disposers.push(toolCtx.tools.register(definition));
             } catch (error) {

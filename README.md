@@ -29,6 +29,10 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   结算时用一条「【指挥者·派工完成】」通知**唤醒**指挥者（带工单、`STATUS:`、摘要与下一步），
   并同时写账本。派活后可以继续做别的或结束回合，不要 `wait_agent` / `list_agents` 轮询；
   在飞数量有上限（`maxAsyncTasks`，默认 4），`asyncDelegation: false` 可回退前台阻塞行为。
+- **Worker Session（0.8.0，默认关闭）**：`workerSessions: true` 后，`commander_worker_spawn`
+  可给一张工单开**独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），
+  worker 只拿工作工具、结束时用 `commander_report` 汇报并用通知唤醒你；有槽位上限（`maxWorkers`）
+  与重启恢复提示。它改变执行模型（会话列表会出现 worker 会话），所以**默认关闭**，需显式开启。
 
 ```text
 30 秒上手
@@ -208,6 +212,33 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 
 为什么不用 runtime 的 `delivery:'parent'` 完成通知：它的通知内容与工单映射不可控，而且会多一条
 模型可见消息；`delivery:'caller'` + 后台 await + `steer` 让我们完全控制通知格式、去重与账本写入。
+
+### Worker Session（0.8.0，opt-in）
+
+0.6/0.7 让派活有状态、有通知，但所有执行者仍**共享 cwd**——长任务并行会互相踩文件。
+0.8.0 提供第三种执行通道（默认关闭）：**每张工单一个独立 DSH Session + 独立目录**。
+
+- **开启**：配置 `workerSessions: true`（profile patch 或插件页配置；需重载）。默认关闭是因为它
+  改变执行模型：会话列表里会出现 `worker-<ticket>` 会话，且 worker 以操作员身份执行。
+- **四个工具**：
+  - `commander_worker_spawn`：给已有工单开 worker。建目录（`workRoot/<ticket>`，可跑一次
+    `prepareCommand`，可用 `DSH_COMMANDER_*` 环境变量）→ `workspaceRegistry.create` →
+    `sessionController.create({ sessionId: 'worker-<ticket>', workspaceId })` → 设置权限 →
+    重命名 → 账本记录 `execution` → 投递派工消息。
+  - `commander_worker_send`：追加指令；`commander_worker_stop`：停止当前回合（记 blocked）；
+    `commander_worker_status`：看 session/目录/是否可解析。
+- **worker 侧**：`agent/created` 时装饰——注入「你只负责这张工单」人设 + 目录/验收判据，
+  用 `tools.restrict` 收紧到工作工具，注册 `commander_report`，并加"工单已结束"guard。
+  结束前必须 `commander_report`（status + summary；blocked/failed 用 question）；汇报会写账本并
+  `steer` 唤醒指挥者。worker 空转未汇报时，idle 兜底每 10 分钟提醒一次。
+- **槽位与恢复**：`maxWorkers`（默认 3）在启动前检查；DSH 重启后，指挥者会话创建时会为
+  open 工单的 worker 投递恢复提示（先检查目录/产物再继续）并标记 `resumedAt`。
+- **边界**：worker 目录与工具收敛**不是安全边界**（worker 仍以操作员身份执行，默认
+  `danger-full-access`，可用 `workerPermission` 改）；没有 worktree/文件锁；prepare 命令来自
+  用户配置、按用户 shell 执行。
+- **为什么不是 1.0.0**：原计划 1.0 在 Worker Session 隔离之外还包括"默认开启 + UI + 完整恢复"。
+  真实会话里 worker 的端到端（模型自然 spawn/汇报）尚未验证，所以先以 **0.8.0 opt-in** 交付，
+  1.0.0 留待真实验证后再默认开启并补 UI。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -402,6 +433,11 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `requireTicket` | `true` | 每次派发必须带工单（specialist 的 `ticket` 参数 / Team 的 `[ticket:t-N]`） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
 | `maxAsyncTasks` | `4` | 同一会话同时在飞的一次性 specialist 上限（1–12） |
+| `workerSessions` | `false` | **opt-in**：每工单独立 Worker Session + 独立目录（改变执行模型） |
+| `workRoot` | `''` | Worker 目录根；空 = `<DSH_HOME>/commander/work`。相对路径以 `DSH_HOME` 为基准 |
+| `maxWorkers` | `3` | 每个指挥者会话同时最多几个 Worker Session（1–12） |
+| `prepareCommand` | `''` | 建 worker 目录后执行一次的 prepare 命令（可用 `DSH_COMMANDER_*` 环境变量） |
+| `workerPermission` | `danger-full-access` | Worker Session 的权限预设；目录不是安全边界 |
 | `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
@@ -466,6 +502,16 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束。
 - **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
   判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
+- **Worker Session 默认关闭，且不是安全边界（0.8.0）。** 开启后 worker 用 `standard` preset
+  建 Session，再 `tools.restrict` 收紧到工作工具 + 注入人设；它仍以操作员身份执行、默认
+  `danger-full-access`，`workRoot` 下的目录只是默认值，不是隔离边界。
+- **Worker 会话会出现在会话列表（0.8.0）。** 名字是 `执行 <ticket>：<标题>`；没有 UI 过滤。
+  这是默认关闭的原因之一；1.0 再决定是否/如何隐藏。
+- **Worker 恢复是"提示"，不是队列（0.8.0）。** 重启后只有指挥者会话再次创建时才会为 open
+  工单的 worker 投递恢复提示；进程内没人触发就不会自动恢复。`worker-<ticket>` Session 依赖
+  DSH 自己的会话持久化，会话被删就只剩账本记录（看板按停滞提示）。
+- **`prepareCommand` 按用户 shell 执行（0.8.0）。** 它在 `workRoot` 的父目录下跑，超时 10 分钟；
+  失败会让 spawn 抛错（带 stderr 摘要），不会反复重试同一条命令。
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -527,6 +573,26 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **0.8.0 第九轮（Worker Session，opt-in）**：
+  - **`node --test` 392/392 通过**（375 → 392，+17）：新增 `test/worker-sessions.test.mjs`——
+    `resolveWorkRoot`、disabled 拒绝、spawn（目录/workspace/独立 Session/权限/重命名/账本
+    `execution`/派工消息）、同一工单只能一个 worker、`maxWorkers` 上限、装饰（人设 section /
+    `tools.restrict` / `commander_report` / 结束 guard）、report 写账本 + steer 指挥者、
+    send/status/stop、重启恢复提示、idle 未汇报兜底与节流、worker 工具契约；
+    `config/patch/protocol/host/plugin` 增 Worker 配置、契约与接线断言（默认关闭不注册工具、
+    `workerSessions:true` 注册四个工具并委托服务、服务缺失给可执行错误）。
+  - **本轮抓到的两个实现 bug**：① `commander_report` 的 `execute` 用 `this.ledger`，
+    工具以 `tool.execute()` 调用时 `this` 是工具对象 → 改为闭包捕获服务与账本；
+    ② 测试把首次派工当成 `followup`，实际 `deliver` 优先 `steer`（新会话需要唤醒）→ 修正测试口径。
+  - **真实 Loader（headless 沙箱 `commander-080`）**：`compose` 出现 `workerSessions: false`、
+    `workRoot: ''`、`maxWorkers: 3`、`prepareCommand: ''`、`workerPermission:
+    danger-full-access` 与三行；headless 缺 `agentPresets` 的已知限制不变。沙箱已销毁。
+  - **未验证（不当作已完成）**：真实会话里"模型自然 spawn worker → worker 在独立目录执行 →
+    commander_report 唤醒指挥者 → 指挥者验收"的端到端；`sessionController.create`/
+    `workspaceRegistry.create` 在桌面 profile 的真实行为（代码已做特性探测与降级，但没有
+    真实运行证据）；`prepareCommand` 在 Windows 含空格路径下的表现。需要一次桌面手动会话：
+    开启 `workerSessions` → 建工单 → `commander_worker_spawn` → 看 worker 会话与目录 →
+    等汇报通知 → 验收。
 - **0.7.0 第八轮（异步派工 / 完成唤醒）**：
   - **`node --test` 375/375 通过**（366 → 375，+9）：新增异步接线用例——工具立即返回
     `started`（不阻塞）、完成后写账本（`ready` + Assignment 结算 + childId）并 `steer` 一条
@@ -668,6 +734,17 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **0.8.0** —— Worker Session（opt-in）：① 新增 `commanderWorkers` 服务
+  （`lib/worker-sessions.js`）：每工单一个独立 DSH Session（`sessionController.create`）+
+  独立目录（`workRoot/<ticket>`，可选 `prepareCommand`）+ `maxWorkers` 槽位；② 新增四个工具
+  （`lib/worker-tools.js`）：`commander_worker_spawn/send/status/stop`，spawn 受计划授权/工单
+  门禁约束；③ worker 侧在 `agent/created` 装饰：人设 section、`tools.restrict` 收紧、
+  `commander_report` 工具、工单结束 guard；report 写账本并 `steer` 唤醒指挥者，idle 未汇报
+  有 10 分钟节流兜底；④ 重启恢复提示与 `execution.resumedAt`；账本新增工单 `execution`
+  字段（Session/目录/权限/恢复时间）；⑤ 配置新增 `workerSessions`（默认 **false**）/
+  `workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission`；⑥ 协议新增 Worker 三条
+  （仅开启时出现）；⑦ 测试 375 → 392；⑧ **未验证**真实会话里 worker 端到端（见「验证过什么」）。
+  为什么不是 1.0.0：1.0 还要求默认开启 + UI + 完整恢复，先以 opt-in 交付、等真实验证。
 - **0.7.0** —— 异步派工与完成唤醒：① 一次性 specialist 默认改为**异步**（`lib/specialists.js`：
   工具立即返回 `stopReason:'started'`，后台 `delivery:'caller'` + 插件作用域 signal 等结算）；
   ② `agent.js` 新增异步登记/容量/完成处理：解析 `STATUS:` → 写账本（Assignment 结算 + Report）
