@@ -33,8 +33,8 @@ function memoryLedger() {
 }
 
 /** 建工具集。 */
-function tools(getLedger) {
-  const list = buildTicketTools({ getLedger });
+function tools(getLedger, getTeamBridge) {
+  const list = buildTicketTools({ getLedger, getTeamBridge });
   return {
     create: list.find((tool) => tool.name === 'commander_ticket_create'),
     update: list.find((tool) => tool.name === 'commander_ticket_update'),
@@ -144,4 +144,75 @@ test('list：默认只列未结束；include_ended 看历史；含授权与 atte
   const all = await set.list.execute({ include_ended: true }, EXEC);
   assert.deepEqual(all.tickets.map((ticket) => ticket.id).sort(), ['t-1', 't-2']);
   assert.equal(all.tickets.find((ticket) => ticket.id === 't-1').status, 'done');
+});
+
+// ------------------------------------------------- 共享任务板投影（1.2.0 B） ---
+
+/** 投影器替身（默认全部成功）。 */
+function fakeBridge({ taskId = 'task-1', createResult = undefined, syncResult = undefined, throwCreate = false, throwSync = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async createProjection(_agent, ticket) {
+      calls.push({ action: 'create', ticketId: ticket.id });
+      if (throwCreate) throw new Error('boom');
+      return createResult === undefined ? { taskId, task: { id: taskId } } : createResult;
+    },
+    async syncProjection(_agent, ticket) {
+      calls.push({ action: 'sync', ticketId: ticket.id, mapped: ticket.teamTaskId });
+      if (throwSync) throw new Error('boom');
+      return syncResult === undefined ? { taskId, task: { id: taskId } } : syncResult;
+    },
+  };
+}
+
+test('create：有投影器时建任务并写回 team_task_id', async () => {
+  const ledger = memoryLedger();
+  const bridge = fakeBridge({ taskId: 'task-7' });
+  const set = tools(() => ledger, () => bridge);
+
+  const created = await set.create.execute({ title: '实现登录' }, EXEC);
+  assert.equal(created.ticket.team_task_id, 'task-7');
+  assert.deepEqual(bridge.calls, [{ action: 'create', ticketId: 't-1' }]);
+  // 账本里也持久化了映射
+  assert.equal(ledger.getTicket('t-1', 's-1').teamTaskId, 'task-7');
+});
+
+test('create：投影失败/抛错不影响建单（team_task_id 为 null）', async () => {
+  for (const bridge of [fakeBridge({ createResult: null }), fakeBridge({ throwCreate: true })]) {
+    const ledger = memoryLedger();
+    const set = tools(() => ledger, () => bridge);
+    const created = await set.create.execute({ title: '实现' }, EXEC);
+    assert.equal(created.ticket.team_task_id, null);
+    assert.equal(ledger.getTicket(created.ticket.id, 's-1').status, 'open');
+  }
+});
+
+test('update：有投影器时同步，并在缺映射时补写 team_task_id', async () => {
+  const ledger = memoryLedger();
+  const bridge = fakeBridge({ taskId: 'task-5' });
+  const set = tools(() => ledger, () => bridge);
+  const created = await set.create.execute({ title: '实现' }, EXEC);
+  // 先把映射清掉，模拟"建单时投影失败、后来才补上"
+  ledger.attachTeamTask(created.ticket.id, 's-1', 'task-1');
+  ledger.replace({ ...ledger.getTicket(created.ticket.id, 's-1'), teamTaskId: null });
+
+  const updated = await set.update.execute({ ticket: created.ticket.id, status: 'progress' }, EXEC);
+  assert.equal(updated.ticket.status, 'working');
+  assert.equal(updated.ticket.team_task_id, 'task-5');
+  assert.ok(bridge.calls.some((call) => call.action === 'sync' && call.ticketId === created.ticket.id));
+});
+
+test('update：投影抛错不影响工单更新', async () => {
+  const ledger = memoryLedger();
+  const set = tools(() => ledger, () => fakeBridge({ throwSync: true }));
+  const created = await set.create.execute({ title: '实现' }, EXEC);
+  const done = await set.update.execute({ ticket: created.ticket.id, status: 'done' }, EXEC);
+  assert.equal(done.ticket.status, 'done');
+});
+
+test('没有投影器：行为与 1.1.x 一致（team_task_id 恒为 null）', async () => {
+  const set = tools(() => memoryLedger());
+  const created = await set.create.execute({ title: '实现' }, EXEC);
+  assert.equal(created.ticket.team_task_id, null);
 });

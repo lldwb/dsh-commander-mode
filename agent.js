@@ -88,6 +88,7 @@ import {
   renderModeOpening,
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
+import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
 import { buildWorkerTools } from './lib/worker-tools.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
@@ -191,6 +192,75 @@ export function apply(ctx) {
     }
   };
 
+  /**
+   * 工单 → 共享任务板的投影器（1.2.0 B）。
+   *
+   * 无状态；没有 Agent Teams 服务 / 当前 agent 不是成员时所有方法返回 undefined，
+   * 行为与 1.1.x 完全一致。
+   */
+  const teamBridge = createTeamBoardBridge({ getService, logger: ctx.logger });
+
+  /**
+   * D 门禁用的任务板适配器：只有当前 agent 真的能用 Agent Teams 时才返回。
+   *
+   * @param {object | undefined} agent - 指挥者 agent。
+   * @returns {{ getTask: (taskId: string) => object | undefined } | undefined} 适配器。
+   */
+  const teamBoardFor = (agent) => {
+    if (agent === undefined || agent === null || teamBridge.available(agent) === undefined) return undefined;
+    return { getTask: (taskId) => teamBridge.readTask(agent, taskId) };
+  };
+
+  /**
+   * 是否启用投影（配置 `teamTaskProjection`，默认开）。
+   *
+   * @returns {boolean} 是否启用。
+   */
+  const projectionEnabled = () => {
+    try {
+      return readOptions().teamTaskProjection !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  /**
+   * 把某张工单同步到共享任务板（尽力而为，失败只记日志）。
+   *
+   * 用在所有工单状态变化点：派发记账、后台结算、失败回报、worker 回报。
+   * 工单工具（create/update）自己在工具层同步，不需要经过这里。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @param {string} ticketId - 工单 id。
+   * @returns {void}
+   */
+  const syncTicketMirror = (agent, ticketId) => {
+    try {
+      if (!projectionEnabled()) return;
+      if (typeof ticketId !== 'string' || ticketId === '') return;
+      const ledger = getLedger();
+      const sessionId = sessionIdOf(agent);
+      if (ledger === undefined || sessionId === undefined) return;
+      const ticket = ledger.getTicket(ticketId, sessionId, { allowMissing: true });
+      if (ticket === null) return;
+      void teamBridge.syncProjection(agent, ticket).then((projected) => {
+        if (projected === undefined) return;
+        const record = ledger.getTicket(ticketId, sessionId, { allowMissing: true });
+        if (record !== null && record.teamTaskId !== projected.taskId) {
+          try {
+            ledger.attachTeamTask(ticketId, sessionId, projected.taskId);
+          } catch {
+            // 映射写失败不影响投影本身；下次同步会重试。
+          }
+        }
+      }).catch((error) => {
+        ctx.logger?.debug?.('commander-mode: 同步共享任务板失败：%o', error);
+      });
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 触发共享任务板同步失败：%o', error);
+    }
+  };
+
   // -------------------------------------------------- 结算同步（看板 + 兜底） ---
 
   //
@@ -246,8 +316,12 @@ export function apply(ctx) {
       if (typeof service.tryMembership === 'function' && service.tryMembership(agent) === undefined) return undefined;
       const tasks = typeof service.listTasks === 'function' ? service.listTasks(agent) : [];
       const members = typeof service.listMembers === 'function' ? service.listMembers(agent) : [];
+      const allTasks = Array.isArray(tasks) ? tasks : [];
       return {
-        tasks: Array.isArray(tasks) ? tasks : [],
+        tasks: allTasks,
+        // 1.2.0：投影任务（`[commander:ticket=...]`）由工单看板负责，同步看板只看"真正的团队任务"，
+        // 否则投影的 specialist 工单会被误判成孤儿任务 / 团队闲置。
+        nativeTasks: allTasks.filter((task) => !isProjectedTask(task)),
         // Lead 自己也会出现在成员列表里；看板只关心执行者的状态。
         members: Array.isArray(members) ? members.filter((member) => member?.role !== 'lead') : [],
       };
@@ -280,7 +354,7 @@ export function apply(ctx) {
     const ledger = ledgerOf(agent);
     const team = readTeam(agent);
     const now = Date.now();
-    if (team !== undefined) recordBoard(ledger, team.tasks, now);
+    if (team !== undefined) recordBoard(ledger, team.nativeTasks, now);
     return { ledger, view: evaluateSync(ledger, { members: team?.members ?? [], now }), members: team?.members ?? [] };
   };
 
@@ -460,6 +534,8 @@ export function apply(ctx) {
               ? `异步执行者结算但未按约定给出 STATUS 行；结果见会话。${text.slice(0, 400)}`
               : text.slice(0, 2000),
           });
+          // 1.2.0 B：异步结算也同步共享任务板。
+          syncTicketMirror(entry.agent, entry.ticketId);
         } catch (error) {
           ctx.logger?.debug?.('commander-mode: 写异步结算到账本失败：%o', error);
         }
@@ -501,6 +577,7 @@ export function apply(ctx) {
             summary: `异步执行者结算失败：${message}`,
             question: '这个任务接下来怎么办：重派、改派，还是先看产物？',
           });
+          syncTicketMirror(entry.agent, entry.ticketId);
         } catch (ledgerError) {
           ctx.logger?.debug?.('commander-mode: 写异步失败到账本失败：%o', ledgerError);
         }
@@ -608,6 +685,8 @@ export function apply(ctx) {
           summary: `执行者结算但未按约定给出 STATUS 行；结果见会话。${text.slice(0, 400)}`,
         });
       }
+      // 1.2.0 B：回报状态同步到共享任务板。
+      syncTicketMirror(exec.agent, ticketId);
     } catch (error) {
       ctx.logger?.debug?.('commander-mode: 记录执行者回报失败：%o', error);
     }
@@ -632,14 +711,32 @@ export function apply(ctx) {
       const ledger = getLedger();
       if (sessionId === undefined || ledger === undefined) return;
       const value = result?.value;
+      // `spawn_teammate` 的返回值是 `{ member: { target, ... } }`（随附包 tool-agent-team 的 schema）。
+      const memberName = typeof value?.member?.target === 'string'
+        ? value.member.target
+        : typeof value?.member?.name === 'string'
+          ? value.member.name
+          : undefined;
       const ref = typeof value?.childId === 'string'
         ? value.childId
         : typeof value?.sessionId === 'string'
           ? value.sessionId
           : typeof value?.name === 'string'
             ? value.name
-            : undefined;
+            : memberName;
       ledger.markAssignmentSettled(ticketId, sessionId, ref);
+      // 1.2.0 D：Team 通道派发后把投影任务的 owner 自动绑到这个队友（"建板必有主"）。
+      if (toolName === 'spawn_teammate' && memberName !== undefined && projectionEnabled()) {
+        const record = ledger.getTicket(ticketId, sessionId, { allowMissing: true });
+        if (record !== null) {
+          void teamBridge.bindOwner(exec.agent, record, memberName).then((bound) => {
+            if (bound === undefined) return;
+            syncTicketMirror(exec.agent, ticketId);
+          }).catch((error) => {
+            ctx.logger?.debug?.('commander-mode: 自动绑定任务 owner 失败：%o', error);
+          });
+        }
+      }
     } catch (error) {
       ctx.logger?.debug?.('commander-mode: 结算工单派发失败：%o', error);
     }
@@ -680,6 +777,7 @@ export function apply(ctx) {
         summary: `派发失败（${toolName}）：${message}`,
         question: '这一步要重试、换通道（specialist/Team/Worker），还是先核对产物？',
       });
+      syncTicketMirror(exec.agent, ticketId);
     } catch (error) {
       ctx.logger?.debug?.('commander-mode: 记录派发失败状态失败：%o', error);
     }
@@ -747,6 +845,8 @@ export function apply(ctx) {
           ? 'worker'
           : classifyDelegation(toolName) === DELEGATION_CHANNELS.TEAM ? 'team' : 'one-shot';
       ledger.recordAssignment(ticketId, sessionId, { channel, toolName });
+      // 1.2.0 B：工单进入"已派发"状态后同步投影（板上能看到它在跑）。
+      syncTicketMirror(agent, ticketId);
     } catch (error) {
       // 记账失败不能影响派发；门禁已经单独校验过授权。
       ctx.logger?.debug?.('commander-mode: 记录工单派发失败：%o', error);
@@ -791,6 +891,8 @@ export function apply(ctx) {
           specialists: installedRoster,
           hasSpecialistTools: installedRoster.length > 0,
           syncBoard: syncBoardEnabled(),
+          // 1.2.0：Agent Teams 可用时，协议里补一段"共享任务板是工单投影"的说明。
+          teamBoard: teamBridge.available(agent) !== undefined,
         });
       } catch (error) {
         // prompt section 抛错会让该会话的每一步都失败，所以渲染失败就退化成
@@ -855,7 +957,7 @@ export function apply(ctx) {
             // 算 epoch，这次已经完全同步的写入会被误判成"清单落后于结算"。
             // 所以写清单时先把**当时真实的板**记成新基线：它代表"这次同步之后"的状态。
             const team = readTeam(agent);
-            if (team !== undefined) recordBoard(ledger, team.tasks, Date.now());
+            if (team !== undefined) recordBoard(ledger, team.nativeTasks, Date.now());
             recordPlan(ledger, todos);
           }
         }
@@ -974,6 +1076,10 @@ export function apply(ctx) {
           requireMandate: options.requireMandate !== false,
           requireTicket: options.requireTicket !== false,
           ledger: getLedger(),
+          // 1.2.0 D：Team 通道必须落在共享任务板上；没有 Agent Teams 时适配器为 undefined → 整段跳过。
+          requireTeamTask: options.requireTeamTask !== false,
+          requireTeamTaskMarker: options.requireTeamTaskMarker === true,
+          teamBoard: teamBoardFor(exec?.agent),
         });
         if (mandateDecision !== undefined) {
           ctx.logger?.info?.('commander-mode: 派发被计划授权/工单门禁拒绝（%s）', toolName);
@@ -1140,7 +1246,7 @@ export function apply(ctx) {
         toolCtx.effect(() => {
           const disposers = [];
           const definitions = [
-            ...buildTicketTools({ getLedger, getOptions: readOptions }),
+            ...buildTicketTools({ getLedger, getOptions: readOptions, getTeamBridge: () => teamBridge }),
             ...(readOptions().workerSessions === true
               ? buildWorkerTools({ getWorkers: () => getService('commanderWorkers') })
               : []),

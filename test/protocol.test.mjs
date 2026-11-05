@@ -24,6 +24,7 @@ import {
   FLOW_STEPS,
   SKILL_NAME,
   TICKET_RULES,
+  TEAM_BOARD_RULES,
   WORKER_RULES,
   renderCommanderSection,
   renderModeOpening,
@@ -560,4 +561,33 @@ test('0.8.0：Worker Session 规则不传 options 时不出现，workerSessions:
   for (const rule of WORKER_RULES) assert.ok(text.includes(rule.title), rule.title);
   const joined = WORKER_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
   assert.ok(!/specialist/iu.test(joined), 'Worker 规则不应出现 specialist');
+});
+
+// ------------------------------------------------ 共享任务板投影（1.2.0） ---
+
+test('1.2.0：teamBoard 缺省不渲染投影小节（1.1.x 文本不变）', () => {
+  assert.ok(!SECTION.includes('共享任务板是工单的投影'), '缺省不应出现投影小节');
+  assert.ok(!OPENING.includes('[task:task-N]'), '缺省不应点名 [task:task-N]');
+});
+
+test('1.2.0：teamBoard:true 时给出投影小节与 Team 通道写法', () => {
+  const text = renderCommanderSection({ teamBoard: true });
+  assert.ok(text.includes('### 共享任务板是工单的投影（1.2.0）'), text);
+  for (const phrase of [
+    '不要重复创建',
+    '投影',
+    '[task:task-N]',
+    'team_task_update',
+    'commander_ticket_update',
+    '真实工单状态',
+  ]) {
+    assert.ok(text.includes(phrase), `投影小节缺少：${phrase}`);
+  }
+  // 三条规则都要在（标题逐条出现）。
+  for (const rule of TEAM_BOARD_RULES) assert.ok(text.includes(rule.title), rule.title);
+});
+
+test('1.2.0：renderModeOpening 透传 teamBoard', () => {
+  const opening = renderModeOpening({ teamBoard: true });
+  assert.ok(opening.includes('### 共享任务板是工单的投影（1.2.0）'), opening);
 });

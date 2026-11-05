@@ -13,6 +13,7 @@ import {
   evaluateDispatchGate,
   isNewWorkTool,
   sessionIdOf,
+  taskFromDispatchArgs,
   ticketFromDispatchArgs,
 } from '../lib/dispatch-gate.js';
 import { PLAN_CONFIRM_LABEL, PLAN_QUESTION_ID } from '../lib/tickets.js';
@@ -176,5 +177,129 @@ test('Worker spawn 走同一道门禁：没授权/没工单都拒绝，带工单
     gate({ name: 'commander_worker_spawn', args: { task: 'x' } }).kind,
     'deny',
     '没有 ticket 参数应拒绝（requireTicket）',
+  );
+});
+
+// ------------------------------------------------------- 共享任务板（1.2.0 D） ---
+
+/** 一个只读任务板适配器。 */
+function board(tasks = []) {
+  return { getTask: (id) => tasks.find((task) => task.id === id) };
+}
+
+/** 能派 teammate 的合法参数。 */
+const SPAWN_ARGS = { name: 'reviewer', prompt: '[ticket:t-1] 实现 X' };
+
+test('taskFromDispatchArgs：从 prompt/task/message 里找 [task:task-N]', () => {
+  assert.equal(taskFromDispatchArgs({ prompt: '[ticket:t-1] [task:task-9] 实现' }), 'task-9');
+  assert.equal(taskFromDispatchArgs({ task: '做点事 [task:task-3]' }), 'task-3');
+  assert.equal(taskFromDispatchArgs({ message: '续做 [task:task-4]' }), 'task-4');
+  assert.equal(taskFromDispatchArgs({ prompt: '没有标记' }), undefined);
+  assert.equal(taskFromDispatchArgs(null), undefined);
+});
+
+test('D：没有 Agent Teams（teamBoard 为 undefined）→ 整段跳过，行为与 1.1.x 一致', () => {
+  assert.equal(
+    gate({ name: 'spawn_teammate', args: SPAWN_ARGS, ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }) }),
+    undefined,
+  );
+});
+
+test('D-1：有任务板但工单没有投影 → 拒绝，并给出触发投影的修复命令', () => {
+  const decision = gate({
+    name: 'spawn_teammate',
+    args: SPAWN_ARGS,
+    ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
+    teamBoard: board([]),
+    requireTeamTask: true,
+  });
+  assert.equal(decision.kind, 'deny');
+  assert.match(decision.reason, /commander_ticket_update/u);
+  assert.match(decision.reason, /没有共享任务板投影/u);
+});
+
+test('D-1：投影任务不存在 / 已结束 → 拒绝', () => {
+  const missing = gate({
+    name: 'spawn_teammate',
+    args: SPAWN_ARGS,
+    ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] }),
+    teamBoard: board([]),
+    requireTeamTask: true,
+  });
+  assert.equal(missing.kind, 'deny');
+  assert.match(missing.reason, /不存在/u);
+
+  for (const status of ['completed', 'deleted']) {
+    const ended = gate({
+      name: 'spawn_teammate',
+      args: SPAWN_ARGS,
+      ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] }),
+      teamBoard: board([{ id: 'task-1', status }]),
+      requireTeamTask: true,
+    });
+    assert.equal(ended.kind, 'deny', status);
+    assert.match(ended.reason, /已结束/u);
+  }
+});
+
+test('D-1：有有效投影 → 放行；requireTeamTask=false 时无投影也放行', () => {
+  const ledger = makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] });
+  assert.equal(
+    gate({ name: 'spawn_teammate', args: SPAWN_ARGS, ledger, teamBoard: board([{ id: 'task-1', status: 'pending' }]), requireTeamTask: true }),
+    undefined,
+  );
+  assert.equal(
+    gate({
+      name: 'spawn_teammate',
+      args: SPAWN_ARGS,
+      ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
+      teamBoard: board([]),
+      requireTeamTask: false,
+    }),
+    undefined,
+  );
+});
+
+test('D-1 只约束 Team 通道：一次性 specialist 不受影响', () => {
+  assert.equal(
+    gate({
+      args: { task: '实现 X', ticket: 't-1' },
+      ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
+      teamBoard: board([]),
+      requireTeamTask: true,
+    }),
+    undefined,
+  );
+});
+
+test('D-2：requireTeamTaskMarker 要求 prompt 带 [task:task-N] 且与投影一致', () => {
+  const ledger = makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] });
+  const teamBoard = board([{ id: 'task-1', status: 'pending' }]);
+
+  const missing = gate({ name: 'spawn_teammate', args: SPAWN_ARGS, ledger, teamBoard, requireTeamTask: true, requireTeamTaskMarker: true });
+  assert.equal(missing.kind, 'deny');
+  assert.match(missing.reason, /\[task:task-N\]/u);
+
+  const mismatched = gate({
+    name: 'spawn_teammate',
+    args: { name: 'reviewer', prompt: '[ticket:t-1] [task:task-9] 实现' },
+    ledger,
+    teamBoard,
+    requireTeamTask: true,
+    requireTeamTaskMarker: true,
+  });
+  assert.equal(mismatched.kind, 'deny');
+  assert.match(mismatched.reason, /不一致/u);
+
+  assert.equal(
+    gate({
+      name: 'spawn_teammate',
+      args: { name: 'reviewer', prompt: '[ticket:t-1] [task:task-1] 实现' },
+      ledger,
+      teamBoard,
+      requireTeamTask: true,
+      requireTeamTaskMarker: true,
+    }),
+    undefined,
   );
 });

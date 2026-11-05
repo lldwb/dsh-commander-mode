@@ -306,3 +306,68 @@ test('服务：缓存命中后的真实文件回读（端到端）', (t) => {
   const raw = JSON.parse(readFileSync(file, 'utf8'));
   assert.equal(raw.schemaVersion, LEDGER_SCHEMA_VERSION);
 });
+
+// --------------------------------------------- 共享任务板映射（1.2.0） ---
+
+test('sanitizeLedger：保留合法 task-N 投影映射，非法值丢弃', () => {
+  const base = emptyLedger();
+  base.tickets.push({
+    id: 't-1',
+    sessionId: 's-1',
+    title: 'x',
+    status: 'open',
+    mandateId: null,
+    teamTaskId: 'task-12',
+    assignments: [],
+    lastReport: null,
+    execution: null,
+    createdAt: 1,
+    updatedAt: 1,
+    endedAt: null,
+    endReason: null,
+  });
+  const kept = sanitizeLedger(JSON.parse(JSON.stringify(base)));
+  assert.equal(kept.state.tickets[0].teamTaskId, 'task-12');
+
+  const dirty = JSON.parse(JSON.stringify(base));
+  dirty.tickets[0].teamTaskId = '../../etc/passwd';
+  assert.equal(sanitizeLedger(dirty).state.tickets[0].teamTaskId, null);
+
+  const missing = JSON.parse(JSON.stringify(base));
+  delete missing.tickets[0].teamTaskId;
+  assert.equal(sanitizeLedger(missing).state.tickets[0].teamTaskId, null);
+});
+
+test('attachTeamTask：写映射、幂等、校验归属与 id 形状', () => {
+  const { ledger, state } = memoryLedger();
+  const created = ledger.createTicket({ sessionId: 's-1', title: '实现' });
+  assert.equal(created.team_task_id, null);
+
+  const attached = ledger.attachTeamTask(created.id, 's-1', 'task-3');
+  assert.equal(attached.team_task_id, 'task-3');
+  assert.equal(state().tickets[0].teamTaskId, 'task-3');
+
+  // 幂等：重复绑定不改变更新时间（同一视图）
+  const again = ledger.attachTeamTask(created.id, 's-1', 'task-3');
+  assert.equal(again.team_task_id, 'task-3');
+
+  assert.throws(() => ledger.attachTeamTask(created.id, 's-1', 'bogus'), /task-N/u);
+  assert.throws(() => ledger.attachTeamTask(created.id, 's-1', ''), /task-N/u);
+  assert.throws(() => ledger.attachTeamTask(created.id, 's-9', 'task-4'), /不属于当前会话/u);
+});
+
+test('attachTeamTask：写盘失败只降级（内存仍然生效）', () => {
+  const ledger = new CommanderLedger({
+    file: 'memory.json',
+    load: () => ({ state: emptyLedger() }),
+    save: () => {
+      throw new Error('disk full');
+    },
+  });
+  ledger.load();
+  const created = ledger.createTicket({ sessionId: 's-1', title: '实现' });
+  const attached = ledger.attachTeamTask(created.id, 's-1', 'task-9');
+  assert.equal(attached.team_task_id, 'task-9');
+  assert.equal(ledger.getTicket(created.id, 's-1').teamTaskId, 'task-9');
+  assert.ok(ledger.diagnostics().last_persist_error.includes('disk full'));
+});

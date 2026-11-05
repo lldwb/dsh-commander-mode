@@ -38,6 +38,11 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   `bin/commander-event.mjs` 往 `events/inbox/` 写事件，插件轮询取走并 `steer` 对应指挥者
   会话——**空闲的指挥者会被外部事件唤醒**（不需要人先说话）。事件不建工单、不派活，
   只把"外面发生了什么"送到指挥者眼前；待投递数量在 `commander-status` 里可见。
+- **工单投影到共享任务板（1.2.0）**：账本仍是权威；装了「智能体团队」时，每张工单会被
+  **确定性投影**成任务板上的一张任务（描述首行 `[commander:ticket=t-N]`），工单状态变化
+  自动同步；走 Team 通道派发后，投影任务的 owner 会**自动绑定**到那个队友。你在
+  Agent Teams 面板里看到的板就是工单的进度，不需要模型自觉去建。没有 Agent Teams 的
+  部署行为与 1.1.x 完全一致。
 
 ```text
 30 秒上手
@@ -428,6 +433,59 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 > `ctx.tools.register()` 注册的 `subagent_<id>`，工具名与 Team 的九个工具完全不同；
 > 它也不声明 `tool-subagent` 那一族随附控件，所以两套通道可以并存。
 
+## 共享任务板投影（1.2.0）
+
+**解决的问题**：工单账本在磁盘上，用户在「智能体团队」面板里看不见；而任务板又只有
+4 个状态，替代不了账本。1.2.0 的做法是**单向投影**：账本继续当唯一权威，任务板当它的
+可见层。
+
+```
+工单账本（JSON，跨会话，门禁的同步数据源）
+   │  每次状态迁移（工具 + 后台结算）
+   ▼
+team-board-bridge（best-effort，永不抛错）
+   │  ctx.get('agentTeams')：createTask / updateTask / getTask / listTasks
+   ▼
+Lead 会话日志 → agentTeam 投影 → Agent Teams 面板
+```
+
+**投影出来的任务长这样**（描述前三行是机器 marker）：
+
+```text
+[commander:ticket=t-17]
+[commander:channel=team]
+[commander:status=working]
+
+<intent>
+## 验收判据
+- ...
+## 执行者
+Team 通道：owner 由插件自动绑定
+```
+
+| 工单状态 | 任务 status | 说明 |
+|---|---|---|
+| `open` | `pending` | 无 owner |
+| `working`（Team 通道） | `in_progress` | `spawn_teammate` 结算后 owner = 队友 |
+| `working`（specialist / worker） | `pending` | 一次性执行者不是 Team 成员，板上无主 |
+| `waiting` / `review` / `blocked` / `failed` | 保持原 status | 板上无法表达，真实状态见 `[commander:status=...]` |
+| `done` | `completed` | pending 时 Lead 先 claim 再 complete |
+| `cancelled` | `deleted` | 删除墓碑 |
+
+**三条纪律**（也写进了协议 section，装团队时出现）：
+
+1. **板上的投影任务不要重复创建**；模型自己建的旧任务会被**收养**（marker 插入描述最前），
+   不会出现两份。
+2. 任务板只有 4 个状态，`review / blocked / failed` 以描述 marker 与「指挥者·工单看板」为准。
+3. **改进度用 `commander_ticket_update`**；直接改投影任务会被下次同步覆盖。
+
+**Team 通道自动绑定（D）**：`spawn_teammate` 成功后，插件把这张工单的投影任务
+`reassign` 给该队友（Lead 权限），所以"建板必有主"不再依赖模型自觉。派发门禁额外要求
+Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Teams 时自动跳过）。
+
+**降级**：没有 `agentTeams` 服务 / 当前 agent 不是 Team 成员 / 方法缺失 → 全部 no-op，
+行为与 1.1.x 逐字一致（协议文本都不变，有测试钉住）。
+
 ## 配置
 
 配置挂在**顶层行 `commander-mode`**（`dsh-commander-mode/host`）上，
@@ -445,6 +503,9 @@ preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道
 | `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
 | `requireMandate` | `true` | 派发新工作前必须有用户确认的计划授权（`commander-plan`） |
 | `requireTicket` | `true` | 每次派发必须带工单（specialist 的 `ticket` 参数 / Team 的 `[ticket:t-N]`） |
+| `teamTaskProjection` | `true` | 1.2.0：工单自动投影到 Agent Teams 共享任务板（B）；没有团队服务时自动 no-op |
+| `requireTeamTask` | `true` | 1.2.0：Team 通道派发要求工单有有效投影（D-1）；没有团队服务时自动跳过 |
+| `requireTeamTaskMarker` | `false` | 1.2.0：Team 通道派发要求 prompt 带 `[task:task-N]` 且与投影一致（D-2） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
 | `maxAsyncTasks` | `4` | 同一会话同时在飞的一次性 specialist 上限（1–12） |
 | `workerSessions` | `true` | 每工单独立 Worker Session + 独立目录（1.0.0 起默认开启；`false` 回退到 specialist/Team） |
@@ -469,6 +530,15 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 
 ## 已知边界
 
+- **投影是单向且尽力而为的。** 任务板上的改动不会回写工单；投影任何一步失败只记 debug 日志，
+  工单、门禁、派发照常工作。任务板被用户手动改坏时，下一次工单变更会把它同步回来。
+- **投影任务表达不了 4 个以上状态。** `review / blocked / failed / waiting` 在板上显示为
+  `in_progress` 或 `pending`，真实状态在描述里的 `[commander:status=...]`；完整视图看
+  「指挥者·工单看板」。
+- **specialist / worker 的投影任务没有 owner。** 一次性执行者不是 Team 成员，板上的任务
+  只能保持 `pending`（描述里标明通道）。Team 通道的任务由插件自动绑定 owner。
+- **投影任务不参与同步看板的告警。** 「团队闲置」「孤儿任务」只看**非投影**任务，避免
+  投影的 specialist 工单被误判；投影进度由工单看板负责。
 - **名册改动对新会话生效。** 已打开的会话保持它启动时的工具清单；旧工具执行时会检查名册，
   发现 specialist 已被移除就给出可执行的错误（提示重新规划），而不是静默派给旧配置。
 - **specialist 是"前台一次性"通道。** 它没有 Team 的持续对话、任务板、后台通知；要那些
@@ -987,6 +1057,21 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **1.2.0** —— 工单投影到 Agent Teams 共享任务板（B）+ Team 通道自动绑定 owner（D），
+  中版本、向后兼容：
+  ① 新增 `lib/team-board-bridge.js`：把工单确定性投影成任务板任务（描述前三行 marker、
+  状态映射、收养模型自己建的旧任务、CAS 冲突重试一次）；账本新增工单 `teamTaskId` 字段
+  （schemaVersion 不变，旧文件读出为 null）。
+  ② `commander_ticket_create/update` 变成 async，建单/更新后自动投影并返回 `team_task_id`。
+  ③ `agent.js` 在所有工单状态迁移点（派发记账、异步结算、失败回报、worker 回报）同步投影；
+  `spawn_teammate` 结算后把投影任务 `reassign` 给队友（D）。
+  ④ 派发门禁新增 D-1（Team 通道必须有有效投影）/ D-2（要求 `[task:task-N]`，默认关），
+  没有 Agent Teams 时整段跳过。
+  ⑤ 协议新增「共享任务板是工单的投影」三条（仅装团队时出现）；同步看板过滤投影任务，
+  避免"团队闲置 / 孤儿任务"误报。
+  ⑥ 配置新增 `teamTaskProjection` / `requireTeamTask` / `requireTeamTaskMarker`。
+  **用户要做什么**：不需要操作（没装 Agent Teams 时行为与 1.1.1 一致）；不想投影就在
+  profile patch 里写 `teamTaskProjection: false`。测试 432 → 474。
 - **1.1.1** —— 测试隔离修复（无用户可见行为变化）：`test/host.test.mjs` 之前用默认
   `stateDir`，`apply()` 会解析到**真实** `<DSH_HOME>/commander/<profile>.json`，于是每次
   跑单测都会往用户账本里写测试夹具工单（1.1.0 装配时发现真实账本被写进 15 张标题 `x` 的

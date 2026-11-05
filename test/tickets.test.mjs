@@ -246,3 +246,16 @@ test('ticketView 只输出可读字段与最近回报', () => {
   assert.equal(view.last_report, null);
   assert.equal('intent' in view, false);
 });
+
+test('1.2.0：新工单的 teamTaskId 为 null，视图输出 team_task_id', () => {
+  const record = createTicketRecord({ id: 't-9', sessionId: 's-1', title: '实现 X', at: AT });
+  assert.equal(record.teamTaskId, null);
+  assert.equal(ticketView(record).team_task_id, null);
+  assert.equal(ticketView({ ...record, teamTaskId: 'task-3' }).team_task_id, 'task-3');
+});
+
+test('1.2.0：teamTaskId 不参与状态迁移（迁移后仍然保留）', () => {
+  const row = applyStatus({ ...ticket(), teamTaskId: 'task-7' }, 'done', { at: AT + 10 });
+  assert.equal(row.teamTaskId, 'task-7');
+  assert.equal(ticketView(row).team_task_id, 'task-7');
+});
