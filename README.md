@@ -772,6 +772,34 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **1.3.1 第十六轮（DSH 0.2.2-rc.1 · 智能体团队通道针对性实测）**：
+  0.2.2 改了 `@deepseek-ai/dsh-experimental-agent-team` 的实现（`TeamService` 的投影注册移进
+  异步 `[Service.init]` 并 await `sessionProjections.register`）与 `agent-team-profile` 的 patch
+  （删掉已不存在的 `tool-subagent-list-agents` 禁用行），而本插件 1.2.0 的「工单投影到共享任务板」
+  正是依赖 `ctx.agentTeams`。逐项核对 + 真实回合实测结论：**API 未变、无需改代码**。
+  - **API 核对**：`TeamService` 公开方法 `createTask` / `getTask` / `listTasks` / `updateTask` /
+    `listMembers` / `spawnTeammate` / `sendMessage` / `waitForChange` / `interrupt` 全在；
+    `lib/team-board-bridge.js` 的 `available()` 要求四方法齐全（`createTask/getTask/listTasks/updateTask`）
+    → 通过。`TeamTaskView`（`revision`/`status`/`ready`/`ownerName`/`blockedBy`/`writeScopes`/
+    `writeScopeWarnings`）与 `TeamMemberView.status`（`running|inactive|provisioning|failed`）
+    形状未变；9 个 Team 工具名在 0.2.1-rc.5 与 0.2.2-rc.1 之间**完全一致**。
+  - **真实回合**（devkit **web** 沙箱 `commander-team-e2e`：`dsh-base` + `dsh-web-app` +
+    本插件 + `@deepseek-ai/dsh-experimental-agent-team-profile`，真实模型 `deepseek-flash`，
+    沙箱内临时 `.credentials.yaml`，用完 destroy）：
+    ① 会话默认 preset = `commander`（页面 chip 显示「指挥者模式」）；让模型调用
+    `team_task_list` → 原始返回 `{"tasks":[]}`，**回合 2 秒完成、0 console error** ——
+    证明 0.2.2 下 Team 工具在指挥者模式里确实可用（它们注册在 agent 自己的 ctx，不在 preset scope）。
+    ② 让模型调用 `commander_ticket_create` 建工单 → 返回
+    `{"ticket":{"id":"t-1",...,"team_task_id":"task-1"},...}`，会话日志出现
+    `team/task`（version 2，`task.id=task-1`、`revision=1`、`status=pending`，
+    description 带 `[commander:ticket=t-1]` 标记）—— **工单确实写进了 0.2.2 的共享任务板**。
+    ③ 该工单建立后的下一步，运行时上下文里新增 section `commander:sync-board`，原文逐字：
+    「【指挥者·工单看板】计划授权：**未确认**；工单 1 项进行中：t-1[queued] 团队通道联调。」
+    （工单建立**之前**这一 section 不存在：`renderSyncBoard`/`renderLedgerBoard` 在空态返回
+    空串，`systemPrompt.context` 不下发空文本——**这是设计，不是桥接失效**）。
+    ④ 门禁未被削弱：工单返回里仍是 `mandate_pending: true` + 「派发前先用 ask_user_question
+    确认计划」的提示。
+  - 仓库内对应回归：`node --test` 475/475（本轮未改代码，仅补此记录）。
 - **1.1.1 第十五轮（测试隔离修复 + 桌面版安装）**：
   - 安装桌面版时发现真实账本 `~/.dsh/commander/desktop.json` 里有 15 张标题 `x`、
     会话 `s-1` 的工单——全是**单测夹具**，不是真实会话。复现：跑 `test/host.test.mjs`
