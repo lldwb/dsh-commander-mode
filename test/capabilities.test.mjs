@@ -130,9 +130,11 @@ test('group 子行的 name 与 JS 常量逐行一致', () => {
 test('能力清单不含模式专属行与旧 subagent 控件', () => {
   // 这份清单是"指挥者与 specialist 共用"的能力集合，不是模式组合：
   // - `commander-mode` 混进来 → specialist preset 也会挂上指挥者协议，子代理拒绝动手；
-  // - `tool-subagent*` 混进来 → 与「智能体团队」的九个工具冲突（两套 send_message）。
+  // - `tool-subagent*` 混进来 → 与「智能体团队」的九个工具冲突（两套 send_message）；
+  // - `tool-plugin-manager` / `tool-plugin-market` 混进来 → 装插件属于"执行操作"，
+  //   本模式下应当派给子代理（而且随附 preset 里它们本来就是 disabled）。
   const ids = allCapabilityRowIds();
-  for (const forbidden of ['commander-mode', 'persona', 'plan-mode', 'tool-plugin-manager']) {
+  for (const forbidden of ['commander-mode', 'persona', 'plan-mode', 'tool-plugin-manager', 'tool-plugin-market']) {
     assert.ok(!ids.includes(forbidden), `能力清单不得包含 ${forbidden}`);
   }
   for (const forbidden of ['tool-subagent', 'tool-subagent-fork', 'tool-subagent-control', 'tool-subagent-list-agents']) {
@@ -203,6 +205,7 @@ test('关键行的 config 在 YAML 与 JS 两侧一致', () => {
   // 这里的每一行都有可见行为：glob 超限采样、并行 todo、web 抓取、上下文裁剪。
   const cases = [
     { id: 'agent-instructions', config: { maxBytes: 65536 } },
+    { id: 'tool-fs', config: { applyPatch: false } },
     { id: 'tool-fs-search', config: { sampleOverCapGlobResults: false } },
     { id: 'tool-todo', config: { allowParallelInProgress: true } },
     { id: 'tool-web', config: { fetch: true, searchTimeoutMs: 60000 } },

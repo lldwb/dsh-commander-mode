@@ -422,9 +422,10 @@ Team 通道用的是 `@deepseek-ai/dsh-experimental-agent-team-profile`（插件
 
 它们注册在每个 Team 成员 agent **自己的 ctx** 上（Lead 是隐式 Team 的 Lead，因此也是成员），
 所以**本插件的 patch 不需要、也不该重复声明它们**。那个组合包同时禁用了旧的
-`tool-subagent*` 控件，因此本插件的 preset **有意不镜像** standard 的 delegation 组里那四个
-subagent 行——重新声明它们会让指挥者同时拿到两套 `send_message` / `list_agents` /
-`interrupt_agent`。
+`tool-subagent*` 控件（0.2.2 起是 `tool-subagent-control` / `tool-subagent` /
+`tool-subagent-fork` 三行；`list-agents` 子路径导出已移除、`list_agents` 并进主入口），
+因此本插件的 preset **有意不镜像** standard 的 delegation 组里那三个 subagent 行——
+重新声明它们会让指挥者同时拿到两套 `send_message` / `list_agents` / `interrupt_agent`。
 
 preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道（一次性扇出多个 fresh
 子代理）。
@@ -1010,6 +1011,22 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
     配置含 `syncGuard: true`；跑完删除沙箱，零残留。
   - **仍未验证的**：桌面版 GUI 里点「指挥者模式」那个入口动作（沿用 0.1.x 的真实 preset 会话
     证据；0.4.0 的变更都在模型看得到的文本与钩子上，没有改 UI 入口）。
+- **0.2.2-rc.1 适配回归（1.3.0，devkit 沙箱 `commander-regress`，web profile + 真实 Web UI）**：
+  - `devkit_sandbox_compose` 合成树含 `- id: commander-mode`（顶层配置行）、
+    `- id: preset-commander`（`id: commander`）与 `- id: commander-mode-agent` 子行，
+    没有 broken 行；
+  - `devkit_ui_open` notes：**“dsh-commander-mode@1.3.0 is loaded: its client half is in
+    the page's manifest”**，控制台错误 0 条；
+  - 真实浏览器里模式选择器列出 `标准模式 / PTC 模式 / 极简模式 / 创造模式 / **指挥者模式**`，
+    点选成功（chip 变为「指挥者模式」，preset 真的 mount）；
+  - 插件页出现「指挥者专家名册」卡片，点进去名册编辑器完整渲染（6 位预置专家、继承模型、
+    添加专家 / 删除 / 恢复预置名册 / 保存）；
+  - 证据截图：`.scratch/preset-smith/evidence/{commander-mode-menu,commander-mode-selected,
+    commander-plugins-page,commander-specialist-roster}.png`；跑完 `devkit_sandbox_destroy` 零残留；
+  - 能力行镜像与 0.2.2 随附 `standard.patch.yml` 机械比对：18 行顶层里除 `delegation`
+    组（有意只留 `workflow-ptc` + `tool-workflow`）外每一行（含 config）逐字节相同，
+    排除项恰为 `persona` / `planning` / `tool-plugin-manager` / `tool-plugin-market`；
+  - `node --test` 475/475 通过。
 - **`node --test` 全绿**（201 个用例，0.2.0 时点），覆盖：门禁判定与身份放行、协议文本与
   可靠性语义、patch 结构（含 config 键与名册默认值）、名册清洗、specialist preset/工具契约、
   volatile 重建、设置页契约与纯逻辑模块（config / capabilities）。
@@ -1057,6 +1074,18 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **1.3.0** —— 适配 DSH 0.2.2-rc.1（中版本，无用户可见行为变化，也不破坏旧用法）：
+  ① 能力行镜像对齐 0.2.2 的 `preset-standard`：补进 0.2.1 起随附的 `time-context`
+  （每轮时间上下文）与 `tool-schedule`（RRULE 定时任务）两行；`tool-fs` 显式写
+  `config.applyPatch: false`（与随附逐字一致）。顶层行从 16 → 18，随附 standard 22 行、
+  排除 `persona` / `planning` / `tool-plugin-manager` / `tool-plugin-market` 四行。
+  ② `lib/capabilities.js` 同步 —— specialist preset 用的是同一份清单，两边由
+  `test/capabilities.test.mjs` 逐行锁住；新增的 `tool-fs` config 也进了这份清单。
+  ③ 文档/注释勘误：0.2.2 的 `@deepseek-ai/dsh-tool-subagent-control` 移除了
+  `list-agents` 子路径导出（`list_agents` 并进主入口），`agent-team-profile` 因此只禁用
+  旧控件三行而不是四行 —— 本插件本来就没声明它们，行为不变，只改注释。
+  **用户要做什么**：不需要操作（重新安装/重启即可拿到新能力行）。测试 474 → 475。
+  回归证据：devkit 沙箱 web profile + 真实 Web UI，见「已验证」一节的 0.2.2 条目。
 - **1.2.0** —— 工单投影到 Agent Teams 共享任务板（B）+ Team 通道自动绑定 owner（D），
   中版本、向后兼容：
   ① 新增 `lib/team-board-bridge.js`：把工单确定性投影成任务板任务（描述前三行 marker、

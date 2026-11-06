@@ -11,9 +11,11 @@
 # preset 内部**重新声明它要的那些行。所以在桌面版里并不存在一个全局的 `read` 工具：它
 # 之所以在，只是因为 `preset-standard` 把 `tool-fs` 列成了自己的子行。因此下面的
 # `CAPABILITIES` 块镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式的表现等于
-# 「标准模式 + 本插件 + 指挥者门禁」。已用 `preset_audit` 核对：随附 `standard` 顶层声明
-# 19 行，本块声明其中 16 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
-# 组的内部构成（见下）。
+# 「标准模式 + 本插件 + 指挥者门禁」。已核对到 **DSH 0.2.2-rc.1**（对照
+# `packages/bundle/web-app/presets/standard.patch.yml`）：随附 `standard` 顶层声明 22 行，
+# 本块声明其中 18 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
+# 组的内部构成（见下）。0.2.1-alpha.1 起 standard 新增 `time-context` 与 `tool-schedule`
+# （0.2.1-rc.1 起再新增 `tool-plugin-market`），本次把前两者补进能力块、第三者列入排除。
 #
 # 故意**不**从 preset-standard 镜像的东西：
 #
@@ -21,19 +23,23 @@
 #     prompt section 的风险；
 #   - `planning` / plan 模式 —— 60 行随附文案，而本模式自带的"规划 + 用选择工具让用户
 #     确认"已经覆盖了同一件事，两套协议会互相干扰；
-#   - `tool-plugin-manager` —— 随附时是禁用的（它是给 创造模式 用的），而且装插件属于
+#   - `tool-plugin-manager` —— 随附时是禁用的（`disabled: !!js "!ctx.get('profileContext')"`，
+#     它是给 创造模式 用的），而且装插件属于"执行操作"，本模式下应当派给子代理；
+#   - `tool-plugin-market` —— 随附时也是 `disabled: true`；装插件市场里的东西同样属于
 #     "执行操作"，本模式下应当派给子代理；
 #   - **`tool-subagent` / `tool-subagent-fork` / `tool-subagent-control` /
-#     `tool-subagent-control/list-agents`** —— 见下。
+#     `tool-subagent-control` 的 `list-agents` 子行** —— 见下。（0.2.2 已从该包移除
+#     `list-agents` 子路径导出，list_agents 并进主入口；本块本来就不声明它。）
 #
 # ## 派发通道：交给「智能体团队」，不要旧的 subagent 控件
 #
 # 本模式的委派**依赖 `@deepseek-ai/dsh-experimental-agent-team-profile`**（插件页里的
 # 「智能体团队」）。那个组合包做两件事：插入 `agent-team` 服务与 `tool-agent-team`
-# （九个 Team 工具），并**禁用**旧的 `tool-subagent-control`、`tool-subagent-list-agents`、
-# `tool-subagent` 与 `tool-subagent-fork`。
+# （九个 Team 工具），并**禁用**旧的 `tool-subagent-control`、`tool-subagent` 与
+# `tool-subagent-fork` 三行（0.2.2 起 `list-agents` 子路径导出已移除、list_agents 并进
+# 主入口，所以不再有第四行可禁）。
 #
-# 所以这里**不**镜像 standard 的 delegation 组里的那四个 subagent 行：在 preset 里重新
+# 所以这里**不**镜像 standard 的 delegation 组里的那三个 subagent 行：在 preset 里重新
 # 声明它们，会把那个组合包刚刚关掉的旧控件又装回来，于是指挥者同时拿到两套
 # `send_message` / `list_agents` / `interrupt_agent`，行为变得不确定。Team 工具本身
 # **不需要在这里声明** —— `tool-agent-team` 的九个工具注册在每个 Team 成员 agent
@@ -183,6 +189,9 @@
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
               maxBytes: 65536
+          # 0.2.1-alpha.1 起 standard 自带的时间上下文（每轮注入当前时间/时区）。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'
@@ -193,12 +202,18 @@
           # 由 lib/guard.js 的门禁对指挥者拒掉，而子代理照常可用。
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              # 逐字镜像 0.2.2 preset-standard：applyPatch 默认 false（不提供 apply_patch）。
+              applyPatch: false
           - id: tool-fs-search
             name: '@deepseek-ai/dsh-tool-fs-search'
             config:
               sampleOverCapGlobResults: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          # 0.2.1-alpha.1 起 standard 自带的定时任务能力（RRULE）。
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
           - id: skill-filesystem
             name: '@deepseek-ai/dsh-skill-filesystem'
           - id: tool-skill

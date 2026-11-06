@@ -26,14 +26,16 @@ function allRowIds() {
   return LINES.map((line) => /^\s*- id: (.+?)\s*$/u.exec(line)?.[1]).filter((id) => id !== undefined);
 }
 
-/** 本包从 `@deepseek-ai/dsh-preset-standard` 镜像的能力行。 */
+/** 本包从 `@deepseek-ai/dsh-preset-standard`（DSH 0.2.2-rc.1）镜像的能力行。 */
 const CAPABILITY_ROWS = [
   'agent-instructions',
+  'time-context',
   'tool-bash',
   'tool-pwsh',
   'tool-fs',
   'tool-fs-search',
   'tool-jobs',
+  'tool-schedule',
   'skill-filesystem',
   'tool-skill',
   'command-goal',
@@ -60,27 +62,38 @@ test('顶层行集合恰好是能力行加本插件', () => {
   assert.deepEqual([...declared].sort(), [...CAPABILITY_ROWS, 'commander-mode-agent'].sort());
 });
 
-test('与 preset-standard 的三处省略是有意为之', () => {
-  // 已用 preset_audit 核对：preset-standard 顶层 19 行，本块镜像其中 16 行。
+test('与 preset-standard 的四处省略是有意为之', () => {
+  // 已核对到 DSH 0.2.2-rc.1：preset-standard（packages/bundle/web-app/presets/
+  // standard.patch.yml）顶层 22 行，本块镜像其中 18 行。
   // persona：不声明也已经生效，再声明有重复 section 的风险。
   // plan-mode：60 行随附文案，与本模式自带的"规划 + 让用户确认"冲突。
   // tool-plugin-manager：装插件属于"执行操作"，本模式下要派给子代理。
-  for (const id of ['persona', 'planning', 'plan-mode', 'tool-plugin-manager']) {
+  // tool-plugin-market：同上（随附时也是 disabled: true）。
+  for (const id of ['persona', 'planning', 'plan-mode', 'tool-plugin-manager', 'tool-plugin-market']) {
     assert.ok(!topRowIds().includes(id), `不得声明 ${id}`);
   }
 });
 
 test('不声明旧的 subagent 控件，把派发通道让给智能体团队', () => {
   // `@deepseek-ai/dsh-experimental-agent-team-profile` 会禁用 tool-subagent-control /
-  // tool-subagent-list-agents / tool-subagent / tool-subagent-fork。在 preset 里重新声明
-  // 它们会把刚关掉的旧控件装回来，于是指挥者同时拿到两套 send_message / list_agents /
-  // interrupt_agent，行为变得不确定。
+  // tool-subagent / tool-subagent-fork（0.2.2 起 `list-agents` 子路径导出已移除，
+  // list_agents 并进主入口，不再有第四行）。在 preset 里重新声明它们会把刚关掉的
+  // 旧控件装回来，于是指挥者同时拿到两套 send_message / list_agents / interrupt_agent，
+  // 行为变得不确定。
   const declared = allRowIds();
   for (const id of ['tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork']) {
     assert.ok(!declared.includes(id), `不得声明 ${id} —— 它会与智能体团队冲突`);
   }
   // 也不许出现 subagent / subagent_fork 这两个工具名。
   assert.ok(!PATCH.includes('toolName: subagent'));
+});
+
+test('0.2.2：tool-fs 显式写 applyPatch: false（逐字镜像 standard）', () => {
+  // standard 从 0.2.2 起显式写 applyPatch: false（默认也是 false），镜像做到逐字一致。
+  assert.match(
+    PATCH,
+    /- id: tool-fs\n\s+name: '@deepseek-ai\/dsh-tool-fs'\n\s+config:\n(?:\s+#.*\n)*\s+applyPatch: false/u,
+  );
 });
 
 test('delegation 组只保留 workflow 这条编排通道', () => {
