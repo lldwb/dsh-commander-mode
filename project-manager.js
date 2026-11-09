@@ -10,6 +10,22 @@
  * 与「指挥者模式」的区别：指挥者模式解决「谁来做」（不自己动手、把活派出去）；
  * 项目经理模式解决「按什么顺序做、每段怎么验收」（流水线 + 阶段门禁 + 技能方法）。
  *
+ * ## 模式继承关系：项目经理模式 = 指挥者模式 + Agent 预设定义
+ *
+ * 本行**不是**另起一套模式，而是派生出来的：
+ *
+ * - **继承指挥者模式**：能力行清单（`cordis.patch.yml` 的 CAPABILITIES 块，逐字节一致）、
+ *   专家名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）、
+ *   `tools/pre-execute` 执行门禁（复用 `lib/guard.js`）、等待门禁
+ *   （`evaluateWaitCap()`）、五条工作纪律（`lib/discipline.js` 单一真源）、
+ *   异步派工与「【项目经理·派工完成】」唤醒语义。
+ * - **继承「Agent 预设定义」**（`@deepseek-ai/dsh-agent-preset`）：preset 的声明方式与
+ *   生命周期都由它管——本行只往 `preset-project-manager` 里加自己的子行；该声明器被禁用
+ *   或缺失时，指挥者模式与项目经理模式会一起从模式菜单消失。
+ * - **本行新增**：六段流水线协议（`lib/project-manager.js`）与门禁接线；不含工单账本、
+ *   不含 Mandate/dispatch-gate（那是指挥者模式的派活记账，PM 的进度权威是共享任务板 +
+ *   每段落盘证据）。
+ *
  * ## 三样东西挂在 preset scope 上
  *
  * 1. **system-prompt section**（`project-manager:mode`，order 650）：项目经理协议；

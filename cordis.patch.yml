@@ -86,6 +86,10 @@
 #    `skill-filesystem` 多一个 `customSkillDirs`，加载本包 `skills/` 目录），再加两行
 #    `project-manager-agent`（项目经理协议 + 门禁 + 专家安装）与 `project-dev-workflow`
 #    （六段流水线执行手册）。
+#    继承关系：**项目经理模式 = 指挥者模式 + Agent 预设定义**——运行时行为（能力行、专家
+#    名册、执行/等待门禁、工作纪律）继承上一条指挥者行；preset 的声明与生命周期继承
+#    `@deepseek-ai/dsh-agent-preset`（插件页「Agent 预设定义」），后者被禁用时两个模式
+#    一起消失。本行只额外提供六段流水线与 skills 目录加载。详见 README「继承关系」一节。
 #
 # ⚠️ 两份 preset 共用同一份专家名册，而 `agentPresets.register()` 对 preset id 是全局唯一
 # 的：两个模式都会急切挂载，后挂载的那一行会收到 `Duplicate agent preset`。项目经理行
