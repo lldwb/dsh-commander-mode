@@ -313,12 +313,11 @@ test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', ()
   assert.ok(!/\n {8}specialists:/u.test(PATCH));
 });
 
-test('2.0.1：patch 把等待门禁默认关闭（maxWaitMs: 0），并说明正数才启用', () => {
-  // 用户 2026-11-09 明确不需要门禁：默认 0 = 关闭，注释要写清怎么重新启用。
-  assert.match(PATCH, /\n {8}maxWaitMs: 0/u);
-  assert.match(PATCH, /maxWaitMs: 0/u);
-  assert.match(PATCH, /默认关闭/u);
-  assert.match(PATCH, /正数/u);
+test('等待门禁配置写在 patch 里：默认 120000，0 = 关闭', () => {
+  // 用户 2026-11-09 要求"等子代理不要一直等"（2.0.1 短暂关闭，2.0.2 改回开启）。
+  assert.match(PATCH, /\n {8}maxWaitMs: 120000/u);
+  assert.match(PATCH, /maxWaitMs: 120000/u);
+  assert.match(PATCH, /0 = 关闭门禁|0 = 关闭/u);
   assert.match(PATCH, /wait_agent/u);
 });
 

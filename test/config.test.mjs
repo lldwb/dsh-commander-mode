@@ -322,7 +322,7 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       maxTickets: 100,
       eventInbox: true,
       eventPollMs: 15000,
-      maxWaitMs: 0,
+      maxWaitMs: 120000,
     },
     warnings: [],
   });
@@ -394,7 +394,7 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     maxTickets: 100,
     eventInbox: true,
     eventPollMs: 15000,
-    maxWaitMs: 0,
+    maxWaitMs: 120000,
   });
   assert.deepEqual(warnings, []);
 });
@@ -505,11 +505,12 @@ test('1.1.0 外部事件配置：默认开启、15 秒轮询、可关、低于�
   }
 });
 
-test('2.0.1 等待门禁配置：默认 0（关闭）、显式正数才启用、读取器夹取范围', () => {
-  // 用户 2026-11-09 明确不需要等待门禁：默认 0 = 关闭，短等待由协议纪律约束。
+test('2.0.0 等待门禁配置：默认 120000、0 关闭、读取器夹取范围', () => {
+  // 用户 2026-11-09 的硬要求：等子代理不要一直等（2.0.1 曾短暂关闭，2.0.2 改回开启）。
+  // 默认值必须真的进到 options 里，否则模式行读到的 `maxWaitMs` 会是 undefined，门禁失效。
   const config = Config();
-  assert.equal(config.maxWaitMs, 0);
-  assert.equal(resolveConfig(undefined).options.maxWaitMs, 0);
+  assert.equal(config.maxWaitMs, 120000);
+  assert.equal(resolveConfig(undefined).options.maxWaitMs, 120000);
   assert.equal(resolveConfig({ maxWaitMs: 0 }).options.maxWaitMs, 0, '0 = 关闭门禁，不能被回退成默认值');
   assert.equal(resolveConfig({ maxWaitMs: 60000 }).options.maxWaitMs, 60000);
   assert.equal(resolveConfig({ maxWaitMs: 500 }).options.maxWaitMs, 1000, '低于下限抬到 1000');
@@ -517,15 +518,15 @@ test('2.0.1 等待门禁配置：默认 0（关闭）、显式正数才启用、
   assert.ok(KNOWN_CONFIG_KEYS.includes('maxWaitMs'), 'KNOWN_CONFIG_KEYS 缺少 maxWaitMs');
 });
 
-test('2.0.1 readWaitCap 同时接受 volatile 引用、数字字符串与异常值', () => {
+test('readWaitCap 同时接受 volatile 引用、数字字符串与异常值', () => {
   // 配置可能来自 profile patch 手写（数字字符串）、Loader 的 volatile 引用，或坏值。
-  // 缺省 / 非法一律回退默认 0（关闭门禁）。
+  // 缺省 / 非法一律回退默认 120000（门禁默认开启）。
   assert.equal(readWaitCap({ get: () => 0 }), 0);
   assert.equal(readWaitCap({ get: () => 60000 }), 60000);
   assert.equal(readWaitCap('60000'), 60000);
-  assert.equal(readWaitCap(undefined), 0);
-  assert.equal(readWaitCap(null), 0);
+  assert.equal(readWaitCap(undefined), 120000);
+  assert.equal(readWaitCap(null), 120000);
   assert.equal(readWaitCap(-1), 1000);
-  assert.equal(readWaitCap(Number.NaN), 0);
-  assert.equal(readWaitCap('nope'), 0);
+  assert.equal(readWaitCap(Number.NaN), 120000);
+  assert.equal(readWaitCap('nope'), 120000);
 });

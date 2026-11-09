@@ -121,7 +121,7 @@ test('导出名与 section 契约正确（不与指挥者模式的 commander:mod
   assert.equal(SECTION_NAME, 'project-manager:mode');
   assert.notEqual(SECTION_NAME, 'commander:mode');
   assert.equal(SECTION_ORDER, 650);
-  assert.equal(FALLBACK_OPTIONS.maxWaitMs, 0, '默认选项是门禁关闭（2.0.1）');
+  assert.equal(FALLBACK_OPTIONS.maxWaitMs, 120_000, '默认选项要带上等待门禁的上限');
 });
 
 test('注册项目经理 prompt section；teammate 拿不到（避免与执行者人设打架）', () => {
@@ -298,8 +298,8 @@ test('放行只读工具与派发工具（门禁不能拦死管理工作）', as
   }
 });
 
-test('显式开启等待门禁时：超长 wait_agent 被确定性拒绝；短等待与读状态工具放行', async () => {
-  const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster(), options: { maxWaitMs: 120_000 } }) });
+test('超长 wait_agent 被等待门禁确定性拒绝；短等待与读状态工具放行', async () => {
+  const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   const listener = preExecute(record);
 
@@ -326,12 +326,13 @@ test('maxWaitMs = 0 时等待门禁关闭（读取配置服务实时生效）', 
   assert.deepEqual(decision, { kind: 'allow' });
 });
 
-test('2.0.1 门禁默认关闭：未配置 maxWaitMs 时 1800000 也放行', async () => {
+test('等待门禁默认开启：未显式配置 maxWaitMs 时 1800000 被拒绝', async () => {
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   const listener = preExecute(record);
   const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
-  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(decision?.kind, 'deny');
+  assert.ok(decision.reason.includes('120000'), decision.reason);
 });
 
 test('门禁自己出错时放行，而不是让工具调用失败', async () => {
