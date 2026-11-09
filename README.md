@@ -1,9 +1,10 @@
 # dsh-commander-mode
 
-DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆分，把执行全部派给子代理；
-自己不执行操作，规划与分歧都交回用户用选择工具确认。
+DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者接单、分析、规划与拆分，
+把执行全部派给子代理（自己不执行操作，规划与分歧都交回用户确认）；项目经理调用六位开发
+流程专家跑一条**六段带门禁的流水线**（架构 → 实现 → 审查 → 测试 → 安全 → 文档）。
 
-**一句话**：你只做判断，子代理做执行。
+**一句话**：你只做判断，子代理做执行；要按流程做完一个项目，就用项目经理模式。
 
 - **指挥者不执行**：`write` / `edit` / `pwsh` 这类调用会被**确定性拒绝**并附上纠正指令
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
@@ -43,21 +44,39 @@ DeepSeek Harness（dsh）的**指挥者模式**：接单、分析、规划与拆
   自动同步；走 Team 通道派发后，投影任务的 owner 会**自动绑定**到那个队友。你在
   Agent Teams 面板里看到的板就是工单的进度，不需要模型自觉去建。没有 Agent Teams 的
   部署行为与 1.1.x 完全一致。
+- **项目经理模式（2.0.0）**：第二个 agent preset。它不写业务代码，而是调用**六位开发流程
+  专家**（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条**带门禁的六段流水线**：每段都有
+  输入、产出、验收判据与返工规则，实现之后必须独立审查与独立测试，安全审计与文档不得
+  省略；每段结束做 git 分类提交（未提交视为该段未完成）。与指挥者模式的区别：指挥者解决
+  「谁来做」，项目经理解决「按什么顺序做、每段怎么验收」。
+- **项目开发工作流（2.0.0）**：项目经理模式里的执行手册组件（`dsh-commander-mode/workflow`）：
+  六段每段的必做动作、必须落盘的产物、验收判据、失败返工、对应专家与团队用法，并给出本包
+  `skills/` 目录里 **19 个已吸纳 skill** 的阶段归位（先加载方法再动手）。它明确一条边界：
+  **skill 是工作方法，不替代验收证据**。
+- **等待门禁（2.0.0）**：`wait_agent` 超过 `maxWaitMs`（默认 120000，`0` = 关闭）会被
+  **确定性拒绝**并返回纠正指令（改短等待 → 继续推进其它工作 → 依赖「派工完成」通知）。
+  依据是历史会话里单次 127.5 分钟、累计 11 小时的等待：等子代理不要一直等。
 
 ```text
 30 秒上手
 1) 插件页安装本包，重启桌面版
-2) 新建会话，模式菜单选「指挥者模式」
-3) 把任务丢给它：它会先只读侦察 → 给你计划 → 你确认 → 建工单 → 派给专家 → 汇总验收
+2) 新建会话，模式菜单选「指挥者模式」或「项目经理模式」
+3) 指挥者：把任务丢给它 → 只读侦察 → 计划 → 你确认 → 建工单 → 派给专家 → 汇总验收
+   项目经理：给一个项目目标 → 它建 Team/任务板 → 按架构→实现→审查→测试→安全→文档
+             逐段派给六位专家，每段验收 + git 分类提交，最后写经验教训
    （想调专家？设置 → 插件 → 指挥者专家名册：增删、改定位、绑模型、一键恢复预置）
 ```
 
 - 仓库：<https://github.com/lldwb/dsh-commander-mode>（公开）
 - 许可：[MIT](./LICENSE)
-- 形态：**配置行**（profile 顶层，裸包名 `dsh-commander-mode`）+ 一个 agent preset（模式行
-  `dsh-commander-mode/agent`）+ 设置页（Client 半）
+- 形态：**配置行**（profile 顶层，裸包名 `dsh-commander-mode`）+ **两个 agent preset**
+  （指挥者模式 `dsh-commander-mode/agent`、项目经理模式 `dsh-commander-mode/project-manager`
+  + 工作流组件 `dsh-commander-mode/workflow`）+ 设置页（Client 半）
 - 依赖：`@deepseek-ai/schemastery`（声明 `Config` 所需，装进本包 `node_modules`）、
   `@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」，可选但推荐）
+- 前置条件：两个模式都由随附的 **「Agent 预设定义」**（`@deepseek-ai/dsh-agent-preset`）声明。
+  它是 DSH 随附插件页里的一行组件；**该行被禁用时，两个模式都不会出现在模式菜单里**
+  （插件页里能看到这条组件行的状态）。本插件不提供、也不重复声明它。
 
 > **为什么拆成两行**：preset 子行是运行时挂载的 Cordis fiber，**不在 Loader 的 entry 树里**，
 > 而设置页的 `Config.listConfigs` 与 `settings.describe()` 读的都是那棵树。把 `Config`
@@ -266,6 +285,93 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 2. **出现分歧或不确定时**——specialist / 子代理之间结论冲突、需求有歧义、必须做取舍、
    要动高风险的东西、子代理报回 BLOCKER，都交回用户选。
 
+## 项目经理模式（2.0.0）
+
+输入框模式菜单里的第二个模式（`preset.project-manager`，`order: 8`）。它和指挥者模式
+**同源但不同职责**：
+
+| | 指挥者模式 | 项目经理模式 |
+|---|---|---|
+| 回答的问题 | **谁来做**：接单、拆解、派活、验收 | **按什么顺序做、每段怎么验收** |
+| 专家名册 | 六位开发流程专家，单点派发 | **同一份名册**，按六段流水线逐段派 |
+| 流程 | 规划 → 用户确认 → 派发 → 汇总 | 架构 → 实现 → 审查 → 测试 → 安全 → 文档，**每段有门禁** |
+| 工单账本 / 计划授权 | 有（`commander_ticket_*` + Mandate 门禁） | **没有**（进度权威是共享任务板 + 每段落盘证据） |
+| 质量门禁 | 不自己执行操作 | 不自己写业务代码 + **流水线阶段门禁**（不通过不许进下一段） |
+| 收尾 | 汇总验收 | 汇总验收 + **必须写经验教训（含模式本身的问题）** |
+
+**六段流水线**（每段都写清输入、产出、验收判据、不通过怎么办）：
+
+1. **架构**（`subagent_architect`）：需求 → 方案 + 任务拆分（写作用域、验收判据、依赖）。
+2. **实现**（`subagent_implementer`）：按方案产出可运行改动 + 自检证据。
+3. **审查**（`subagent_reviewer`，**必须独立于实现者**）：按严重程度给可定位意见。
+4. **测试**（`subagent_tester`，**必须独立于实现者**）：真实执行用例并保留原始输出。
+5. **安全**（`subagent_security-auditor`，**不得省略**）：按攻击面排查，带证据与风险等级。
+6. **文档**（`subagent_doc-writer`，**不得省略**）：文档与最终实现一致，可直接照做。
+
+**每段结束三件事**：git 分类提交（**未提交视为该段未完成**）、任务板同步、证据归档。
+最终汇报要列提交分类与短哈希、是否还有未提交内容。
+
+**开局**：按工作纪律优先建 Team（`spawn_teammate`）与共享任务板（`team_task_create`）；
+专家工具默认**异步派发**（立即返回 childId，结算时用「【项目经理·派工完成】」通知唤醒），
+所以派活后不要等——继续推进其它阶段或做只读核对。
+
+**确定性约束**（不靠提示词自觉）：
+
+- 项目经理自己调用 `write` / `edit` / `pwsh` / `bash` / `job_kill` / `plugin_manager`
+  会被**直接拒绝**（复用 `lib/guard.js`；子代理必须放行，否则专家干不了活）；
+- 超过 `maxWaitMs` 的 `wait_agent` 会被**直接拒绝**（见「等待门禁」一节）；
+- 协议里明确**禁止人日 / 人天 / 工期估算**，用「步骤 + 验收判据 + 依赖」代替；
+- 收尾必须写经验教训，并额外回答「这个模式本身哪一步形式化了、哪一步产物无法验收、
+  哪条纪律没被协议覆盖」。
+
+**与指挥者模式共用专家名册的边界**：两个模式都会被急切挂载，而 `agentPresets.register()`
+对 preset id 是全局唯一的。项目经理行对此有明确处理——检测到 `Duplicate agent preset`
+说明专家 preset 已由指挥者行建好，项目经理行**只补 `subagent_<id>` 工具**，不会因此丢掉
+专家通道（见 `project-manager.js` 的模块注释）。代价是：专家 preset 的生命周期归先注册的
+那一行，插件重载时两个模式会一起释放。
+
+## 项目开发工作流（2.0.0）
+
+项目经理模式里的第二个组件（`dsh-commander-mode/workflow`，section order 640，在项目经理
+协议 650 之前）。它把六段流水线写成可执行手册：每段的**目的 / 必做动作 / 必须落盘的产物 /
+验收判据 / 失败返工规则 / 对应专家与团队用法**。
+
+它同时是 **19 个已吸纳 skill 的阶段索引**——这些 skill 在本包 `skills/` 目录里，由项目经理
+模式的 `skill-filesystem.config.customSkillDirs` 加载（**只在项目经理模式加载**，指挥者模式
+保持 1.x 的能力与文本不变）：
+
+| 阶段 | 该用哪个 skill |
+|---|---|
+| 开工前 / 跨阶段 | `skill-router`、`repo-init`、`spec-route`、`project-explain` |
+| 架构 | `task-commander`、`check-rule-extract` |
+| 实现 | `feature-dev`、`bug-fix`、`refactor`、`code-optimize`、`comment-supplement`、`i18n-transform`、`module-batch`、`opencode-batch` |
+| 审查 | `code-review` |
+| 测试 | `unit-test` |
+| 文档 / 收尾 | `doc-sync`、`app-packaging`、`session-summary` |
+
+**边界**：skill 是工作方法，**不替代验收证据**。加载了方法仍要按该段的「必须落盘的产物」与
+「验收判据」交证据；没有证据 = 这一段没做。工作流组件不持有配置、不注册工具、不读账本，
+渲染失败一律降级为空串。
+
+## 等待门禁（2.0.0）
+
+历史会话里 `wait_agent` 被当成了"挂机等子代理"：会话 5d9b3002 里 39 次等待合计 231 分钟、
+单次最长 **127.5 分钟**；会话 3b342fc5 里 101 次合计 **667.5 分钟**，其中 6 次直接等满
+1800000ms。用户复盘时的要求是：**等子代理不要一直等**。
+
+两个模式（指挥者 / 项目经理）的 `tools/pre-execute` 门禁都调用
+`lib/guard.js` 的 `evaluateWaitCap()`：
+
+- 只拦 `wait_agent`，且只在 `maxWaitMs > 0` 时生效；
+- `timeout_ms` 超过上限 → **确定性拒绝**，拒因直接告诉模型「改成 ≤ maxWaitMs 的短等待 → 继续
+  推进其它工作 → 依赖【派工完成】通知」，并给出当前上限；
+- 缺省 `timeout_ms` 按 DSH 实际默认值 30000 比较（不能靠不传参数绕过）；
+- 字符串数字（如 `"1800000"`）、非整数、非正数一律拒绝；
+- `list_agents` / `team_task_list` / `send_message` 等"读状态 / 唤醒队友 / 建板"的工具
+  **不受影响**——被拒之后模型必须还能推进，否则等于把人堵在原地。
+
+配置项 `maxWaitMs`（默认 120000ms，范围 1000–1800000，`0` = 关闭门禁）见「配置」一节。
+
 ## 开箱预置的专家（按主流软件开发流程）
 
 0.2.0 参考 [ToxicantX/dsh-multi-model-orchestrator](https://github.com/ToxicantX/dsh-multi-model-orchestrator)
@@ -371,8 +477,17 @@ cd <本目录>
 pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs install
 ```
 
-装好后在模式菜单里会出现「指挥者模式」（`order: 7`）。
+装好后在模式菜单里会出现「指挥者模式」（`order: 7`）与「项目经理模式」（`order: 8`）。
 模式在**新会话**里选择，已有会话的 preset 在第一轮之前就已绑定。
+
+> **前置条件：「Agent 预设定义」**。这两个模式都由随附的 `@deepseek-ai/dsh-agent-preset`
+> 声明（插件页里显示为「Agent 预设定义」）。这一行被禁用 / 缺失时，两个模式都不会出现在
+> 模式菜单里——它是模式能存在的前提，不是本插件的可选组件。
+>
+> **`skills/` 目录**：本包 `skills/` 下的 19 个方法 skill 由项目经理模式的
+> `skill-filesystem.config.customSkillDirs` 加载（按包名定位包目录，不写死绝对路径）；
+> 指挥者模式不加载它们。`dsh plugin add` 用 `link:` 安装，目录随包在工作区里，不需要额外
+> 构建步骤。
 
 ## 它怎么保证"指挥者不执行操作"
 
@@ -518,6 +633,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `eventInbox` | `true` | 外部事件投递（1.1.0）：轮询 `events/inbox/` 并 `steer` 对应指挥者会话；关掉不轮询 |
 | `eventPollMs` | `15000` | 外部事件轮询间隔（ms，≥1000） |
+| `maxWaitMs` | `120000` | 2.0.0：单次 `wait_agent` 的等待上限（ms，范围 1000–1800000；`0` = 关闭门禁）。超过它的等待被**确定性拒绝** |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
 | `maxSpecialists` | `20` | 名册条数上限（每项 = 一个 preset + 一个工具） |
 
@@ -623,6 +739,27 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   不会无限重试；投递成功进 `delivered/`（各保留最近 200 条）。
 - **外部事件的投递是"尽力而为"，不是事务（1.1.0）。** 投递后归档失败时，进程内用事件 id
   去重；跨进程重启后同一个 id 仍可能被投递第二次（至少一次语义），事件正文本身应幂等。
+- **等待门禁只覆盖 DSH 工具调用（2.0.0）。** 它拦的是 `wait_agent` 的 `timeout_ms`；如果某个
+  插件用别的途径挂住会话（自定义工具、外部等待），本门禁看不到。它对**所有 agent** 生效
+  （包括 teammate）：长等待在哪里都是问题；读状态 / 唤醒队友的工具不受影响。`maxWaitMs: 0`
+  可整体关闭，但那时只剩协议约束。
+- **等待门禁的下限与 DSH 自己的下限有交叉（2.0.0）。** DSH 的 `wait_agent` 只接受
+  10000–3600000ms；把 `maxWaitMs` 设到 10000 以下时，任何 `wait_agent` 调用（含缺省 30000）
+  都会被拒——这是刻意让"短等待"变成"不等待，先去做别的"。范围由 schema 夹在 1000–1800000。
+- **项目经理模式没有工单账本与计划授权门禁（2.0.0）。** 它不注册 `commander_ticket_*`，
+  进度权威是**共享任务板 + 每段落盘证据**。指挥者模式的那套 Mandate/工单门禁只属于指挥者
+  模式，两者不要混用。
+- **两个模式共用同一份专家名册（2.0.0）。** `agentPresets.register()` 对 preset id 全局唯一，
+  两个 preset 急切挂载时后挂载的一行会收到 `Duplicate agent preset`；项目经理行检测到它时
+  **只补 `subagent_<id>` 工具**，不会丢掉专家通道。代价：专家 preset 的生命周期归先注册的
+  那一行（插件重载时两个模式一起释放）；专家名册改动对两个模式同时生效（同一个
+  `commanderSettings` 服务）。
+- **项目经理协议固定点名六位专家工具（2.0.0）。** 协议是静态文本（不像指挥者协议按名册渲染）。
+  若某个部署里专家工具没挂上（名册被清空 / 服务缺失），协议里已经写明降级路径：改用 Team
+  通道按同样定位新开队友，不要硬调不存在的工具。
+- **`skills/` 目录是项目经理模式专有的（2.0.0）。** 通过 `skill-filesystem.config.customSkillDirs`
+  加载，只加在项目经理 preset 里；目录缺失或 skill 文件损坏时只影响 skill 加载，不影响协议
+  section 与门禁。`skill` 只是方法入口，验收仍看产物与证据。
 
 ## 运维：外部巡检（0.9.0）
 
@@ -733,7 +870,12 @@ node --test "test/**/*.test.mjs"
 | 文件 | 职责 |
 |---|---|
 | `index.js` | **配置行**（profile 顶层）：导出 `Config`、提供 `commanderSettings` / `commanderLedger` 服务、关掉自动设置页 |
-| `agent.js` | **模式行**（preset 内）：协议 section、执行门禁、派发/计划授权门禁、工单工具、skill、specialist 安装与重建 |
+| `agent.js` | **指挥者模式行**（preset 内）：协议 section、执行门禁、派发/计划授权门禁、工单工具、skill、specialist 安装与重建 |
+| `project-manager.js` | **项目经理模式行**（preset 内）：项目经理协议 section、六位专家安装（异步通知）、执行门禁 + 等待门禁、skill |
+| `workflow.js` | **项目开发工作流组件**（preset 内）：六段流水线执行手册 section（order 640）+ skill |
+| `lib/project-manager.js` | 项目经理协议文本（六段流水线门禁 + 五条纪律，末尾原样拼接 `WORK_DISCIPLINE`） |
+| `lib/workflow.js` | 项目开发工作流文本（每段六件套 + 19 个 skill 的阶段索引） |
+| `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 短等待 / 禁人日 / git 分类提交 / 经验教训），由两份协议 import 拼接 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
 | `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
@@ -742,13 +884,13 @@ node --test "test/**/*.test.mjs"
 | `lib/ledger-service.js` | `commanderLedger` 服务：会话隔离的工单/授权/派发/回报读写与裁剪 |
 | `lib/dispatch-gate.js` | 派发门禁：没有计划授权 / 不带工单 → 确定性拒绝；子代理/缺服务/身份不明一律放行 |
 | `lib/ticket-tools.js` | 三个工单工具（create / update / list）的 schema、执行与错误文案 |
-| `lib/guard.js` | 执行边界的纯函数：身份判别、判定、拒绝理由 |
-| `lib/config.js` | schemastery `Config`、默认值、宽容读取器 |
+| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**等待门禁**（`evaluateWaitCap`）、拒绝理由 |
+| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（含 `maxWaitMs`） |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
 | `lib/capabilities.js` | specialist preset 的能力行（JS 版，与 `cordis.patch.yml` 逐行对齐，由测试守护） |
 | `specialist.js` | specialist preset 里的人设行（`dsh-commander-mode/specialist`） |
 | `client.js` | 设置页（手写 ModuleLoader bundle，无构建） |
-| `cordis.patch.yml` | 配置行 + preset `commander` 的完整组合（能力行 + 模式行） |
+| `cordis.patch.yml` | 配置行 + 两个 preset（`commander` / `project-manager`）的完整组合 |
 
 ### 为什么 specialist 工具是自实现的
 
@@ -1102,6 +1244,23 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **2.0.0** —— 用户 2026-11-09 复盘四个历史会话后提出的四条要求落地（大版本：新增一个
+  agent preset + 一个执行手册组件 + 一道硬门禁，模式菜单与默认行为有结构性变化）：
+  ① **项目经理模式**（`preset-project-manager`，`order: 8`）：调用六位开发流程专家
+  （架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条**六段带门禁的流水线**；每段有输入、
+  产出、验收判据与返工规则，实现后必须独立审查与独立测试，每段结束 git 分类提交
+  （未提交视为该段未完成），收尾必须写经验教训（含模式本身的问题）；不自己写业务代码
+  （确定性拒绝）。
+  ② **项目开发工作流组件**（`dsh-commander-mode/workflow`）：六段每段的必做动作、落盘
+  产物、验收判据、失败返工、专家与团队用法，以及本包 `skills/` 目录 19 个方法 skill 的
+  阶段归位；明确「skill 是工作方法，不替代验收证据」。
+  ③ **等待门禁**：`lib/guard.js` 新增 `evaluateWaitCap()`，两个模式的 `tools/pre-execute`
+  都调用它——`wait_agent` 的 `timeout_ms` 超过 `maxWaitMs`（默认 120000，`0` = 关闭）时
+  **确定性拒绝**并给出纠正指令；只拦超长等待，读状态 / 唤醒队友的工具不受影响。
+  ④ **共用的工作纪律**：五条纪律文本收进 `lib/discipline.js` 单一真源，两份协议 import
+  拼接（Team 优先 / 短等待 / 禁人日 / git 分类提交 / 经验教训）。
+  **用户要做什么**：重新安装/重启即可看到新的「项目经理模式」；不想用等待门禁就在 profile
+  patch 里把 `maxWaitMs` 设为 0。测试 475 → 530。
 - **1.3.0** —— 适配 DSH 0.2.2-rc.1（中版本，无用户可见行为变化，也不破坏旧用法）：
   ① 能力行镜像对齐 0.2.2 的 `preset-standard`：补进 0.2.1 起随附的 `time-context`
   （每轮时间上下文）与 `tool-schedule`（RRULE 定时任务）两行；`tool-fs` 显式写

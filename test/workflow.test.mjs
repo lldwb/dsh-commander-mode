@@ -1,0 +1,157 @@
+/**
+ * 「项目开发工作流」组件的测试：协议文本 + 模式行接线。
+ *
+ * 这个组件是项目经理模式调用的**六段流水线执行手册**。测试要钉住四件事：
+ *
+ * 1. 六段齐全、顺序固定，每段都写清目的 / 必做动作 / 落盘产物 / 验收判据 / 失败返工 /
+ *    对应专家与团队用法；
+ * 2. 本包 `skills/` 目录里 19 个已吸纳 skill 全部出现在"该在哪个阶段用"的索引里；
+ * 3. 「skill 是工作方法，不替代验收证据」这条边界在场；
+ * 4. 不出现人日 / 人天 / 人月 / 工期这类被用户明确否掉的表述。
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import {
+  SECTION_NAME,
+  SECTION_ORDER,
+  SKILL_NAME,
+  apply,
+  name as pluginName,
+} from '../workflow.js';
+import { WORKFLOW_PROTOCOL, WORKFLOW_SKILLS, WORKFLOW_STAGES } from '../lib/workflow.js';
+import { LEAD, TEAMMATE, makeCtx, makeSettings, defaultRoster } from './helpers.mjs';
+
+/** 19 个已吸纳 skill 的期望清单（与任务书一致；改名/增删都要同步改这里与协议正文）。 */
+const EXPECTED_SKILLS = [
+  'feature-dev',
+  'bug-fix',
+  'refactor',
+  'code-review',
+  'unit-test',
+  'doc-sync',
+  'code-optimize',
+  'comment-supplement',
+  'repo-init',
+  'spec-route',
+  'project-explain',
+  'session-summary',
+  'task-commander',
+  'app-packaging',
+  'i18n-transform',
+  'skill-router',
+  'check-rule-extract',
+  'module-batch',
+  'opencode-batch',
+];
+
+// ---------------------------------------------------------------- 协议文本 ---
+
+test('协议定位：六段流水线的可执行步骤与门禁，供项目经理模式调用', () => {
+  assert.ok(WORKFLOW_PROTOCOL.startsWith('# 项目开发工作流'), WORKFLOW_PROTOCOL.slice(0, 120));
+  assert.ok(WORKFLOW_PROTOCOL.includes('项目经理模式'));
+  assert.match(WORKFLOW_PROTOCOL, /架构 → 实现 → 审查 → 测试 → 安全 → 文档/u);
+});
+
+test('六段齐全、顺序固定，每段都有六件套（目的/动作/产物/判据/返工/专家用法）', () => {
+  assert.deepEqual(WORKFLOW_STAGES.map((stage) => stage.stage), ['架构', '实现', '审查', '测试', '安全', '文档']);
+
+  let previous = -1;
+  for (let index = 1; index <= 6; index += 1) {
+    const found = WORKFLOW_PROTOCOL.indexOf(`## 第 ${index} 段`);
+    assert.ok(found >= 0, `缺第 ${index} 段`);
+    assert.ok(found > previous, `第 ${index} 段的顺序不对`);
+    previous = found;
+  }
+
+  for (const keyword of ['**目的**', '**必做动作**', '**必须落盘的产物**', '**验收判据**', '**失败返工规则**', '**团队用法**']) {
+    const count = WORKFLOW_PROTOCOL.split(keyword).length - 1;
+    assert.ok(count >= 6, `「${keyword}」只出现 ${count} 次（六段都应写明）`);
+  }
+});
+
+test('每段点名对应专家 subagent_<id>', () => {
+  for (const stage of WORKFLOW_STAGES) {
+    assert.ok(
+      WORKFLOW_PROTOCOL.includes(`subagent_${stage.specialist}`),
+      `第 ${stage.index} 段（${stage.stage}）缺点名 subagent_${stage.specialist}`,
+    );
+  }
+});
+
+test('19 个已吸纳 skill 全部出现在阶段索引里', () => {
+  assert.equal(EXPECTED_SKILLS.length, 19);
+  assert.deepEqual([...WORKFLOW_SKILLS].sort(), [...EXPECTED_SKILLS].sort(), 'WORKFLOW_SKILLS 与任务书清单不一致');
+  for (const skill of EXPECTED_SKILLS) {
+    assert.ok(WORKFLOW_PROTOCOL.includes(`\`${skill}\``), `协议缺 skill ${skill}`);
+  }
+  // 索引要按阶段归位，而不是一份平铺清单。
+  assert.ok(WORKFLOW_PROTOCOL.includes('19 个已吸纳 skill 的阶段索引'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('开工前 / 跨阶段'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('实现段'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('审查段'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('测试段'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('文档段 / 收尾'));
+});
+
+test('明确「skill 是工作方法，不替代验收证据」', () => {
+  assert.ok(WORKFLOW_PROTOCOL.includes('skill 是工作方法，不替代验收证据'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('先 skill 后动手'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('skills/'));
+});
+
+test('git 分类提交与经验教训按工作纪律第 4/5 条', () => {
+  assert.ok(WORKFLOW_PROTOCOL.includes('分类提交'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('第 4 条'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('第 5 条'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('未提交视为该段未完成'));
+  assert.ok(WORKFLOW_PROTOCOL.includes('经验教训'));
+});
+
+test('不以人日 / 人天 / 人月 / 工期表述工作量', () => {
+  for (const forbidden of ['人日', '人天', '人月', '工期']) {
+    assert.ok(!WORKFLOW_PROTOCOL.includes(forbidden), `工作流协议不应出现「${forbidden}」`);
+  }
+});
+
+// ---------------------------------------------------------------- 接线 ---
+
+test('导出名与 section 契约正确（order 640 在项目经理协议 650 之前）', () => {
+  assert.equal(pluginName, 'project-dev-workflow');
+  assert.equal(SECTION_NAME, 'project-workflow:mode');
+  assert.equal(SECTION_ORDER, 640);
+  assert.ok(SECTION_ORDER < 650);
+});
+
+test('注册项目开发工作流 section；teammate 拿不到', () => {
+  const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
+  apply(ctx);
+  assert.equal(record.sections.length, 1);
+  const section = record.sections[0];
+  assert.equal(section.name, SECTION_NAME);
+  assert.equal(section.order, SECTION_ORDER);
+  assert.equal(typeof section.text, 'function');
+  assert.ok(section.text({ agent: LEAD }).includes('项目开发工作流'));
+  assert.equal(section.text({ agent: TEAMMATE }), '');
+  assert.ok(section.text().includes('六段流水线执行手册') || section.text().includes('第 1 段'));
+});
+
+test('注册 project-dev-workflow skill', () => {
+  const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
+  apply(ctx);
+  assert.equal(record.skills.length, 1);
+  assert.equal(record.skills[0].name, SKILL_NAME);
+  assert.equal(record.skills[0].name, 'project-dev-workflow');
+  assert.equal(record.skills[0].source, 'runtime');
+  assert.ok(record.skills[0].content.includes('第 6 段'));
+  assert.deepEqual(record.skills[0].invocation, { modelInvocable: true, userInvocable: true });
+});
+
+test('没有 skills 服务的部署里不炸（只损失 skill 加载入口）', () => {
+  const { ctx, record } = makeCtx({ withSkills: false });
+  apply(ctx);
+  assert.equal(record.skills.length, 0);
+  assert.equal(record.sections.length, 1);
+  assert.ok(record.sections[0].text({ agent: LEAD }).includes('项目开发工作流'));
+});

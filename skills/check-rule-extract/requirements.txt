@@ -1,0 +1,4 @@
+# check-rule-extract 技能的 Python 依赖（读取老式 .xls 明细表 + 生成 .xlsx 工作簿）
+# 安装: pip install -r requirements.txt
+xlrd>=2.0,<3
+openpyxl>=3.1,<4

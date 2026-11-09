@@ -72,7 +72,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluatePreExecute, isDelegatedAgent } from './lib/guard.js';
+import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluatePreExecute, evaluateWaitCap, isDelegatedAgent } from './lib/guard.js';
 import {
   evaluateDispatchGate,
   isNewWorkTool,
@@ -1053,6 +1053,19 @@ export function apply(ctx) {
           ctx.logger?.info?.('commander-mode: 拒绝指挥者自己调用 %s（已要求改为派发）', toolName);
           return decision;
         }
+      }
+
+      // 2.0.0 等待门禁：超过 maxWaitMs 的 wait_agent 确定性拒绝。
+      // 顺序在既有执行门禁之后（两者都过才放行）；只拦 wait_agent 的超长 timeout_ms，
+      // list_agents / team_task_list / send_message 这些"读状态 / 唤醒队友"的工具不受影响。
+      const waitReason = evaluateWaitCap({
+        name: toolName,
+        args: exec?.arguments,
+        maxWaitMs: readOptions().maxWaitMs,
+      });
+      if (typeof waitReason === 'string' && waitReason !== '') {
+        ctx.logger?.info?.('commander-mode: 拒绝超长 wait_agent（上限 %dms）', readOptions().maxWaitMs);
+        return { kind: 'deny', reason: waitReason };
       }
 
       // 0.7.0 异步容量：一次性 specialist 在飞数量达上限时**在启动前**拒绝，

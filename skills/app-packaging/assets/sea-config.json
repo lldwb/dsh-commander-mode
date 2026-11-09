@@ -1,0 +1,7 @@
+{
+  "main": "<打包后的单文件 JS 入口>",
+  "output": "<产物路径（Windows 下须以 .exe 结尾）>",
+  "mainFormat": "commonjs",
+  "disableExperimentalSEAWarning": true,
+  "assets": {}
+}

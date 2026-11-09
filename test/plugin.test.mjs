@@ -1244,3 +1244,32 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   const stored = ledger.getTicket(ticket.id, 'session-lead');
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
+
+// ---------------------------------------------------------------- 2.0.0 等待门禁 ---
+
+test('2.0.0 等待门禁：超长 wait_agent 被拒绝，短等待与读状态工具放行', async () => {
+  // 依据：历史会话里 `wait_agent` 单次最长 127.5 分钟、会话累计 11 小时。用户明确要求
+  // "等子代理不要一直等"，所以这条在 `tools/pre-execute` 上做成确定性拒绝。
+  const listener = preExecute(boot().record);
+  const denied = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 600000 } }, spyNext().next);
+  assert.equal(denied.kind, 'deny');
+  assert.ok(denied.reason.includes('120000'), denied.reason);
+  assert.ok(denied.reason.includes('短等待'), denied.reason);
+
+  const allowed = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 60000 } }, spyNext().next);
+  assert.deepEqual(allowed, { kind: 'allow' });
+
+  // 只拦超长等待：读状态 / 唤醒队友的工具不受影响，否则模型被拒后没法推进。
+  for (const toolName of ['list_agents', 'team_task_list', 'send_message']) {
+    const decision = await listener({ name: toolName, agent: LEAD, arguments: { timeout_ms: 1800000 } }, spyNext().next);
+    assert.deepEqual(decision, { kind: 'allow' }, `${toolName} 不该被等待门禁拦`);
+  }
+});
+
+test('2.0.0 等待门禁：maxWaitMs=0 时关闭（配置服务实时生效）', async () => {
+  const settings = makeSettings({ options: { maxWaitMs: 0 } });
+  const { record } = boot({ settings });
+  const listener = preExecute(record);
+  const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1800000 } }, spyNext().next);
+  assert.deepEqual(decision, { kind: 'allow' });
+});

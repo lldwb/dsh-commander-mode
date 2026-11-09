@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Commander Mode",
-    "description": "You judge and coordinate; subagents execute. Ships with six built-in specialists (architecture, implementation, review, testing, security, docs) that you can reshape or bind to their own models."
+    "title": "Commander Mode · Project Manager Mode",
+    "description": "Commander Mode: you judge and coordinate while subagents execute; plans and disagreements come back to you. Project Manager Mode: run a gated six-stage pipeline with six built-in specialists (architecture, implementation, review, testing, security, docs), with per-stage artifacts and git commits verified. Both share an editable specialist roster with optional per-specialist models."
   },
   "settings": {
     "title": "Commander specialists",

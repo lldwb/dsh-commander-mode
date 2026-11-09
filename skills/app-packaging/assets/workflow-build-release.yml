@@ -1,0 +1,87 @@
+# 多平台构建 + 分发模板（GitHub Actions）
+#
+# 用法：复制到 <项目>/.github/workflows/，替换全部 <占位符>；action 与运行时版本号按官方最新核对。
+# 结构：build job 按 OS × 架构矩阵构建 → artifact 中转 → release job 汇总并发 Release 附件。
+#
+# 本模板的取舍（按项目实际调整）：
+#   - 给人下载的产物走 **Release 附件**（长期保留、原始文件、保留可执行位）
+#   - artifact 只作 job 间中转：会打 zip 且**剥掉可执行位**，不要拿它当交付物
+#   - 版本号从 tag 注入（github.ref_name），不在别处再写一份
+
+name: build-release
+
+on:
+  push:
+    tags: ["v*"]        # 正式发布：产物与 tag 一一对应
+  workflow_dispatch:    # 手动验证构建（不留 tag）
+
+permissions:
+  contents: read        # 默认最小权限，发附件的那一步单独提权
+
+jobs:
+  build:
+    name: build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false  # 一个平台失败不掐掉其他平台，一次看清全部问题
+      matrix:
+        include:
+          - { os: windows, arch: x64,   runner: windows-latest }
+          - { os: macos,   arch: arm64, runner: macos-latest }
+          - { os: linux,   arch: x64,   runner: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@v5     # 版本号按官方最新核对
+      - uses: actions/setup-node@v5   # 版本号按官方最新核对
+        with:
+          node-version: <Node 版本>
+
+      - name: 安装依赖
+        run: <安装命令>
+
+      - name: 构建产物
+        env:
+          # tag 触发时是 tag 名（如 v1.2.3）；手动触发时是分支名 → 回退到占位版本
+          APP_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+        run: <构建命令：把 APP_VERSION 注入产物，产物名带平台与架构>
+
+      - name: 冒烟验证（构建机上）
+        run: <产物路径> --version
+
+      - name: 上传 artifact（仅作 job 间中转）
+        uses: actions/upload-artifact@v5
+        with:
+          name: <应用名>-${{ matrix.os }}-${{ matrix.arch }}   # 含平台架构，避免多 job 同名覆盖
+          path: <产物路径>
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')   # 只有 tag 触发才发附件
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write                          # 只给这一步提权
+    steps:
+      - name: 下载全部 artifact
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 生成校验和
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+
+      - name: 发到 Release 附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # 项目已有自己的 Release 正文来源时：确保 Release 已存在，本步只传附件、不重建正文
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" dist/* --clobber   # --clobber：覆盖同名附件（重跑发版必需，否则 422）
+
+# 补充注意：
+# - Linux / macOS 产物若必须经 artifact 中转，先 tar 再以 archive: false 直传单文件（打 zip 会剥可执行位）
+# - 附件命名只用字母数字与点划线：特殊字符与首尾点号会被 GitHub 重命名，下载链接旋即失效
+# - 下载说明里写明 SHA256SUMS 的核对方式
+# - arm64 托管 runner 的可用性按 GitHub 最新文档核对；不可用时改交叉构建或自建 runner
