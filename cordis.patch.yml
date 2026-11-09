@@ -201,7 +201,11 @@
 
     # ---- 模式行（agent preset）-----------------------------------------------
     - id: preset-commander
-      name: '@deepseek-ai/dsh-agent-preset'
+      # 本包自带的等效声明器（子路径模块）：只为了让插件页组件行标题显示「指挥者模式」。
+      # 组件行标题按「模块名」解析 locale（declaredRows → metaOf(row.name)），
+      # 两个 preset 若都用随附的 @deepseek-ai/dsh-agent-preset，两行标题会一模一样。
+      # 语义与随附声明器一致（见 lib/preset-declaration.js）。
+      name: 'dsh-commander-mode/preset-commander'
       config:
         id: commander
         name: 指挥者模式
@@ -306,7 +310,8 @@
     # 每段怎么验收"。能力行与指挥者模式**逐字节相同**（除 skill-filesystem 多一个
     # customSkillDirs）；多出来的两行是模式协议与流水线执行手册。
     - id: preset-project-manager
-      name: '@deepseek-ai/dsh-agent-preset'
+      # 同上：本包自带的等效声明器，标题显示「项目经理模式」。
+      name: 'dsh-commander-mode/preset-project-manager'
       config:
         id: project-manager
         name: 项目经理模式

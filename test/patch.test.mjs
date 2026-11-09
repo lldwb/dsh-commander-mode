@@ -219,7 +219,9 @@ test('两个平台的 shell 行互斥', () => {
 
 test('preset-commander 声明正确', () => {
   // 声明行的 id 是 Loader 编辑地址，config.id 才是 preset 标识符。
-  assert.match(PATCH, /- id: preset-commander\n\s+name: '@deepseek-ai\/dsh-agent-preset'/u);
+  // 2.1.0 起声明模块是本包自带的等效声明器：插件页组件行标题按「模块名」解析 locale，
+  // 两个 preset 若共用随附的 @deepseek-ai/dsh-agent-preset，两行标题会一模一样。
+  assert.match(PATCH, /- id: preset-commander\n(?:\s+#.*\n)*\s+name: 'dsh-commander-mode\/preset-commander'/u);
   assert.match(PATCH, /config:\n\s+id: commander\n\s+name: 指挥者模式/u);
   assert.match(PATCH, /order: 7/u);
   // 显示名与描述是自命名的，不会进翻译表，所以必须直接写中文。
@@ -227,7 +229,7 @@ test('preset-commander 声明正确', () => {
 });
 
 test('preset-project-manager 声明正确（id / 显示名 / 描述 / order 8 / 两行组件）', () => {
-  assert.match(PATCH, /- id: preset-project-manager\n\s+name: '@deepseek-ai\/dsh-agent-preset'/u);
+  assert.match(PATCH, /- id: preset-project-manager\n(?:\s+#.*\n)*\s+name: 'dsh-commander-mode\/preset-project-manager'/u);
   assert.match(PATCH, /config:\n\s+id: project-manager\n\s+name: 项目经理模式/u);
   assert.match(PATCH, /order: 8/u);
   // 描述要写清"六位专家 + 带门禁流水线 + 只编排与验收"。
@@ -264,6 +266,7 @@ test('配置行不注册任何工具（避免能力泄漏到别的模式）', ()
   assert.ok(block.length > 0, '找不到配置行');
   assert.ok(!/name: '@deepseek-ai\/dsh-tool-/u.test(block), '配置行不得挂工具包');
   assert.ok(!/name: '@deepseek-ai\/dsh-agent-preset'/u.test(block));
+  assert.ok(!/name: 'dsh-commander-mode\/preset-/u.test(block), '配置行不得声明 preset');
   assert.ok(block.includes("name: 'dsh-commander-mode'"));
 });
 

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Commander mode",
+    "description": "Declares the \"Commander mode\" agent preset: which plugin rows it mounts and where it sits in the mode menu."
+  }
+}

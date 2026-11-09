@@ -311,7 +311,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 | 继承自 | 继承/复用的东西 | 落在哪 |
 |---|---|---|
 | **指挥者模式**（`dsh-commander-mode/agent`） | ① 能力行清单（`CAPABILITIES` 块）**逐字节一致**，只多一个 `customSkillDirs`（运行时行数：指挥者 22 行 / 项目经理 23 行）；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 等待门禁 `evaluateWaitCap()`；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `cordis.patch.yml` 的 CAPABILITIES 块、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
-| **「Agent 预设定义」**（`@deepseek-ai/dsh-agent-preset`） | preset 的声明方式与生命周期：接受 `{ id, name, description, order, plugins }` 并替你调用 `agentPresets.register()`；`order` 决定模式菜单排序（指挥者 7、项目经理 8）；**这一行被禁用或缺失时，指挥者模式与项目经理模式会一起从菜单里消失** | `cordis.patch.yml` 的 `preset-commander` / `preset-project-manager` 两行 |
+| **「Agent 预设定义」的语义**（`@deepseek-ai/dsh-agent-preset`） | preset 的声明方式与生命周期语义：接受 `{ id, name, description, order, plugins }`、调用 `agentPresets.register()`、`order` 决定模式菜单排序（指挥者 7、项目经理 8）。**2.1.0 起本包自带等效声明器**（`lib/preset-declaration.js`，两个子路径模块 `preset-commander` / `preset-project-manager`）——原因见下：组件行标题按模块名解析 locale，两行共用随附声明器时标题会完全一样 | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `preset-commander.js` / `preset-project-manager.js` |
 | **项目经理模式新增（不属于继承）** | 六段流水线协议（阶段门禁、返工规则、经验教训要求）、项目开发工作流组件（`dsh-commander-mode/workflow`）、本包 `skills/` 目录的加载（`skill-filesystem.config.customSkillDirs`，只在 PM 模式） | `project-manager.js`、`lib/project-manager.js`、`workflow.js`、`lib/workflow.js` |
 
 **故意不继承**：工单账本与计划授权门禁（`commander_ticket_*` / Mandate / dispatch-gate）。
@@ -321,11 +321,13 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 一句话：**指挥者模式给「怎么派、怎么拦、怎么等」，Agent 预设定义给「怎么声明、怎么排、
 怎么消失」，项目经理模式只负责「按什么顺序做、每段拿什么证据验收」。**
 
-> 顺带说明插件页的一个常见疑问：本包在「包含的组件」里会显示**两行「Agent 预设定义」**。
-> 那不是重复——两个模式各需要一行 preset 声明（`preset-commander` / `preset-project-manager`），
-> 而两行的模块都是同一个随附声明器，插件页的组件标题取的又是**模块自己的** locale 文案，
-> 所以标题必然一样；区分它们看标题下方那行 patchId。两行独立开关，关掉哪行只少哪个模式。
-> 详见「已知边界」。
+> 为什么声明器要自带一份：插件页「包含的组件」每一行的标题由**该行的模块名**决定
+> （Host 的 `declaredRows()` 调 `pluginPackages.metaOf(row.name, base)` 读该模块的
+> `locale/*.json`）。两个模式若都写成 `name: '@deepseek-ai/dsh-agent-preset'`，两行解析到
+> 同一个模块、只能拿到同一份 locale，标题就都是「Agent 预设定义」，分不清谁是谁。
+> 改用两个子路径模块后，每行有自己的 locale/icon，标题显示**「指挥者模式」/「项目经理模式」**
+> ——即它们的真实身份。语义与随附声明器一致（`register(config)` + 卸载释放），
+> 差异只有「不设 `EntryGroup`」这一点，见「已知边界」。
 
 **六段流水线**（每段都写清输入、产出、验收判据、不通过怎么办）：
 
@@ -767,14 +769,19 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   不会无限重试；投递成功进 `delivered/`（各保留最近 200 条）。
 - **外部事件的投递是"尽力而为"，不是事务（1.1.0）。** 投递后归档失败时，进程内用事件 id
   去重；跨进程重启后同一个 id 仍可能被投递第二次（至少一次语义），事件正文本身应幂等。
-- **插件页会看到两行「Agent 预设定义」，那不是重复组件（2.0.0）。** 一个模式 = 一行 preset
-  声明，本包有两个模式，所以有两行：`preset-commander`（指挥者模式）与
-  `preset-project-manager`（项目经理模式）。两行的模块都是随附的
-  `@deepseek-ai/dsh-agent-preset`，而插件页的组件标题取的是**模块自己的** locale 文案
-  （`rowText`：`row.meta?.title ?? row.moduleName`），所以两行标题**必然相同**；区分它们的是
-  标题下面那一行 patchId（`preset-commander` / `preset-project-manager`）。两行各自独立开关：
-  关掉哪一行就只少哪个模式，不会影响另一个。这是插件页的展示口径，不是本包的缺陷，
-  插件清单里没有"给单行自定义标题"的字段。
+- **preset 声明器是自带的等效实现（2.1.0）。** 组件行标题由**模块名**决定
+  （`declaredRows` → `metaOf(row.name, base)` 读该模块的 `locale/*.json`），两个模式若共用
+  随附的 `@deepseek-ai/dsh-agent-preset`，两行标题必然同为「Agent 预设定义」。所以本包
+  自带一份声明器（`lib/preset-declaration.js`，语义与随附一致：把本行 config 交给
+  `ctx.agentPresets.register()`、卸载时释放），两个行分别是
+  `dsh-commander-mode/preset-commander` 与 `.../preset-project-manager`，各带 locale 与
+  icon，于是标题显示「指挥者模式」/「项目经理模式」。
+  代价（有意接受）：本行**没有** `EntryGroup` 标记，因此 Loader 会在加载期递归求值
+  `plugins` 里的 `!!js`（子行拿到的是已求值的布尔/字符串，而不是惰性表达式）；
+  随附声明器则把它们留给子行自己求值。对本包的能力行（平台二选一、`customSkillDirs`）
+  两者等价——平台在进程生命周期内不变，`baseUrl` 在加载期同样可用。若将来 DSH 给声明器
+  增加新字段，`PresetDeclarationConfig`（`z.object`）需要跟着补；这是刻意的：宁可显式报错，
+  也不要静默丢字段。
 - **等待门禁只覆盖 DSH 工具调用（2.0.0）。** 它拦的是 `wait_agent` 的 `timeout_ms`；如果某个
   插件用别的途径挂住会话（自定义工具、外部等待），本门禁看不到。它对**所有 agent** 生效
   （包括 teammate）：长等待在哪里都是问题；读状态 / 唤醒队友的工具不受影响。`maxWaitMs: 0`
@@ -1280,6 +1287,23 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **2.1.0** —— 插件页组件行标题改成**真实身份**（用户 2026-11-09 要求「按照实际身份修改」）：
+  ① 组件行标题由**模块名**决定（`declaredRows` → `metaOf(row.name)` 读该模块的
+  `locale/*.json`），两个模式共用随附的 `@deepseek-ai/dsh-agent-preset` 时两行标题都是
+  「Agent 预设定义」。现在改成两个子路径模块 `preset-commander` /
+  `preset-project-manager`，各带 `locale/{zh,en}.json` 与 `icon.svg`，标题显示
+  「指挥者模式」「项目经理模式」——即它们的真实身份。
+  ② 新增 `lib/preset-declaration.js`：语义等价于随附声明器（`agentPresets.register(config)`
+  + 卸载释放 + 注册失败只 warn），并处理「注册未完成就被卸载」的竞态。
+  ③ 差异与代价写进「已知边界」：不设 `EntryGroup` → `plugins` 里的 `!!js` 在加载期求值
+  （对本包能力行等价）。
+  **用户要做什么**：重新安装/重启；插件页「包含的组件」两行会显示成「指挥者模式」
+  「项目经理模式」。测试 532 → 539。
+- **2.0.4** —— 文档澄清：插件页「包含的组件」里出现两行标题相同（都是「Agent 预设定义」）
+  时那不是重复组件，而是两个模式各一行 preset 声明（`preset-commander` /
+  `preset-project-manager`），标题相同是因为两行共用同一个随附声明器模块；区分看标题
+  下方的 patchId。该展示问题已在 2.1.0 根治（自带声明器 + 子路径 locale）。
+  **用户要做什么**：无（纯文档 + 版本号）。
 - **2.0.3** —— 文档补「模式继承关系」（用户 2026-11-09 指出）：明确 **项目经理模式 =
   指挥者模式 + Agent 预设定义**。README 新增「继承关系」一节，用表格写清继承了什么
   （能力行逐字节一致、专家名册与 `subagent_<id>`、执行/等待门禁、五条工作纪律、异步派工

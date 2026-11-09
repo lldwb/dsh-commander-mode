@@ -1,0 +1,15 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="pc-top" x1="18" y1="7" x2="18" y2="17" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#69B9FF"/><stop offset="1" stop-color="#324DE2"/>
+    </linearGradient>
+    <linearGradient id="pc-bottom" x1="18" y1="19" x2="18" y2="29" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7CB7FF"/><stop offset="1" stop-color="#4561EE"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 三层堆叠 = preset 组合 -->
+  <path d="M18 7.5 27 12.2 18 16.9 9 12.2 18 7.5Z" fill="url(#pc-top)"/>
+  <path d="M9 17.4 18 22.1 27 17.4" stroke="url(#pc-bottom)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M9 22.6 18 27.3 27 22.6" stroke="#7CB7FF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.75"/>
+</svg>
