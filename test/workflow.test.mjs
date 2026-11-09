@@ -5,7 +5,7 @@
  *
  * 1. 六段齐全、顺序固定，每段都写清目的 / 必做动作 / 落盘产物 / 验收判据 / 失败返工 /
  *    对应专家与团队用法；
- * 2. 本包 `skills/` 目录里 19 个已吸纳 skill 全部出现在"该在哪个阶段用"的索引里；
+ * 2. 本包 `skills/` 目录里 20 个方法 skill 全部出现在"该在哪个阶段用"的索引里；
  * 3. 「skill 是工作方法，不替代验收证据」这条边界在场；
  * 4. 不出现人日 / 人天 / 人月 / 工期这类被用户明确否掉的表述。
  */
@@ -25,6 +25,7 @@ import { LEAD, TEAMMATE, makeCtx, makeSettings, defaultRoster } from './helpers.
 
 /** 19 个已吸纳 skill 的期望清单（与任务书一致；改名/增删都要同步改这里与协议正文）。 */
 const EXPECTED_SKILLS = [
+  'file-location-alignment',
   'feature-dev',
   'bug-fix',
   'refactor',
@@ -80,8 +81,8 @@ test('每段点名对应专家 subagent_<id>', () => {
   }
 });
 
-test('19 个已吸纳 skill 全部出现在阶段索引里', () => {
-  assert.equal(EXPECTED_SKILLS.length, 19);
+test('20 个方法 skill 全部出现在阶段索引里', () => {
+  assert.equal(EXPECTED_SKILLS.length, 20);
   assert.deepEqual([...WORKFLOW_SKILLS].sort(), [...EXPECTED_SKILLS].sort(), 'WORKFLOW_SKILLS 与任务书清单不一致');
   for (const skill of EXPECTED_SKILLS) {
     assert.ok(WORKFLOW_PROTOCOL.includes(`\`${skill}\``), `协议缺 skill ${skill}`);

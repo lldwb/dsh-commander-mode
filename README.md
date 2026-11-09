@@ -53,7 +53,8 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   「谁来做」，项目经理解决「按什么顺序做、每段怎么验收」。
 - **项目开发工作流（2.0.0）**：项目经理模式里的执行手册组件（`dsh-commander-mode/workflow`）：
   六段每段的必做动作、必须落盘的产物、验收判据、失败返工、对应专家与团队用法，并给出本包
-  `skills/` 目录里 **19 个已吸纳 skill** 的阶段归位（先加载方法再动手）。它明确一条边界：
+  `skills/` 目录里 **20 个方法 skill** 的阶段归位（先加载方法再动手；其中
+  `file-location-alignment` 专门治"位置歧义 / 用缺失否定用户"）。它明确一条边界：
   **skill 是工作方法，不替代验收证据**。
 - **等待门禁（2.0.0）**：`wait_agent` 超过 `maxWaitMs`（默认 120000，`0` = 关闭）会被
   **确定性拒绝**并返回纠正指令（改短等待 → 继续推进其它工作 → 依赖「派工完成」通知）。
@@ -366,13 +367,13 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 协议 650 之前）。它把六段流水线写成可执行手册：每段的**目的 / 必做动作 / 必须落盘的产物 /
 验收判据 / 失败返工规则 / 对应专家与团队用法**。
 
-它同时是 **19 个已吸纳 skill 的阶段索引**——这些 skill 在本包 `skills/` 目录里，由项目经理
+它同时是 **20 个方法 skill 的阶段索引**——这些 skill 在本包 `skills/` 目录里，由项目经理
 模式的 `skill-filesystem.config.customSkillDirs` 加载（**只在项目经理模式加载**，指挥者模式
 保持 1.x 的能力与文本不变）：
 
 | 阶段 | 该用哪个 skill |
 |---|---|
-| 开工前 / 跨阶段 | `skill-router`、`repo-init`、`spec-route`、`project-explain` |
+| 开工前 / 跨阶段 | `file-location-alignment`、`skill-router`、`repo-init`、`spec-route`、`project-explain` |
 | 架构 | `task-commander`、`check-rule-extract` |
 | 实现 | `feature-dev`、`bug-fix`、`refactor`、`code-optimize`、`comment-supplement`、`i18n-transform`、`module-batch`、`opencode-batch` |
 | 审查 | `code-review` |
@@ -668,7 +669,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 |---|---|---|
 | `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认" |
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
-| `maxTeammates` | `4` | 写进协议的建议并行子代理上限（1–12） |
+| `maxTeammates` | `8` | 写进协议的建议并行子代理上限（1–12）。2.4.0：4 → 8，与 Team 运行时上限对齐；想再高要同时调 profile 的 `agent-team.maxMembers`（默认已由本部署调到 16） |
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
 | `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
@@ -680,10 +681,10 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `requireTeamTask` | `true` | 1.2.0：Team 通道派发要求工单有有效投影（D-1）；没有团队服务时自动跳过 |
 | `requireTeamTaskMarker` | `false` | 1.2.0：Team 通道派发要求 prompt 带 `[task:task-N]` 且与投影一致（D-2） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
-| `maxAsyncTasks` | `4` | 同一会话同时在飞的一次性 specialist 上限（1–12） |
+| `maxAsyncTasks` | `8` | 同一会话同时在飞的一次性 specialist 上限（1–12）。2.4.0：4 → 8 |
 | `workerSessions` | `true` | 每工单独立 Worker Session + 独立目录（1.0.0 起默认开启；`false` 回退到 specialist/Team） |
 | `workRoot` | `''` | Worker 目录根；空 = `<DSH_HOME>/commander/work`。相对路径以 `DSH_HOME` 为基准 |
-| `maxWorkers` | `3` | 每个指挥者会话同时最多几个 Worker Session（1–12） |
+| `maxWorkers` | `6` | 每个指挥者会话同时最多几个 Worker Session（1–12）。2.4.0：3 → 6 |
 | `prepareCommand` | `''` | 建 worker 目录后执行一次的 prepare 命令（可用 `DSH_COMMANDER_*` 环境变量） |
 | `workerPermission` | `danger-full-access` | Worker Session 的权限预设；目录不是安全边界 |
 | `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
@@ -1317,6 +1318,26 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **2.4.0** —— 放开并发度（用户 2026-11-09 反馈「子智能体数量限制过严，导致效率太低」）：
+  ① **Team 成员上限 8 → 16**：随附的 `agent-team-profile` 把 `maxMembers` 显式写成 8
+  （包自身默认是 16），在 profile patch 里用 id 定向覆盖回 16（四个键必须全写，整块替换）。
+  ② **本包三个并发上限提高**：`maxTeammates` 4 → 8（协议建议并行度，与运行时对齐）、
+  `maxAsyncTasks` 4 → 8（一次性 specialist 并发）、`maxWorkers` 3 → 6（Worker Session 并发）。
+  ③ **协议补一条并行纪律**：独立工作流（互不依赖、写作用域不重叠）**各开一个 teammate 并行**，
+  不要压到同一个队友身上排成串行队列；判断标准是依赖关系，不是"省名额"。旧的
+  「复用同一个 teammate」保留为"跟进/修正走同一人"，但不再用来压缩并行度。
+  **用户要做什么**：重启 DSH（profile patch 要重新合成）。想再提高团队上限就改
+  profile 的 `agent-team.maxMembers`（包支持到 16，更高需要看运行时校验）。
+- **2.3.0** —— 位置歧义与能力边界（用户 2026-11-09 指出 session-e1618ace 的「低级错误」）：
+  ① 工作纪律新增第 6 条「先对齐位置与能力边界，再用『没有』下结论」：先列候选位置
+  （App 容器 / 文件 App / iCloud / 本机 / 远程机），先说明自己**读不到**什么，报告"没找到"
+  必须附「查过哪些位置、哪些读不到」，不许用缺失反推用户没做。
+  ② 新增 skill `file-location-alignment`（第 20 个）：候选位置多义表 + 各平台能力边界
+  （iOS `devicectl` 只读 App 容器、读不到「文件」App 的"我的 iPhone > xxx"；adb、Windows
+  APPDATA/LOCALAPPDATA、SSH 家目录）+ 「没有」的正确写法 + 真实反例。
+  ③ 工作流阶段索引与 README 表同步；紧凑 section 预算 9000 → 9500。
+  测试 543 → 547。
+- **2.2.1** —— 等待门禁默认开启的回调（见 2.2.0 之后的用户要求，与 2.2.0 同批发布）。
 - **2.2.0** —— 执行边界补齐「远程 / 桌面 / 浏览器 / 模拟器 / 终端」（用户 2026-11-09 指出
   session-a0c0b646「指挥者亲力亲为」）：
   ① 事实：那个会话确实在**项目经理模式**（06:15:47 切过去，系统提示里就是 PM 协议 + 工作流），

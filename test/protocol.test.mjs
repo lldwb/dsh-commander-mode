@@ -479,6 +479,10 @@ test('长文写明一次性 specialist 的三条硬约束（无任务板/无后�
 // ---------------------------------------------------------------- 长度与兼容 ---
 
 test('紧凑版长度受控：每轮注入，必须短于长文', () => {
+  // 预算随纪律增长调整过一次：2.3.0 新增第 6 条「先对齐位置与能力边界」，
+  // 它是"用缺失否定用户"那类事故的唯一防线，不能只留在长文里。
+  // 上限的作用是防"把细节都塞进 section"，不是精确配额：超了就说明该搬到长文了。
+  const CHAR_BUDGET = 9500;
   for (const [label, text] of [
     ['默认 section', SECTION],
     ['启用名册 section', ROSTER_SECTION],
@@ -486,7 +490,7 @@ test('紧凑版长度受控：每轮注入，必须短于长文', () => {
   ]) {
     const lines = text.split('\n').length;
     assert.ok(lines <= 160, `${label} 有 ${lines} 行，超过 160 行上限`);
-    assert.ok(text.length <= 9000, `${label} 有 ${text.length} 字符，超过 9000 字符上限`);
+    assert.ok(text.length <= CHAR_BUDGET, `${label} 有 ${text.length} 字符，超过 ${CHAR_BUDGET} 字符上限`);
   }
   // 细节应该在 skill 长文里，而不是把 section 撑大。
   assert.ok(COMMANDER_PROTOCOL.length > SECTION.length);

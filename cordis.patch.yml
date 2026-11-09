@@ -127,8 +127,9 @@
         confirmPlan: true
         # 子代理之间有分歧时交回用户。
         escalateOnConflict: true
-        # 写进协议的建议并行上限。
-        maxTeammates: 4
+        # 写进协议的建议并行上限（2.4.0：4 → 8，与 Team 运行时上限对齐）。
+        # 想再往上要同时调 profile patch 的 agent-team.maxMembers（默认 8，可到 16）。
+        maxTeammates: 8
         # 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底。
         # 关掉只去掉这两样，协议里的结算同步要求仍在。
         syncGuard: true
@@ -209,8 +210,8 @@
         # 一次性 specialist 是否异步派发（0.7.0 默认开）：工具立即返回，完成时用一条
         # 「【指挥者·派工完成】」通知唤醒指挥者并写账本；关掉回退 0.5.0 的前台阻塞行为。
         asyncDelegation: true
-        # 同一会话同时在飞的一次性 specialist 上限（1–12）。
-        maxAsyncTasks: 4
+        # 同一会话同时在飞的一次性 specialist 上限（1–12）。2.4.0：4 → 8。
+        maxAsyncTasks: 8
         # ---- 0.8.0 / 1.0.0 Worker Session ------------------------
         # 每张工单一个独立 DSH Session + 独立目录。0.8.0 曾默认关闭；0.9.1 真机 Web E2E
         # 跑通全链路后，1.0.0 起默认开启。不想要就在 profile patch 里显式写 false——
@@ -218,8 +219,8 @@
         workerSessions: true
         # Worker 工作目录根；空 = <DSH_HOME>/commander/work。
         workRoot: ''
-        # 每个指挥者会话同时最多几个 Worker Session（1–12）。
-        maxWorkers: 3
+        # 每个指挥者会话同时最多几个 Worker Session（1–12）。2.4.0：3 → 6。
+        maxWorkers: 6
         # 建 worker 目录后执行一次的 prepare 命令（可选；可用 DSH_COMMANDER_* 环境变量）。
         prepareCommand: ''
         # Worker Session 的权限预设（默认 danger-full-access；目录不是安全边界）。

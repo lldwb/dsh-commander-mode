@@ -52,7 +52,7 @@ test('默认配置保持 0.1.x 的行为', () => {
   const config = Config();
   assert.equal(config.confirmPlan, true);
   assert.equal(config.escalateOnConflict, true);
-  assert.equal(config.maxTeammates, 4);
+  assert.equal(config.maxTeammates, 8);
   assert.equal(config.registerSkill, true);
   assert.equal(config.maxSpecialists, 20);
   assert.deepEqual(config.blockedTools, [...DEFAULT_BLOCKED_TOOLS]);
@@ -113,10 +113,10 @@ test('maxTeammates 被限制在 1-12', () => {
 test('readMaxTeammates 把 null 当作"未配置"，而不是 0', () => {
   // 手写 patch 里把 `maxTeammates:` 留空会得到 YAML null；`Number(null) === 0` 曾被夹成 1，
   // 协议于是静默变成"建议并行 1 个"，与 undefined/NaN 回退 4 的行为不一致。
-  assert.equal(readMaxTeammates(null), 4);
-  assert.equal(readMaxTeammates(undefined), 4);
-  assert.equal(readMaxTeammates(Number.NaN), 4);
-  assert.equal(readMaxTeammates({ get: () => null }), 4, 'volatile 引用解引用后是 null 也要回退');
+  assert.equal(readMaxTeammates(null), 8);
+  assert.equal(readMaxTeammates(undefined), 8);
+  assert.equal(readMaxTeammates(Number.NaN), 8);
+  assert.equal(readMaxTeammates({ get: () => null }), 8, 'volatile 引用解引用后是 null 也要回退');
 });
 
 test('blockedTools 的默认值必须与 guard 的默认拦截清单一致', () => {
@@ -278,7 +278,7 @@ test('readBlockedTools 的空数组表示"只留协议约束"', () => {
 test('readMaxTeammates 夹到 1-12 并四舍五入', () => {
   // 这个值会写进 prompt 的并行建议。0 / Infinity / NaN 都会让协议给出无法执行的
   // 建议（"最多 0 个"或"不限量"）。
-  assert.equal(readMaxTeammates(undefined), 4);
+  assert.equal(readMaxTeammates(undefined), 8);
   assert.equal(readMaxTeammates({ get: () => 9 }), 9, 'volatile 引用要解引用');
   assert.equal(readMaxTeammates('7'), 7, '数字字符串来自 YAML 时是合法输入');
   assert.equal(readMaxTeammates(3.5), 4);
@@ -286,8 +286,8 @@ test('readMaxTeammates 夹到 1-12 并四舍五入', () => {
   assert.equal(readMaxTeammates(13), 12);
   assert.equal(readMaxTeammates(0), 1);
   assert.equal(readMaxTeammates(-5), 1);
-  assert.equal(readMaxTeammates(Number.NaN), 4);
-  assert.equal(readMaxTeammates({}), 4);
+  assert.equal(readMaxTeammates(Number.NaN), 8);
+  assert.equal(readMaxTeammates({}), 8);
 });
 
 // ---------------------------------------------------------------- 解析 ---
@@ -301,7 +301,7 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       escalateOnConflict: true,
       registerSkill: true,
       syncGuard: true,
-      maxTeammates: 4,
+      maxTeammates: 8,
       blockedTools: [...DEFAULT_BLOCKED_TOOLS],
       maxSpecialists: 20,
       ledger: true,
@@ -312,10 +312,10 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       requireTeamTask: true,
       requireTeamTaskMarker: false,
       asyncDelegation: true,
-      maxAsyncTasks: 4,
+      maxAsyncTasks: 8,
       workerSessions: true,
       workRoot: '',
-      maxWorkers: 3,
+      maxWorkers: 6,
       prepareCommand: '',
       workerPermission: 'danger-full-access',
       ticketStallMs: 600000,
@@ -384,10 +384,10 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     requireTeamTask: true,
     requireTeamTaskMarker: false,
     asyncDelegation: true,
-    maxAsyncTasks: 4,
+    maxAsyncTasks: 8,
     workerSessions: true,
     workRoot: '',
-    maxWorkers: 3,
+    maxWorkers: 6,
     prepareCommand: '',
     workerPermission: 'danger-full-access',
     ticketStallMs: 600000,
@@ -415,7 +415,7 @@ test('0.6.0 默认：账本与计划授权/工单门禁默认开启', () => {
   assert.equal(config.requireMandate, true);
   assert.equal(config.requireTicket, true);
   assert.equal(config.asyncDelegation, true);
-  assert.equal(config.maxAsyncTasks, 4);
+  assert.equal(config.maxAsyncTasks, 8);
   assert.equal(config.stateDir, '');
   assert.equal(config.ticketStallMs, 10 * 60 * 1000);
   assert.equal(config.maxTickets, 100);
@@ -458,10 +458,10 @@ test('0.6.0 已知键包含新配置，未知键警告仍列出完整清单', ()
 test('0.7.0 异步配置：默认开、可关、上限夹到 1–12', () => {
   const config = Config();
   assert.equal(config.asyncDelegation, true);
-  assert.equal(config.maxAsyncTasks, 4);
+  assert.equal(config.maxAsyncTasks, 8);
   const disabled = resolveConfig({ asyncDelegation: false }).options;
   assert.equal(disabled.asyncDelegation, false);
-  assert.equal(resolveConfig({ maxAsyncTasks: 0 }).options.maxAsyncTasks, 4, '非正数回退默认');
+  assert.equal(resolveConfig({ maxAsyncTasks: 0 }).options.maxAsyncTasks, 8, '非正数回退默认');
   assert.equal(resolveConfig({ maxAsyncTasks: 99 }).options.maxAsyncTasks, 99, '读取器不夹上限，schema 负责 1–12');
   assert.ok(KNOWN_CONFIG_KEYS.includes('asyncDelegation'));
   assert.ok(KNOWN_CONFIG_KEYS.includes('maxAsyncTasks'));
@@ -471,7 +471,7 @@ test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限�
   const config = Config();
   assert.equal(config.workerSessions, true, '1.0.0 起默认开启（真实 E2E 已验）');
   assert.equal(config.workRoot, '');
-  assert.equal(config.maxWorkers, 3);
+  assert.equal(config.maxWorkers, 6);
   assert.equal(config.prepareCommand, '');
   assert.equal(config.workerPermission, 'danger-full-access');
   const options = resolveConfig({
@@ -483,7 +483,7 @@ test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限�
   }).options;
   assert.equal(options.workerSessions, true);
   assert.equal(options.workRoot, 'my-work');
-  assert.equal(options.maxWorkers, 3, '非正数回退默认');
+  assert.equal(options.maxWorkers, 6, '非正数回退默认');
   assert.equal(options.prepareCommand, 'git init');
   assert.equal(options.workerPermission, 'workspace-write');
   for (const key of ['workerSessions', 'workRoot', 'maxWorkers', 'prepareCommand', 'workerPermission']) {

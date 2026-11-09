@@ -333,7 +333,7 @@ test('没有配置服务时用默认值降级（模式仍然成立）', () => {
   preExecute(made.record);
   // 默认值来自 resolveConfig(undefined)，与 schema 默认一致。
   assert.equal(FALLBACK_OPTIONS.confirmPlan, true);
-  assert.equal(FALLBACK_OPTIONS.maxTeammates, 4);
+  assert.equal(FALLBACK_OPTIONS.maxTeammates, 8);
 });
 
 test('注册了 commander-mode skill', () => {

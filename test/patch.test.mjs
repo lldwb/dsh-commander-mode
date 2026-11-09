@@ -327,7 +327,7 @@ test('等待门禁配置写在 patch 里：默认 120000，0 = 关闭', () => {
 test('1.0.0：patch 写全 Worker Session 配置（默认开启）', () => {
   assert.match(PATCH, /\n {8}workerSessions: true/u);
   assert.match(PATCH, /\n {8}workRoot: ''/u);
-  assert.match(PATCH, /\n {8}maxWorkers: 3/u);
+  assert.match(PATCH, /\n {8}maxWorkers: 6/u);
   assert.match(PATCH, /\n {8}prepareCommand: ''/u);
   assert.match(PATCH, /\n {8}workerPermission: danger-full-access/u);
   // 默认开启的依据与"怎么关"要写在注释里（1.0.0 的行为变化）。
@@ -345,7 +345,7 @@ test('1.1.0：patch 写全外部事件配置（默认开启 + 轮询间隔）', 
 
 test('0.7.0：patch 写全异步派工配置（默认开）', () => {
   assert.match(PATCH, /\n {8}asyncDelegation: true/u);
-  assert.match(PATCH, /\n {8}maxAsyncTasks: 4/u);
+  assert.match(PATCH, /\n {8}maxAsyncTasks: 8/u);
   // 关掉后的语义要写清楚：回退 0.5.0 的前台阻塞行为。
   assert.match(PATCH, /回退 0\.5\.0 的前台阻塞行为/u);
 });
