@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { apply, FALLBACK_OPTIONS, SECTION_NAME, SECTION_ORDER } from '../agent.js';
+import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
 import { emptyLedger } from '../lib/ledger.js';
 import { CommanderLedger } from '../lib/ledger-service.js';
 import { PLAN_CONFIRM_LABEL, PLAN_QUESTION_ID } from '../lib/tickets.js';
@@ -42,7 +43,8 @@ function makeSettings(initial = {}) {
     escalateOnConflict: true,
     registerSkill: true,
     maxTeammates: 4,
-    blockedTools: ['write', 'edit', 'pwsh', 'bash', 'job_kill', 'plugin_manager'],
+    // 与 lib/guard.js 的默认清单同源，避免夹具落后于真实默认值（2.2.0 扩到 48 项）。
+    blockedTools: [...DEFAULT_BLOCKED_TOOLS],
     maxSpecialists: 20,
     ledger: true,
     stateDir: '',

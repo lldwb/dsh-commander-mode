@@ -133,6 +133,15 @@
         # 关掉只去掉这两样，协议里的结算同步要求仍在。
         syncGuard: true
         # 指挥者不许自己调用的工具；传 [] 可以只留协议约束。
+        #
+        # 2.2.0 起不只本地六个：判据是「会不会改变工作区 / 宿主 / 外部系统的状态」。
+        # 历史事故（session-a0c0b646）：只拦本地工具时，指挥者本地 write/edit/pwsh 是 0 次，
+        # 但它自己跑了 51 次 ssh_exec + 2 次 ssh_upload + 1 次 ssh_job 在远程 PC 上操作 ——
+        # 用户看到的就是"亲力亲为"。远程执行 / 桌面注入 / 浏览器改动 / 模拟器控制 / 持久终端
+        # 与 create_worktree 同样是"执行操作"。
+        # 只读半边不受影响：ssh_host、desktop_screenshot/ui_dump/windows_list、
+        # browser_snapshot/screenshot/console/network/status/list_pages、
+        # android_status/screenshot/ui_dump/logcat、terminal_read/list、job_output/list。
         blockedTools:
           - write
           - edit
@@ -140,6 +149,48 @@
           - bash
           - job_kill
           - plugin_manager
+          - ssh_exec
+          - ssh_job
+          - ssh_upload
+          - ssh_download
+          - ssh_fetch
+          - desktop_mouse_move
+          - desktop_mouse_click
+          - desktop_mouse_drag
+          - desktop_mouse_scroll
+          - desktop_key_press
+          - desktop_type_text
+          - desktop_ui_invoke
+          - desktop_ui_set_value
+          - desktop_window_focus
+          - browser_connect
+          - browser_disconnect
+          - browser_navigate
+          - browser_click
+          - browser_type
+          - browser_fill
+          - browser_press_key
+          - browser_hover
+          - browser_drag
+          - browser_upload_file
+          - browser_handle_dialog
+          - browser_evaluate
+          - browser_close_page
+          - android_avd_create
+          - android_emulator_start
+          - android_emulator_stop
+          - android_apk_install
+          - android_app_launch
+          - android_app_stop
+          - android_ui_tap
+          - android_ui_swipe
+          - android_ui_input
+          - android_ui_key
+          - terminal_open
+          - terminal_send
+          - terminal_signal
+          - terminal_close
+          - create_worktree
         # 是否把长文协议注册成 skill。
         registerSkill: true
         # ---- 0.6.0 工单账本与计划授权 --------------------------------

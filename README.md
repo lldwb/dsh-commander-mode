@@ -525,11 +525,38 @@ pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/
 
 1. **协议**（system-prompt section，`order: 650`，每轮重新求值）——告诉模型它是指挥者，
    该派活。它不会被遗忘，也不会被上下文压缩掉。
-2. **门禁**（`tools/pre-execute` waterfall）——指挥者自己调用
-   `write` / `edit` / `pwsh` / `bash` / `job_kill` / `plugin_manager` 会被**直接拒绝**，
+2. **门禁**（`tools/pre-execute` waterfall）——指挥者自己调用执行类工具会被**直接拒绝**，
    拒绝理由就是纠正指令（"先用 `ask_user_question` 确认计划 → 派给 specialist / teammate"）。
 
 门禁挂在 preset scope 上，所以**只对指挥者模式下的 agent 生效**，别的模式完全不受影响。
+
+### 执行边界：什么算「执行操作」（2.2.0 起补齐）
+
+判据不是"是不是本地文件操作"，而是**"会不会改变工作区 / 宿主 / 外部系统的状态"**。
+默认拦截 **48 项**，按类别：
+
+| 类别 | 工具 |
+|---|---|
+| 本地 | `write` `edit` `pwsh` `bash` `job_kill` `plugin_manager` |
+| 远程执行 | `ssh_exec` `ssh_job` `ssh_upload` `ssh_download` `ssh_fetch` |
+| 桌面注入 | `desktop_mouse_move/click/drag/scroll` `desktop_key_press` `desktop_type_text` `desktop_ui_invoke` `desktop_ui_set_value` `desktop_window_focus` |
+| 浏览器改动 | `browser_connect/disconnect/navigate/click/type/fill/press_key/hover/drag/upload_file/handle_dialog/evaluate/close_page` |
+| 模拟器控制 | `android_avd_create` `android_emulator_start/stop` `android_apk_install` `android_app_launch/stop` `android_ui_tap/swipe/input/key` |
+| 持久终端 | `terminal_open` `terminal_send` `terminal_signal` `terminal_close` |
+| 仓库状态 | `create_worktree` |
+
+**只读侦察不受限**（这些不在清单里）：`read` / `glob` / `grep` / `read_image` / `web_*` /
+`skill` / `session_*`、`ssh_host`、`desktop_screenshot` / `desktop_screen_info` /
+`desktop_ui_dump` / `desktop_windows_list`、`browser_status` / `browser_snapshot` /
+`browser_screenshot` / `browser_console` / `browser_network` / `browser_list_pages` /
+`browser_ping` / `browser_wait_for`、`android_status` / `android_screenshot` /
+`android_ui_dump` / `android_ui_wait` / `android_logcat`、`terminal_read` / `terminal_list`、
+`job_output` / `job_list`、以及全部调度工具。
+
+> **为什么补这一刀**：session-a0c0b646（2026-11-09）是项目经理模式，Lead 本地
+> `write`/`edit`/`pwsh` **0 次**（代码活确实派出去了），但它自己跑了 **51 次 `ssh_exec`**
+> + 2 次 `ssh_upload` + 1 次 `ssh_job`，在远程 PC 上 dir/ver/powershell 一路操作 —— 用户
+> 看到的就是"指挥者亲力亲为"。根因就是判据只盯着本地六个工具。
 
 ### 为什么不干脆把 `write` 从 preset 里裁掉
 
@@ -643,7 +670,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
 | `maxTeammates` | `4` | 写进协议的建议并行子代理上限（1–12） |
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
-| `blockedTools` | `write, edit, pwsh, bash, job_kill, plugin_manager` | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
+| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
 | `ledger` | `true` | 工单账本（`commander_ticket_*` + 看板 + 计划授权门禁）；关掉退化为 0.5.0 行为 |
 | `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
@@ -753,8 +780,11 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
   只读核对）来看。
-- **门禁只覆盖工具调用。** 它拦的是 DSH 工具（`write` / `edit` / `pwsh` / …）。如果指挥者
-  通过别的途径（例如某个插件的自定义工具）改文件，门禁不管；`blockedTools` 可用来补。
+- **门禁只覆盖工具调用。** 它拦的是 DSH 工具（`write` / `edit` / `pwsh` / `ssh_*` / `desktop_*` /
+  `browser_*` / `android_*` / `terminal_*` …，完整清单见「执行边界」）。如果指挥者
+  通过别的途径（例如某个插件的自定义工具）改文件或操作外部系统，门禁不管；`blockedTools`
+  可用来补。2.2.0 之前的默认清单只含本地六个工具，导致 `ssh_exec` 这类"远程跑命令"漏拦
+  （session-a0c0b646 的 51 次 `ssh_exec` 就是这么来的）。
 - **关掉「智能体团队」+ 空名册 = 模式降级。** 那时指挥者没有可用的派发工具，门禁会自动
   放行（避免死锁），模式退化成"只会做协议的普通 agent"。
 - **协议是概率性的。** "规划后先确认"与"分歧上报"由协议保证，模型偶尔可能跳过。门禁只兜住
@@ -1287,6 +1317,25 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **2.2.0** —— 执行边界补齐「远程 / 桌面 / 浏览器 / 模拟器 / 终端」（用户 2026-11-09 指出
+  session-a0c0b646「指挥者亲力亲为」）：
+  ① 事实：那个会话确实在**项目经理模式**（06:15:47 切过去，系统提示里就是 PM 协议 + 工作流），
+  Lead 本地 `write` / `edit` / `pwsh` 都是 **0 次**（代码活确实派出去了：7 个 teammate、
+  12 张任务板任务），但它**自己**跑了 **51 次 `ssh_exec` + 2 次 `ssh_upload` + 1 次 `ssh_job`**，
+  在远程 PC 上 dir/ver/powershell 一路操作 —— 用户看到的就是"亲力亲为"。
+  ② 根因：`blockedTools` 只列了本地六个工具；判据本该是"会不会改变工作区 / 宿主 /
+  外部系统的状态"，远程执行、桌面注入、浏览器改动、模拟器控制、持久终端、`create_worktree`
+  与 `pwsh` 同类。
+  ③ 改法：默认拦截清单 6 → **48 项**，覆盖 `ssh_exec/job/upload/download/fetch`、`desktop_`
+  输入类、`browser_` 改动类、`android_` 设备与 UI 控制类、`terminal_open/send/signal/close`、
+  `create_worktree`；各插件的**只读半边**（`ssh_host`、`desktop_screenshot/ui_dump/windows_list`、
+  `browser_snapshot/screenshot/console/network/status/list_pages`、
+  `android_status/screenshot/ui_dump/logcat`、`terminal_read/list`）保持放行。
+  ④ 拒因与协议同步改写：指挥者/项目经理协议里"不跑命令"扩成"不只是本地，远程/桌面/浏览器/
+  模拟器/终端都算执行操作"；拒因也点名这五类。
+  **用户要做什么**：重新安装/重启。若某个部署确实需要指挥者自己操作某类工具（例如没有子代理
+  通道），把它从 `blockedTools` 里删掉即可；`canDelegate === false` 时门禁本来就自动放行。
+  测试 539 → 543。
 - **2.1.0** —— 插件页组件行标题改成**真实身份**（用户 2026-11-09 要求「按照实际身份修改」）：
   ① 组件行标题由**模块名**决定（`declaredRows` → `metaOf(row.name)` 读该模块的
   `locale/*.json`），两个模式共用随附的 `@deepseek-ai/dsh-agent-preset` 时两行标题都是
