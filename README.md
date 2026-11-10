@@ -1563,3 +1563,18 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   （profile 顶层，裸包名）以让设置页可达、新增依赖 `@deepseek-ai/schemastery`。
 - 0.1.2 —— README 修正；门禁在 web-app 式部署失效的修复；拒绝理由按实际工具生成。
 - 0.1.0 —— 首个可用版本：协议 + 门禁 + Agent Teams 派发 + 规划确认。
+
+## 图标
+
+包根 `icon.svg` 按 dsh 官方插件的矢量语言手绘：36×36 透明底、官方 artwork 调色板、一个意象。
+
+同一份图标在**三处界面**生效：
+
+| 位置 | 来源 |
+|---|---|
+| 插件页卡片 / 详情页头图 / 「包含的组件」行 | `package.json` 的 `"icon": "./icon.svg"`（Host 读包清单，声明即可） |
+| 「设置 → 插件 → 内置插件配置」卡片插画 | client 半把同一份字节以 data URI 登记进 `globalThis.__DSH_PLUGIN_ITEM_ARTWORK__['commander-mode']`；**需要** dsh-plugin-devkit 的 `scripts/patch-plugin-item-artwork.mjs --apply` 给随附的插件管理页补一次查询逻辑，否则回落官方默认插画 |
+
+改图标的正确顺序：改 `icon.svg` → `node <devkit>/scripts/embed-plugin-artwork.mjs .`（同步 `client.js` 里的
+`ITEM_ARTWORK_URI`）→ 跑本包测试。图标规范全文见 dsh-plugin-devkit 的 skill
+`dsh-plugin-development/references/icon-design-language.md`。

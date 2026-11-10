@@ -193,6 +193,44 @@ window.__ModuleLoader__.load({
      */
     const SETTINGS_NS = 'commander-mode';
 
+    /**
+     * 「内置插件配置」卡片插画的注册键。
+     *
+     * DSH 插件页的卡片插画由随附的 plugin-manager 客户端写死（只有 shell / agent-loop /
+     * subagent / web-search 四个官方 id 的映射表），第三方插件没有声明入口；唯一的通道是
+     * `globalThis.__DSH_PLUGIN_ITEM_ARTWORK__` 这个全局注册表 —— 它由 dsh-plugin-devkit 的
+     * `scripts/patch-plugin-item-artwork.mjs` 给随附 bundle 补上查询逻辑。没打补丁的部署
+     * 不会读它，注册只是往一个没人看的对象里写一个键，无副作用。
+     */
+    const ITEM_ARTWORK_ID = 'commander-mode';
+
+    /**
+     * 卡片插画的 data URI：包根 `icon.svg` 的原始字节做 base64。
+     *
+     * 必须与 `icon.svg` 逐字节一致 —— `test/client-artwork.test.mjs` 同时读两处做断言。
+     * 改图标后同步这一行：
+     *   node ../dsh-plugin-devkit/scripts/embed-plugin-artwork.mjs .
+     */
+    const ITEM_ARTWORK_URI =
+      'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzYiIGhlaWdodD0iMzYiIHZpZXdCb3g9IjAgMCAzNiAzNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KICA8cGF0aCBkPSJNMTggMTRWMTIuNE0xNC40NiAyMS41NEwxMS44IDIzLjc0TTIxLjU0IDIxLjU0TDI0LjIgMjMuNzQiIHN0cm9rZT0iIzY1OEVGRiIgc3Ryb2tlLXdpZHRoPSIyLjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxjaXJjbGUgY3g9IjE4IiBjeT0iMTguNiIgcj0iNC42IiBmaWxsPSJ1cmwoI2NtZEMxKSIvPgogIDxjaXJjbGUgY3g9IjE4IiBjeT0iOS44IiByPSIyLjYiIGZpbGw9InVybCgjY21kQzIpIi8+CiAgPGNpcmNsZSBjeD0iOS44IiBjeT0iMjUuNCIgcj0iMi42IiBmaWxsPSJ1cmwoI2NtZEMzKSIvPgogIDxjaXJjbGUgY3g9IjI2LjIiIGN5PSIyNS40IiByPSIyLjYiIGZpbGw9IiM2NThFRkYiLz4KICA8ZGVmcz4KICAgIDxsaW5lYXJHcmFkaWVudCBpZD0iY21kQzEiIHgxPSIxOCIgeTE9IjE0IiB4Mj0iMTgiIHkyPSIyMy4yIiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CiAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiNBNzk3RkMiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjNDU2MUVFIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJjbWRDMiIgeDE9IjE4IiB5MT0iNy4yIiB4Mj0iMTgiIHkyPSIxMi40IiBncmFkaWVudFVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+CiAgICAgIDxzdG9wIHN0b3AtY29sb3I9IiM0NUU3QTQiLz4KICAgICAgPHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMDU5MDlEIi8+CiAgICA8L2xpbmVhckdyYWRpZW50PgogICAgPGxpbmVhckdyYWRpZW50IGlkPSJjbWRDMyIgeDE9IjkuOCIgeTE9IjIyLjgiIHgyPSI5LjgiIHkyPSIyOCIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPgogICAgICA8c3RvcCBzdG9wLWNvbG9yPSIjNjlCOUZGIi8+CiAgICAgIDxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzMyNERFMiIvPgogICAgPC9saW5lYXJHcmFkaWVudD4KICA8L2RlZnM+Cjwvc3ZnPgo=';
+
+    /**
+     * 把本插件的卡片插画登记进 DSH 的全局注册表。
+     *
+     * 幂等；返回的注销函数只在值仍是自己写的那一条时删除，避免误删同 id 的后来者。
+     *
+     * @returns {() => void} 注销函数，交给 `ctx.effect` 回收。
+     */
+    function registerItemArtwork() {
+      const shared = globalThis;
+      if (shared.__DSH_PLUGIN_ITEM_ARTWORK__ === undefined) shared.__DSH_PLUGIN_ITEM_ARTWORK__ = {};
+      const registry = shared.__DSH_PLUGIN_ITEM_ARTWORK__;
+      registry[ITEM_ARTWORK_ID] = ITEM_ARTWORK_URI;
+      return () => {
+        if (registry[ITEM_ARTWORK_ID] === ITEM_ARTWORK_URI) delete registry[ITEM_ARTWORK_ID];
+      };
+    }
+
     /** 名册在 Config 里的字段名（Host `Config.specialists`、客户端 `scope.set` 共用）。 */
     const ROSTER_FIELD = 'specialists';
 
@@ -1155,6 +1193,7 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const t = ctx.locale.bind(NS);
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'commander-mode: 词典');
+      ctx.effect(() => registerItemArtwork(), 'commander-mode: 卡片插画');
 
       const card = new SpecialistsCardController(ctx.configForms.get(SETTINGS_NS), ctx);
       card.t = t;
