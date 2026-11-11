@@ -22,9 +22,9 @@
  * - **继承指挥者模式**：能力行清单（`cordis.patch.yml` 的 CAPABILITIES 块，逐字节一致）、
  *   专家名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务；3.0.0 起这些工具
  *   由**专家小组长**调用，项目经理不直接调）、
- *   `tools/pre-execute` 执行门禁（复用 `lib/guard.js`）、等待门禁
- *   （`evaluateWaitCap()`）、五条工作纪律（`lib/discipline.js` 单一真源）、
- *   异步派工与「【项目经理·派工完成】」唤醒语义。
+ *   `tools/pre-execute` 执行门禁（复用 `lib/guard.js`）、禁止等待门禁
+ *   （`evaluateWaitForbidden()`，3.1.0 硬禁用、无开关）、五条工作纪律（`lib/discipline.js`
+ *   单一真源）、异步派工与「【项目经理·派工完成】」唤醒语义。
  * - **继承「Agent 预设定义」**（`@deepseek-ai/dsh-agent-preset`）：preset 的声明方式与
  *   生命周期都由它管——本行只往 `preset-project-manager` 里加自己的子行；该声明器被禁用
  *   或缺失时，指挥者模式与项目经理模式会一起从模式菜单消失。
@@ -41,8 +41,8 @@
  *    通知唤醒**调用它的小组长**（3.0.0 起项目经理不直接调这些工具）。
  * 3. **`tools/pre-execute` 门禁**：① 执行边界（项目经理自己不写业务代码，复用
  *    `lib/guard.js`）；② **层级门禁**（3.0.0：任务板进展/排期与工单推进状态只由小组长写、
- *    项目经理不直接派子智能体，受 `delegationHierarchy` 控制）；③ **等待门禁**（2.0.0：
- *    超长 `wait_agent` 确定性拒绝）。
+ *    项目经理不直接派子智能体，受 `delegationHierarchy` 控制）；③ **禁止等待门禁**
+ *    （3.1.0：`wait_agent` 对项目经理无条件拒绝，**没有开关**）。
  *
  * 另外把协议注册成 skill（可选，失败不影响模式）。
  *
@@ -67,7 +67,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { resolveConfig } from './lib/config.js';
-import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluateBoardWrite, evaluatePreExecute, evaluateSpecialistDispatch, evaluateTicketWrite, evaluateWaitCap, isDelegatedAgent, isSpecialistDispatchTool } from './lib/guard.js';
+import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluateBoardWrite, evaluatePreExecute, evaluateSpecialistDispatch, evaluateTicketWrite, evaluateWaitForbidden, isDelegatedAgent, isSpecialistDispatchTool } from './lib/guard.js';
 import { DEFAULT_SPECIALISTS } from './lib/presets.js';
 import { PROJECT_MANAGER_PROTOCOL, leaderNameForSpecialist } from './lib/project-manager.js';
 import {
@@ -514,16 +514,13 @@ export function apply(ctx) {
               }
             }
 
-            // ③ 等待门禁（2.0.0）：超长 wait_agent 确定性拒绝。只拦超长等待，
-            //    list_agents / team_task_list / send_message 这些"读状态 / 唤醒队友"的工具不受影响。
-            const waitReason = evaluateWaitCap({
-              name: toolName,
-              args: exec?.arguments,
-              maxWaitMs: readOptions().maxWaitMs,
-            });
-            if (typeof waitReason === 'string' && waitReason !== '') {
-              ctx.logger?.info?.('project-manager: 拒绝超长 wait_agent（上限 %dms）', readOptions().maxWaitMs);
-              return { kind: 'deny', reason: waitReason };
+            // ③ 3.1.0「禁止等待子智能体」：项目经理调用 `wait_agent` **无条件拒绝**。
+            //    用户 2026-11-11 补充要求：禁止等待，且不设开关 —— 不读任何配置项。
+            //    只拦项目经理本人；小组长等自己的下级由 `isDelegatedAgent` 放行。
+            const waitDecision = evaluateWaitForbidden({ agent, name: toolName });
+            if (waitDecision !== undefined) {
+              ctx.logger?.info?.('project-manager: 拒绝项目经理的 wait_agent（禁止等待，无开关）');
+              return waitDecision;
             }
           } catch (error) {
             // 门禁自己出错时绝不能让工具调用失败——放行，交回默认行为。

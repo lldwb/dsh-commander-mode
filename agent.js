@@ -88,7 +88,7 @@ import {
   evaluatePreExecute,
   evaluateSpecialistDispatch,
   evaluateTicketWrite,
-  evaluateWaitCap,
+  evaluateWaitForbidden,
   isDelegatedAgent,
   isSpecialistDispatchTool,
 } from './lib/guard.js';
@@ -1126,17 +1126,14 @@ export function apply(ctx) {
         }
       }
 
-      // 2.0.0 等待门禁：超过 maxWaitMs 的 wait_agent 确定性拒绝。
-      // 顺序在既有执行门禁之后（两者都过才放行）；只拦 wait_agent 的超长 timeout_ms，
-      // list_agents / team_task_list / send_message 这些"读状态 / 唤醒队友"的工具不受影响。
-      const waitReason = evaluateWaitCap({
-        name: toolName,
-        args: exec?.arguments,
-        maxWaitMs: readOptions().maxWaitMs,
-      });
-      if (typeof waitReason === 'string' && waitReason !== '') {
-        ctx.logger?.info?.('commander-mode: 拒绝超长 wait_agent（上限 %dms）', readOptions().maxWaitMs);
-        return { kind: 'deny', reason: waitReason };
+      // 3.1.0「禁止等待子智能体」：指挥官调用 `wait_agent` **无条件拒绝**。
+      // 用户 2026-11-11 补充要求：禁止等待，且不设开关 —— 所以这里不读任何配置项
+      // （`delegationHierarchy` / `blockedTools` / 已移除的 `maxWaitMs` 都不影响它）。
+      // 只拦指挥官本人：小组长在 L1 等自己的下级是它的调度，由 `isDelegatedAgent` 放行。
+      const waitDecision = evaluateWaitForbidden({ agent: exec?.agent, name: toolName });
+      if (waitDecision !== undefined) {
+        ctx.logger?.info?.('commander-mode: 拒绝指挥官的 wait_agent（禁止等待，无开关）');
+        return waitDecision;
       }
 
       // 0.7.0 异步容量：一次性 specialist 在飞数量达上限时**在启动前**拒绝，

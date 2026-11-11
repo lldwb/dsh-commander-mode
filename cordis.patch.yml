@@ -61,10 +61,10 @@
 # `tool-pwsh`：子代理通过 `agentPresets.composeFrom()` 加入**父会话的同一个 preset
 # scope**，裁掉会让 teammate 也失去这些能力（per-child 的工具限制只能收紧、不能扩展）。
 #
-# 2.0.0 起有一道「等待门禁」：`wait_agent` 的 `timeout_ms` 超过配置行 `maxWaitMs`
-# （默认 120000）时**确定性拒绝**并给出纠正指令。只拦超长等待，
-# `list_agents` / `team_task_list` / `send_message` 这类"读状态 / 唤醒队友"的工具不受影响。
-# 想彻底放开就把 `maxWaitMs` 设为 0（只保留协议约束）。
+# 3.1.0 起「禁止等待子智能体」：`wait_agent` 对指挥官**无条件拒绝**（硬编码，**没有开关**，
+# 配置行里不存在 `maxWaitMs` 之类的键）。不等之后靠「【派工完成】」通知唤醒 +
+# `list_agents` / `team_task_list` 读状态 + `send_message` 追问；
+# `list_agents` / `team_task_list` / `send_message` 这类工具不受影响。
 #
 # 显示文案：输入框渲染的是 `preset.name ?? preset.id`，而自己起了名的声明就自己拥有
 # 文案 —— 只有那四个随附 preset（它们不发布 name）才会被翻译。所以下面这些字符串是原样
@@ -239,12 +239,11 @@
         eventInbox: true
         # 轮询间隔（ms，最小 1000）。事件是分钟级，15 秒足够。
         eventPollMs: 15000
-        # ---- 等待门禁 ------------------------------------------------
-        # 单次 wait_agent 的等待上限（ms）。用户 2026-11-09 复盘四会话后要求
-        # "等子代理不要一直等"：历史会话里出现过 1800000ms（30 分钟）的等待，
-        # 单次最长 127.5 分钟、会话累计 11 小时。超过上限的 wait_agent 会被
-        # tools/pre-execute **确定性拒绝**并返回纠正指令；0 = 关闭门禁（只保留协议约束）。
-        maxWaitMs: 120000
+        # ---- 禁止等待子智能体（3.1.0，无配置项） -------------------------
+        # 用户 2026-11-11 补充要求：禁止等待，且**不设开关**。`wait_agent` 由
+        # tools/pre-execute 无条件拒绝（lib/guard.js 的 evaluateWaitForbidden()），
+        # 这里没有 maxWaitMs 之类的键可配。历史会话里出现过 1800000ms（30 分钟）的等待、
+        # 单次最长 127.5 分钟、会话累计 11 小时。
         # 可配置的多模型 specialist 名册：每项一个 `subagent_<id>` 前台工具。
         #
         # 这里**故意不写** `specialists`：默认值就是出厂预置名册（lib/presets.js，按主流
