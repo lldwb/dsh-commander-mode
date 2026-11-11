@@ -33,6 +33,17 @@ export const TEAMMATE = Object.freeze({
 });
 
 /**
+ * 一个 subagent（L2，小组长派出的子智能体）：delegationDepth = 2。
+ *
+ * 3.2.0 的「禁止等待」覆盖整条链，所以测试需要能分别构造 L0 / L1 / L2 三种身份，
+ * 验证门禁不按身份放行。
+ */
+export const SUBAGENT = Object.freeze({
+  id: 'session-grandchild',
+  session: { id: 'session-grandchild', header: { id: 'session-grandchild', parentSession: 'session-child', origin: 'subagent', delegationDepth: 2 } },
+});
+
+/**
  * `commanderSettings` 服务的替身（配置行提供）。
  *
  * 默认选项直接取 `resolveConfig(undefined).options`，与 schema 默认值保持同一份，

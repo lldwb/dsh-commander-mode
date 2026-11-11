@@ -33,7 +33,7 @@ import { TEAM_MODEL } from '../lib/team-model.js';
 import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
 import { DEFAULT_SPECIALISTS } from '../lib/presets.js';
 import { normalizeRoster, specialistPresetId, specialistToolName } from '../lib/specialists.js';
-import { LEAD, TEAMMATE, defaultRoster, deferred, flush, listenerOf, makeCtx, makeSettings, spyNext } from './helpers.mjs';
+import { LEAD, SUBAGENT, TEAMMATE, defaultRoster, deferred, flush, listenerOf, makeCtx, makeSettings, spyNext } from './helpers.mjs';
 
 /** 取 `tools/pre-execute` 监听器。 */
 function preExecute(record) {
@@ -103,6 +103,13 @@ test('协议写明禁止等待：硬禁用 + 无开关 + 依赖派工完成通�
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('禁止等待'), '要写明「禁止等待」');
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('硬禁用'), '要写明是硬禁用');
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('无开关') || PROJECT_MANAGER_PROTOCOL.includes('没有开关'), '要写明没有开关');
+  // 3.2.0：整条链生效（用户追加「不要等」）——协议要写明范围与"派活时要求小组长也不许等"。
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('整条链生效'), '要写明整条链生效');
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('整条链都不等'), '要写明整条链都不等');
+  assert.ok(
+    PROJECT_MANAGER_PROTOCOL.includes('派活时明确要求小组长也不许等'),
+    '要要求派活时把"不许等"写进小组长 prompt',
+  );
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('【派工完成】'));
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('list_agents'), '要给出读状态这条替代动作');
   // 旧的"短等待 / 上限可配"措辞不得残留（否则模型会以为还能调）。
@@ -373,7 +380,7 @@ test('放行只读工具与派发工具（门禁不能拦死管理工作）', as
   }
 });
 
-test('3.1.0 禁止等待：项目经理调 wait_agent 一律被拒；读状态工具放行', async () => {
+test('禁止等待：项目经理调 wait_agent 一律被拒；读状态工具放行', async () => {
   // 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。
   // 2.0.0 的"超长才拒 + 短等待放行"已整体下线：现在缺省参数、60 秒、30 分钟都一样拒。
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
@@ -384,7 +391,9 @@ test('3.1.0 禁止等待：项目经理调 wait_agent 一律被拒；读状态�
     const denied = await listener({ name: 'wait_agent', agent: LEAD, arguments: args }, spyNext().next);
     assert.equal(denied?.kind, 'deny', `args=${JSON.stringify(args)} 时 wait_agent 应被拒绝`);
     assert.ok(denied.reason.includes('硬禁用'), denied.reason);
-    assert.ok(denied.reason.includes('【派工完成】'), denied.reason);
+    // 3.2.0：拒因要写明整条链都不许等（用户追加的「不要等」）。
+    assert.ok(denied.reason.includes('整条链都不许等'), denied.reason);
+    assert.ok(denied.reason.includes('完成通知'), denied.reason);
   }
 
   // 只拦 wait_agent：被拒之后该用的正是这些工具。
@@ -406,18 +415,20 @@ test('3.1.0 禁止等待：没有开关（配置服务里塞旧 maxWaitMs / 关�
   assert.ok(decision.reason.includes('没有开关'), decision.reason);
 });
 
-test('3.1.0 禁止等待：teammate 等自己的下级放行（只拦项目经理本人）', async () => {
-  // 专家小组长（teammate）等它派出的 L2 属于它自己的调度；拦死子代理 = 模式干不了活。
+test('3.2.0 整条链：专家小组长 / 子智能体调 wait_agent 也被拒（不再只拦项目经理）', async () => {
+  // 3.1.0 曾放行 teammate（专家小组长等它派出的 L2）；用户明确「不要等」后，
+  // 3.2.0 删掉了 `isDelegatedAgent` 放行 —— 整条链都不许等。语义反转是刻意的，
+  // **不要**因为"子代理干不了活"就恢复放行（等待不是完成工作所必需的动作）。
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   const listener = preExecute(record);
-  for (const args of [undefined, { timeout_ms: 1_800_000 }]) {
-    const decision = await listener({ name: 'wait_agent', agent: TEAMMATE, arguments: args }, spyNext().next);
-    assert.deepEqual(decision, { kind: 'allow' }, 'teammate 的 wait_agent 必须放行');
+  for (const [label, agent] of [['teammate（专家小组长）', TEAMMATE], ['subagent（L2）', SUBAGENT], ['身份读不到', undefined]]) {
+    for (const args of [undefined, { timeout_ms: 1_800_000 }]) {
+      const decision = await listener({ name: 'wait_agent', agent, arguments: args }, spyNext().next);
+      assert.equal(decision?.kind, 'deny', `${label} 的 wait_agent 也必须被拒（整条链生效）`);
+      assert.ok(decision.reason.includes('整条链都不许等'), decision.reason);
+    }
   }
-  // 身份读不到同样放行。
-  const anonymous = await listener({ name: 'wait_agent', agent: undefined }, spyNext().next);
-  assert.deepEqual(anonymous, { kind: 'allow' });
 });
 
 test('门禁自己出错时放行，而不是让工具调用失败', async () => {

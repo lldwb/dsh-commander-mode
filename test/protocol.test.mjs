@@ -461,6 +461,8 @@ test('a2a 效率的四条都写进紧凑版', () => {
   for (const phrase of ['硬禁用', '无开关', '【派工完成】', '结束回合']) {
     assert.ok(section.includes(phrase), `禁止等待缺少替代动作：${phrase}`);
   }
+  // 3.2.0：范围扩到整条链（用户追加「不要等」），section 里也要写明。
+  assert.ok(section.includes('整条链生效'), section);
 });
 
 test('长文给出结算同步与 a2a 效率的完整说明（含事故与数字）', () => {
@@ -475,6 +477,10 @@ test('长文给出结算同步与 a2a 效率的完整说明（含事故与数字
   assert.ok(COMMANDER_PROTOCOL.includes('没有开关'), '长文要说明没有开关');
   assert.ok(!COMMANDER_PROTOCOL.includes('短等待'), '长文不应再教"短等待"');
   assert.ok(!COMMANDER_PROTOCOL.includes('maxWaitMs'), '长文不应再提 maxWaitMs');
+  // 3.2.0：用户追加「不要等」→ 长文要写明**整条链**都不许等，并要求派活时转达给小组长。
+  for (const phrase of ['整条链生效', '整条指挥链', '小组长也一样', '不要等下级']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少整条链口径：${phrase}`);
+  }
 });
 
 test('标准流程的监控/收尾步与同步语义一致，且不再教轮询', () => {

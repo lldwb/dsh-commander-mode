@@ -247,6 +247,12 @@ const TEAMMATE = {
   session: { id: 'session-child', header: { id: 'session-child', parentSession: 'session-lead', origin: 'subagent', delegationDepth: 1 } },
 };
 
+/** 一个 subagent（L2，小组长派出的子智能体）：delegationDepth = 2。 */
+const SUBAGENT = {
+  id: 'session-grandchild',
+  session: { id: 'session-grandchild', header: { id: 'session-grandchild', parentSession: 'session-child', origin: 'subagent', delegationDepth: 2 } },
+};
+
 /**
  * 让一个 Lead agent 可以被注入消息，并记录注入的内容。
  *
@@ -1316,9 +1322,9 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
 
-// ------------------------------------------------ 3.1.0 禁止等待子智能体 ---
+// -------------------------------------- 3.1.0 禁止等待（3.2.0 整条链生效） ---
 
-test('3.1.0 禁止等待：Lead 调 wait_agent 一律被拒（不是"超长才拒"）', async () => {
+test('禁止等待：Lead 调 wait_agent 一律被拒（不是"超长才拒"）', async () => {
   // 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。2.0.0 的"超长才拒"
   // 已整体下线 —— 现在缺省参数、60 秒、30 分钟都一样拒。
   const listener = preExecute(boot().record);
@@ -1327,11 +1333,13 @@ test('3.1.0 禁止等待：Lead 调 wait_agent 一律被拒（不是"超长才�
     assert.equal(decision?.kind, 'deny', `args=${JSON.stringify(args)} 时 wait_agent 应被拒绝`);
     assert.ok(decision.reason.includes('硬禁用'), decision.reason);
     assert.ok(decision.reason.includes('没有开关'), decision.reason);
-    assert.ok(decision.reason.includes('【派工完成】'), decision.reason);
+    // 3.2.0：拒因要写明整条链都不许等（用户追加的「不要等」）。
+    assert.ok(decision.reason.includes('整条链都不许等'), decision.reason);
+    assert.ok(decision.reason.includes('完成通知'), decision.reason);
   }
 });
 
-test('3.1.0 禁止等待：没有开关（配置里没有 maxWaitMs，任何配置都不改变判定）', async () => {
+test('禁止等待：没有开关（配置里没有 maxWaitMs，任何配置都不改变判定）', async () => {
   // 旧用例「maxWaitMs=0 时关闭」的**反向**断言：现在不存在能关掉它的配置。
   // 即使夹具塞进旧的 maxWaitMs:0、关掉 delegationHierarchy、清空 blockedTools，
   // wait_agent 仍然被拒 —— 因为这条门禁不读配置。
@@ -1346,19 +1354,20 @@ test('3.1.0 禁止等待：没有开关（配置里没有 maxWaitMs，任何配�
   assert.equal(settings.options().maxWaitMs, 0, '夹具确实带着旧配置键（用于证明它被忽略）');
 });
 
-test('3.1.0 禁止等待：读状态 / 派活工具放行，teammate 等自己的下级也放行', async () => {
-  // 只拦指挥官的 wait_agent：被拒之后该用的正是这些工具；小组长等它派出的 L2
-  // 属于它自己的调度，拦死子代理 = 整个模式干不了活。
+test('3.2.0 整条链：读状态 / 派活工具放行；teammate / subagent / 身份读不到调 wait_agent 也拒', async () => {
+  // 只拦 `wait_agent`：被拒之后该用的正是这些工具（与身份无关）。
   const listener = preExecute(boot().record);
   for (const toolName of ['list_agents', 'team_task_list', 'team_task_get', 'send_message', 'interrupt_agent']) {
     const decision = await listener({ name: toolName, agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
     assert.deepEqual(decision, { kind: 'allow' }, `${toolName} 不该被禁止等待门禁拦`);
   }
-  for (const args of [undefined, { timeout_ms: 1_800_000 }]) {
-    const decision = await listener({ name: 'wait_agent', agent: TEAMMATE, arguments: args }, spyNext().next);
-    assert.deepEqual(decision, { kind: 'allow' }, 'teammate 的 wait_agent 必须放行');
+  // 3.2.0：用户明确「不要等」→ 整条链都不许等。3.1.0 这里曾放行 teammate，
+  // 现在语义反转：小组长 / 子智能体 / 身份读不到一律拒（**不要**恢复成放行）。
+  for (const [label, agent] of [['teammate', TEAMMATE], ['subagent', SUBAGENT], ['身份读不到', undefined]]) {
+    for (const args of [undefined, { timeout_ms: 1_800_000 }]) {
+      const decision = await listener({ name: 'wait_agent', agent, arguments: args }, spyNext().next);
+      assert.equal(decision?.kind, 'deny', `${label} 的 wait_agent 也必须被拒（整条链生效）`);
+      assert.ok(decision.reason.includes('整条链都不许等'), decision.reason);
+    }
   }
-  // 身份读不到同样放行（宁可漏拦，不可拦死）。
-  const anonymous = await listener({ name: 'wait_agent', agent: undefined }, spyNext().next);
-  assert.deepEqual(anonymous, { kind: 'allow' });
 });
