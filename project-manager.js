@@ -67,7 +67,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { resolveConfig } from './lib/config.js';
-import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluateBoardWrite, evaluatePreExecute, evaluateSpecialistDispatch, evaluateTicketWrite, evaluateWaitForbidden, isDelegatedAgent, isSpecialistDispatchTool } from './lib/guard.js';
+import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluateBoardWrite, evaluatePreExecute, evaluateSpecialistDispatch, evaluateTicketWrite, evaluateWaitForbidden, hasUsableDispatchChannel, isDelegatedAgent, isSpecialistDispatchTool } from './lib/guard.js';
 import { DEFAULT_SPECIALISTS } from './lib/presets.js';
 import { PROJECT_MANAGER_PROTOCOL, leaderNameForSpecialist } from './lib/project-manager.js';
 import {
@@ -188,7 +188,21 @@ export function apply(ctx) {
         // 所以子级一律返回空串（与指挥者模式 0.4.0 的修复同一个理由）。
         const agent = context?.agent;
         if (agent !== undefined && isDelegatedAgent(agent)) return '';
-        return PROJECT_MANAGER_PROTOCOL;
+        // 3.4.0：本部署没有智能体团队时，协议里"派单只有一条通道：spawn_teammate"
+        // 会指向不存在的工具。补一条显式覆盖，告诉它改用一次性子智能体
+        // （门禁 `evaluateSpecialistDispatch()` 已按"没有 Team 通道"降级放行）。
+        const tools = agentToolNames(agent);
+        const hasTeam = !Array.isArray(tools) || tools.includes('spawn_teammate') || tools.includes('send_message');
+        if (hasTeam) return PROJECT_MANAGER_PROTOCOL;
+        return [
+          PROJECT_MANAGER_PROTOCOL,
+          '',
+          '> ⚠️ **本部署没有智能体团队**：上文提到的 `spawn_teammate` / `send_message` / `wait_agent` /',
+          '> `team_task_*` / `list_agents` / `interrupt_agent` **都不存在**，专家小组长这一层建不起来。',
+          '> 改用一次性子智能体派每段任务：`subagent_architect` / `subagent_implementer` / `subagent_reviewer` /',
+          '> `subagent_tester` / `subagent_security-auditor` / `subagent_doc-writer`（前台调用、结果直接返回；',
+          '> 由你自己承担拆解、验收与核对）。仍然**不要自己写业务代码**。',
+        ].join('\n');
       } catch (error) {
         // prompt section 抛错会让该会话的每一步都失败，所以渲染失败就退化成空串。
         ctx.logger?.warn?.('project-manager: 渲染 prompt section 失败：%o', error);
@@ -473,9 +487,13 @@ export function apply(ctx) {
               const blockedSet = new Set(readOptions().blockedTools ?? DEFAULT_BLOCKED_TOOLS);
               if (blockedSet.has(toolName)) {
                 const availableTools = agentToolNames(agent);
-                const canDelegate = availableTools === undefined
-                  ? undefined
-                  : availableTools.some((name) => DELEGATION_TOOLS.includes(name) || name.startsWith('subagent_'));
+                // 3.4.0：按"真的能调用"算派活通道（排除 blockedTools 与层级门禁关掉的通道），
+                // 否则用户把派发工具写进 blockedTools 时会变成"既不能动手也不能派活"。
+                const canDelegate = hasUsableDispatchChannel({
+                  availableTools,
+                  blocked: blockedSet,
+                  delegationHierarchy: readOptions().delegationHierarchy !== false,
+                });
                 const decision = evaluatePreExecute({
                   agent,
                   name: toolName,

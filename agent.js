@@ -89,6 +89,7 @@ import {
   evaluateSpecialistDispatch,
   evaluateTicketWrite,
   evaluateWaitForbidden,
+  hasUsableDispatchChannel,
   isDelegatedAgent,
   isSpecialistDispatchTool,
 } from './lib/guard.js';
@@ -913,6 +914,14 @@ export function apply(ctx) {
           syncBoard: syncBoardEnabled(),
           // 1.2.0：Agent Teams 可用时，协议里补一段"共享任务板是工单投影"的说明。
           teamBoard: teamBridge.available(agent) !== undefined,
+          // 3.4.0：Team 工具是否真的挂在这个 agent 上。没有时协议必须改口——
+          // 否则它会去调 `spawn_teammate` 这种不存在的工具（0.1.x 踩过这个坑）。
+          // 读不到工具视图时按"有"处理（与 guard 的降级判据一致）。
+          hasTeamTools: (() => {
+            const names = agentToolNames(agent);
+            if (!Array.isArray(names)) return true;
+            return names.includes('spawn_teammate') || names.includes('send_message');
+          })(),
         });
       } catch (error) {
         // prompt section 抛错会让该会话的每一步都失败，所以渲染失败就退化成
@@ -1045,11 +1054,21 @@ export function apply(ctx) {
   const inspectAgentTools = (agent) => {
     const availableTools = agentToolNames(agent);
     if (availableTools === undefined) return { availableTools, canDelegate: undefined };
+    // 3.4.0：不能只看"视图里有"——用户可能把派发工具写进 `blockedTools`，
+    // 或层级门禁关掉了 `subagent_*`。按"真的能调用"算，否则会得出"能派活"的
+    // 假结论：执行边界继续拦 write，而真正能调用的派发工具全被禁 → 死锁。
+    let blocked = [];
+    let delegationHierarchy = true;
+    try {
+      const options = readOptions();
+      blocked = Array.isArray(options.blockedTools) ? options.blockedTools : [];
+      delegationHierarchy = options.delegationHierarchy !== false;
+    } catch {
+      // 读不到配置时按默认（有派活通道）处理，宁可漏拦。
+    }
     return {
       availableTools,
-      canDelegate: availableTools.some(
-        (toolName) => DELEGATION_TOOLS.includes(toolName) || toolName.startsWith('subagent_'),
-      ),
+      canDelegate: hasUsableDispatchChannel({ availableTools, blocked, delegationHierarchy }),
     };
   };
 
@@ -1163,6 +1182,9 @@ export function apply(ctx) {
           requireTeamTask: options.requireTeamTask !== false,
           requireTeamTaskMarker: options.requireTeamTaskMarker === true,
           teamBoard: teamBoardFor(exec?.agent),
+          // 3.4.0 降级：没有 `ask_user_question` 的部署永远无法记录计划授权，
+          // 门禁据此跳过授权检查（否则整个模式派不出活）。工具视图读不到时按"有"处理。
+          availableTools: agentToolNames(exec?.agent),
           // 3.3.0 自愈：缺投影时由插件补建，而不是让模型去调一个可能被层级门禁禁止的动作
           // （会话 def6609d 的"两条门禁互相矛盾"就是这么来的）。
           ensureTeamTask: async (gateAgent, gateTicket) => {
