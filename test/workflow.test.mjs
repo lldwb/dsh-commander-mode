@@ -21,6 +21,7 @@ import {
   name as pluginName,
 } from '../workflow.js';
 import { WORKFLOW_PROTOCOL, WORKFLOW_SKILLS, WORKFLOW_STAGES } from '../lib/workflow.js';
+import { leaderNameForSpecialist } from '../lib/project-manager.js';
 import { LEAD, TEAMMATE, makeCtx, makeSettings, defaultRoster } from './helpers.mjs';
 
 /** 19 个已吸纳 skill 的期望清单（与任务书一致；改名/增删都要同步改这里与协议正文）。 */
@@ -72,13 +73,44 @@ test('六段齐全、顺序固定，每段都有六件套（目的/动作/产物
   }
 });
 
-test('每段点名对应专家 subagent_<id>', () => {
+test('每段点名专家小组长（architect-lead 等），subagent_<id> 只作为可交下级的工具出现', () => {
+  // 3.0.0（规则 3 + 规则 5）：六段流水线的执行者是**专家小组长**（团队模型 L1），
+  // 项目经理用 `spawn_teammate` 建它、`send_message` 派活；`subagent_<id>` 是**小组长**
+  // 用来把子任务交给下级子智能体（L2）的工具，不是项目经理的直调通道。
+  //
+  // 2.x 的断言只检查 `subagent_<id>` 出现在该段（那在 3.0.0 里依然成立，所以旧断言会
+  // 静默通过），但它**验证不到**"执行者已经变成小组长"这个破坏性变更——所以这里改成
+  // 同时钉住小组长名字与"交下级"语义。
   for (const stage of WORKFLOW_STAGES) {
+    const lead = leaderNameForSpecialist(stage.specialist);
+    assert.ok(
+      WORKFLOW_PROTOCOL.includes(lead),
+      `第 ${stage.index} 段（${stage.stage}）缺点名专家小组长 ${lead}`,
+    );
+    // `subagent_<id>` 仍然出现在该段，但必须是"可交下级"的形态。
     assert.ok(
       WORKFLOW_PROTOCOL.includes(`subagent_${stage.specialist}`),
       `第 ${stage.index} 段（${stage.stage}）缺点名 subagent_${stage.specialist}`,
     );
+    assert.ok(
+      WORKFLOW_PROTOCOL.includes(`可用 \`subagent_${stage.specialist}\` 交下级`)
+        || WORKFLOW_PROTOCOL.includes(`交给下级子智能体（\`subagent_${stage.specialist}\``),
+      `第 ${stage.index} 段的 subagent_${stage.specialist} 必须写成"小组长交下级"的工具，而不是项目经理直调`,
+    );
   }
+  // 每段的标题就写明"专家小组长 <lead>"，让模型第一眼看到的是执行者身份。
+  // 注意阶段名与标题里的段名不一定逐字相同（第 5 段标题写「安全审计」、WORKFLOW_STAGES
+  // 里是「安全」），所以只按段号 + 小组长名字钉。
+  for (const stage of WORKFLOW_STAGES) {
+    assert.match(
+      WORKFLOW_PROTOCOL,
+      new RegExp(`^## 第 ${stage.index} 段：.*专家小组长 \`${leaderNameForSpecialist(stage.specialist)}\``, 'mu'),
+      `第 ${stage.index} 段的标题应点名专家小组长`,
+    );
+  }
+  // 小组长可以自己执行，也可以交下级——这条口径必须写在开工前那一节。
+  assert.ok(WORKFLOW_PROTOCOL.includes('专家小组长可以自己执行'), WORKFLOW_PROTOCOL.slice(0, 800));
+  assert.ok(WORKFLOW_PROTOCOL.includes('`spawn_teammate` 建'), '要写清专家小组长由 spawn_teammate 建');
 });
 
 test('20 个方法 skill 全部出现在阶段索引里', () => {

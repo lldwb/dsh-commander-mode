@@ -333,7 +333,9 @@ test('没有配置服务时用默认值降级（模式仍然成立）', () => {
   preExecute(made.record);
   // 默认值来自 resolveConfig(undefined)，与 schema 默认一致。
   assert.equal(FALLBACK_OPTIONS.confirmPlan, true);
-  assert.equal(FALLBACK_OPTIONS.maxTeammates, 8);
+  // 3.0.0：默认并行上限 8 → 16（与运行时「子智能体」设置对齐，规则 2）。
+  assert.equal(FALLBACK_OPTIONS.maxTeammates, 16);
+  assert.equal(FALLBACK_OPTIONS.delegationHierarchy, true, '三层指挥链门禁默认开启');
 });
 
 test('注册了 commander-mode skill', () => {
@@ -673,8 +675,13 @@ test('syncGuard: false 时看板与兜底一起关掉（协议仍要求同步）
 test('派发通道观测：连续三次一次性 specialist 后，看板报"团队闲置"', () => {
   // 0.5.0 的依据：session-7064696b 里重启后 15 次派活全走一次性 specialist，Team 通道归零，
   // 任务板留着 6 项没收尾。这里验证"派活时记通道 → 看板据此提示 Team 优先"的接线。
+  //
+  // 本用例测的是 **0.5.0 的通道观测**，与 3.0.0 层级门禁无关：层级门禁默认开启时，Lead 的
+  // `subagent_*` 会被确定性拒绝、也就不会进入统计（见下一条 P3 回归用例）。所以这里显式
+  // 关掉层级门禁，让三次派活真的走完 observeDelegation —— 断言本身没有放宽。
   const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-14', status: 'pending', subject: '核验', ready: true }] });
-  const { record } = boot({ agentTeams });
+  const settings = makeSettings({ options: { delegationHierarchy: false } });
+  const { record } = boot({ agentTeams, settings });
   const context = syncContext(record);
   const preExecuteListener = preExecute(record);
 
@@ -688,6 +695,31 @@ test('派发通道观测：连续三次一次性 specialist 后，看板报"团�
   // 提示要给出 Team 通道的出路，而且不能把内部 issue code 泄漏到模型看得到的地方。
   assert.ok(text.includes('spawn_teammate'), text);
   assert.ok(!text.includes('channel-drift'), text);
+});
+
+test('3.0.0 P3 回归：被层级门禁拒绝的 subagent_* 尝试不计入派发通道统计', () => {
+  // W3 修复的 P3-3：层级门禁已上移到 `observeDelegation` **之前**。被拒的直调尝试不是
+  // "派活"——若仍计入配比，看板会把"被门禁拒掉的 subagent_* 尝试"误报成
+  // 「派活全走一次性 specialist」，给模型一个与事实相反的自我认知。
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-14', status: 'pending', subject: '核验', ready: true }] });
+  const { record } = boot({ agentTeams });
+  const context = syncContext(record);
+  const preExecuteListener = preExecute(record);
+
+  context.text({ agent: LEAD }); // 建看板基线
+  const decisions = [];
+  for (let index = 0; index < 3; index += 1) {
+    decisions.push(preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next));
+  }
+  // 三次都真的被层级门禁拒绝（否则这条回归用例没有意义）。
+  for (const decision of decisions) {
+    assert.ok(decision !== undefined, '层级门禁开启时应拒绝 Lead 直调 subagent_*');
+    assert.equal(decision.kind, 'deny');
+  }
+
+  const text = context.text({ agent: LEAD });
+  assert.ok(!text.includes('派发通道'), `被拒的尝试不应计入配比：${text}`);
+  assert.ok(!text.includes('一次性 specialist'), `不应报"派活全走一次性 specialist"：${text}`);
 });
 
 test('Team 通道派活会记进配比；等待/读状态/子级派发都不记', () => {
@@ -713,7 +745,9 @@ test('Team 通道派活会记进配比；等待/读状态/子级派发都不记'
 
 test('syncGuard: false 时完全不记派发通道', () => {
   const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'pending', subject: 'x', ready: true }] });
-  const settings = makeSettings({ options: { syncGuard: false } });
+  // 同样显式关掉层级门禁：否则三次调用会先被层级门禁拒掉，根本到不了 observeDelegation，
+  // 这条用例就退化成"门禁拦住了"而不是"syncGuard 关掉了统计"。
+  const settings = makeSettings({ options: { syncGuard: false, delegationHierarchy: false } });
   const { record } = boot({ agentTeams, settings });
   const preExecuteListener = preExecute(record);
   for (let index = 0; index < 3; index += 1) {
@@ -885,9 +919,38 @@ function ledgerWithWork() {
   return { ledger, ticket };
 }
 
+/**
+ * 0.6.0 / 0.7.0 派发门禁类用例的配置夹具：显式关掉 3.0.0 的层级门禁。
+ *
+ * ## 为什么需要它（这不是放宽断言）
+ *
+ * 3.0.0 在 `tools/pre-execute` 上加了三条层级门禁，且**排在** 0.6.0 的 Mandate/工单
+ * 派发门禁之前（`agent.js`：执行边界 → 等待门禁 → 层级门禁 → 异步容量 → 派发门禁）。
+ * 于是指挥官（Lead）直接调 `subagent_<id>` 时，先被 `evaluateSpecialistDispatch()`
+ * 拒绝（「团队活交给小组长」），**永远走不到** Mandate/工单那一层。
+ *
+ * 而下面这些用例验证的正是「Mandate / 工单 / Assignment / STATUS 回报 / 异步结算」这一层
+ * 的行为（它们仍然全部有效，只是被新门禁挡在前面了）。所以这里把层级门禁显式关掉来
+ * **隔离被测对象**：断言一条没改，只是让请求真的能到达被验证的那道门禁。
+ *
+ * 层级门禁**默认开启**时的行为由两处覆盖：
+ * - `test/guard-hierarchy.test.mjs`（纯函数判定）；
+ * - `test/hierarchy-wiring.test.mjs`（真实 `apply()` 接线，Lead 被拒 / teammate 放行）。
+ *
+ * @param {{ options?: object, specialists?: object[] }} [initial] - 与 `makeSettings` 相同。
+ * @returns {object} `commanderSettings` 替身。
+ */
+function dispatchGateSettings(initial = {}) {
+  return makeSettings({
+    ...initial,
+    options: { delegationHierarchy: false, ...(initial.options ?? {}) },
+  });
+}
+
 test('0.6.0 门禁：没有计划授权时拒绝派发，并给出固定确认格式', async () => {
   const ledger = memoryLedger();
-  const { record } = boot({ ledger });
+  // 用隔离夹具：本用例验证 Mandate 门禁，层级门禁默认开启会先拒（见 dispatchGateSettings）。
+  const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   const listener = preExecute(record);
 
@@ -902,7 +965,7 @@ test('0.6.0 门禁：没有计划授权时拒绝派发，并给出固定确认�
 
 test('0.6.0 门禁：有授权 + 工单时放行，并记录 Assignment', async () => {
   const { ledger, ticket } = ledgerWithWork();
-  const { record } = boot({ ledger });
+  const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   const listener = preExecute(record);
 
@@ -918,7 +981,7 @@ test('0.6.0 门禁：有授权 + 工单时放行，并记录 Assignment', async 
 
 test('0.6.0 门禁：有授权但不带工单 → 拒绝并提示 commander_ticket_create', async () => {
   const { ledger } = ledgerWithWork();
-  const { record } = boot({ ledger });
+  const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   const decision = await preExecute(record)(
     { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X' } },
@@ -961,7 +1024,8 @@ test('0.6.0 授权：计划确认 post-execute 记录 Mandate；未确认或跳�
 
 test('0.6.0 回报：specialist 的 STATUS 行更新工单并补写 childId', async () => {
   const { ledger, ticket } = ledgerWithWork();
-  const { record } = boot({ ledger });
+  // 隔离夹具：需要 Lead 的 pre-execute 真的记下 Assignment（层级门禁默认开启会先拒）。
+  const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   await preExecute(record)(
     { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
@@ -1014,7 +1078,9 @@ test('0.6.0 看板：每轮上下文给出工单与授权；无工单时安静',
 
 test('ledger:false 时没有工单工具，也不拦截派发（0.5.0 行为）', async () => {
   const ledger = memoryLedger();
-  const settings = makeSettings({ options: { ledger: false, requireMandate: false } });
+  // 本用例验证的是"没有账本就没有派发门禁"；层级门禁是另一条（默认开启的）门禁，
+  // 这里显式关掉以隔离被测对象（见 dispatchGateSettings）。
+  const settings = dispatchGateSettings({ options: { ledger: false, requireMandate: false } });
   const { record } = boot({ settings, ledger });
   await flush();
   assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_')), []);
@@ -1050,7 +1116,8 @@ function steeringAgent(steers) {
 test('0.7.0 异步：工具立即返回 started；完成后写账本并 steer 唤醒指挥者', async () => {
   const { ledger, ticket } = ledgerWithWork();
   const settlement = deferred();
-  const settings = makeSettings({ specialists: [ROSTER[0]] });
+  // 隔离夹具：pre-execute 必须放行 Lead 的 specialist 调用才能记 Assignment（0.7.0 语义）。
+  const settings = dispatchGateSettings({ specialists: [ROSTER[0]] });
   const { record } = boot({ settings, ledger, settlement: settlement.promise });
   await flush();
   const tool = specialistTools(record)[0];
@@ -1133,7 +1200,8 @@ test('0.7.0 异步：容量上限在启动前拒绝（不会先启动 child）',
 
 test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment', async () => {
   const { ledger, ticket } = ledgerWithWork();
-  const { record } = boot({ ledger });
+  // 隔离夹具：pre-execute 必须真的记下 Assignment（层级门禁默认开启会先拒）。
+  const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   await preExecute(record)(
     { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },

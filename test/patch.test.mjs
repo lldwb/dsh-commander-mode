@@ -281,6 +281,8 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'confirmPlan',
     'escalateOnConflict',
     'maxTeammates',
+    // 3.0.0：三层指挥链门禁开关（默认开）。漏写它，按 id 定向覆盖时会被整块替换回默认值。
+    'delegationHierarchy',
     'syncGuard',
     'blockedTools',
     'registerSkill',
@@ -345,9 +347,21 @@ test('1.1.0：patch 写全外部事件配置（默认开启 + 轮询间隔）', 
 
 test('0.7.0：patch 写全异步派工配置（默认开）', () => {
   assert.match(PATCH, /\n {8}asyncDelegation: true/u);
-  assert.match(PATCH, /\n {8}maxAsyncTasks: 8/u);
+  // 3.0.0：8 → 16（规则 2，与运行时并行上限对齐）。
+  assert.match(PATCH, /\n {8}maxAsyncTasks: 16/u);
   // 关掉后的语义要写清楚：回退 0.5.0 的前台阻塞行为。
   assert.match(PATCH, /回退 0\.5\.0 的前台阻塞行为/u);
+});
+
+test('3.0.0：patch 写全三层指挥链配置（maxTeammates 16 / delegationHierarchy 默认开）', () => {
+  // 用户 2026-11-11 规则 2 与规则 4：并行上限 16，且「只有小组长改进度与排期」的门禁默认开启。
+  // patch 里的 config 是**整块替换**语义：漏写一个键，用户抄这一行做覆盖时就会把它重置成
+  // schema 默认值——所以加载期键都要显式写出来（既是文档也是覆盖模板）。
+  assert.match(PATCH, /\n {8}maxTeammates: 16/u);
+  assert.match(PATCH, /\n {8}delegationHierarchy: true/u);
+  // 注释要说明它控制什么、关掉后的后果（回退 2.x 只靠协议）。
+  assert.match(PATCH, /三层指挥链/u);
+  assert.match(PATCH, /关掉退化为只靠协议约束/u);
 });
 
 test('0.6.0：patch 写全账本与计划授权配置（默认开）', () => {

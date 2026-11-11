@@ -31,6 +31,15 @@ import {
   renderSpecialistRoster,
 } from '../lib/protocol.js';
 import { PLAN_CONFIRM_LABEL, PLAN_QUESTION_ID } from '../lib/tickets.js';
+import {
+  HIERARCHY_LEVELS,
+  TEAM_MODEL,
+  TEAM_MODEL_BRIEF,
+  TEAM_MODEL_RULES,
+} from '../lib/team-model.js';
+
+/** `TEAM_MODEL` 拼进 H1 文档时降一级标题（与 lib/protocol.js / lib/project-manager.js 同一约定）。 */
+const TEAM_MODEL_AS_SECTION = TEAM_MODEL.replace(/^# /u, '## ');
 
 const SECTION = renderCommanderSection();
 const OPENING = renderModeOpening();
@@ -78,10 +87,23 @@ test('紧凑版包含输出契约', () => {
   assert.ok(SECTION.includes('正文'));
 });
 
-test('六个上报触发条件都在长文里，且规划那条是硬门禁', () => {
-  assert.equal(ESCALATION_TRIGGERS.length, 6);
+test('七个上报触发条件都在长文里，且规划那条是硬门禁', () => {
+  // 3.0.0 新增第 4 条「小组长上报歧义」：歧义的发现者是小组长（L1），但汇总与提问
+  // 必须由指挥官做（team-model.js 的 ambiguity-chain 规则）——不加上报链路，小组长会
+  // 各自去问用户，同一件事被问好几遍。
+  assert.equal(ESCALATION_TRIGGERS.length, 7);
+  assert.deepEqual(
+    ESCALATION_TRIGGERS.map((trigger) => trigger.id),
+    ['plan', 'conflict', 'ambiguity', 'leader-ambiguity', 'tradeoff', 'risk', 'blocker'],
+  );
   assert.equal(ESCALATION_TRIGGERS[0].id, 'plan');
   assert.ok(ESCALATION_TRIGGERS[0].detail.includes('必须'));
+  const leaderAmbiguity = ESCALATION_TRIGGERS.find((trigger) => trigger.id === 'leader-ambiguity');
+  assert.ok(leaderAmbiguity, '缺少「小组长上报歧义」这条触发条件');
+  // 歧义链路的三个要点：只报指挥官、指挥官汇总后一次性问、答复回给小组长。
+  for (const phrase of ['只报给你', '一次性', '小组长']) {
+    assert.ok(leaderAmbiguity.detail.includes(phrase), `歧义链路缺少：${phrase}`);
+  }
   for (const trigger of ESCALATION_TRIGGERS) {
     assert.ok(COMMANDER_PROTOCOL.includes(trigger.title), `长文缺少触发条件：${trigger.title}`);
   }
@@ -111,8 +133,14 @@ test('escalateOnConflict: false 时去掉分歧上报这条触发条件', () => 
 
 test('maxTeammates 会写进协议', () => {
   assert.ok(renderCommanderSection({ maxTeammates: 7 }).includes('7 个'));
-  // 非法值回退到 4。
-  assert.ok(renderCommanderSection({ maxTeammates: Number.NaN }).includes('4 个'));
+  // 3.0.0：非法值回退 16（与 schema / 运行时并行上限一致），不再是 2.x 的 4。
+  // ⚠️ 旧断言 `includes('4 个')` 在 3.0.0 里仍会**意外通过**——"给 2-4 个**具体**选项"
+  // 这句问法要求里就含 "4 个" 子串。所以这里按整句钉死渲染结果，而不是松散的 includes。
+  assert.ok(
+    renderCommanderSection({ maxTeammates: Number.NaN }).includes('并行子代理建议不超过 16 个'),
+    '非法 maxTeammates 应回退 16（与运行时并行上限一致）',
+  );
+  assert.ok(!renderCommanderSection({ maxTeammates: Number.NaN }).includes('并行子代理建议不超过 4 个'));
 });
 
 test('长文覆盖 Team 工具的语义细节', () => {
@@ -474,6 +502,91 @@ test('长文写明一次性 specialist 的三条硬约束（无任务板/无后�
   for (const phrase of ['没有任务板', '没有后台通知', '每次调用都是新 child']) {
     assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少：${phrase}`);
   }
+});
+
+// ------------------------------------------------ 3.0.0 三层指挥链协议 ---
+
+test('3.0.0：section 含团队模型小节与三层指挥链的关键口径', () => {
+  // 用户 2026-11-11 的五条规则落在 section 里的部分：三层、深度 2、并行 16、
+  // 「只有小组长能改进展与排期」、一团队一任务。
+  assert.ok(SECTION.includes('### 团队模型：指挥官 → 小组长 → 子智能体'), SECTION);
+  for (const phrase of ['小组长', '子智能体', '深度 2', '16', '只有小组长', '一个团队一个任务']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少 3.0.0 口径：${phrase}`);
+  }
+  // 紧凑版逐条来自 TEAM_MODEL_BRIEF（唯一正文来源），不是各写一份。
+  for (const line of TEAM_MODEL_BRIEF) {
+    assert.ok(SECTION.includes(line), `section 缺少 TEAM_MODEL_BRIEF 行：${line.slice(0, 40)}`);
+  }
+  // 空名册时只有 Team 一条通道，且它建的是**小组长**（不是 2.x 的"子代理"）。
+  assert.ok(SECTION.includes('派活只用**智能体团队**'), SECTION);
+  assert.ok(SECTION.includes('`spawn_teammate` 建**小组长**'), SECTION);
+  // 一次性子智能体通道的"只有小组长用"标注在名册非空时出现（见下一条用例）；
+  // 空名册时 section 连 `subagent_` 都不能出现（0.2 起的硬约束）。
+  assert.ok(!SECTION.includes('subagent_'), '空名册 section 不应出现 subagent_ 工具名');
+});
+
+test('3.0.0：指挥官协议长文含 TEAM_MODEL 正文（唯一正文来源，不另抄一份）', () => {
+  // 团队模型的正文只有 lib/team-model.js 一份；协议只拼接（H1 降 H2）。
+  // 这条钉住"两份抄写必然漂移"那个约束：如果哪天有人把正文改成手写副本，这里会失败。
+  assert.ok(COMMANDER_PROTOCOL.includes(TEAM_MODEL_AS_SECTION), '长文必须原样拼接 TEAM_MODEL（只降标题层级）');
+  for (const rule of TEAM_MODEL_RULES) {
+    assert.ok(COMMANDER_PROTOCOL.includes(rule.title), `长文缺少团队模型规则：${rule.title}`);
+  }
+  for (const level of HIERARCHY_LEVELS) {
+    assert.ok(COMMANDER_PROTOCOL.includes(`L${level.level} ${level.name}`), `长文缺少层级 L${level.level}`);
+  }
+});
+
+test('3.0.0：指挥官协议含持续接单、歧义链路与「只有小组长」的写入权', () => {
+  // 规则 1（持续接单）与规则 4（只有小组长改进度/排期）必须都在长文里：
+  // 它们是用户明确提出的行为要求，只写在门禁错误信息里不够——模型得先知道该做什么。
+  for (const phrase of [
+    '持续接单',
+    '不要推翻已有排期',
+    '排期变化',
+    '小组长发现需求描述不清',
+    '一次性',
+    '只有小组长能改任务进展与排期',
+    '`claim` / `release` / `complete` / `reopen` / `set_dependencies`',
+  ]) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少 3.0.0 语义：${phrase}`);
+  }
+  // 结算同步的"任务板"一项改成「核对 / 催 owner 结算」，不再教指挥官自己 complete。
+  assert.ok(COMMANDER_PROTOCOL.includes('不要自己 `team_task_update`'), COMMANDER_PROTOCOL.slice(0, 100));
+  assert.ok(COMMANDER_PROTOCOL.includes('让 owner（小组长）结算') || COMMANDER_PROTOCOL.includes('让 owner 结算'));
+});
+
+test('3.0.0：协议不再给指挥官"直接前台调用 subagent_<id>"的指令', () => {
+  // 这是 3.0.0 的破坏性变更：`subagent_<id>` / `subagent` / `subagent_fork` 是**小组长**
+  // 的通道，指挥官调用会被 `evaluateSpecialistDispatch()` 拒绝。协议里若还留着直调指令，
+  // 模型会照着做，然后每一轮都被门禁打回。
+  //
+  // 注意：不能笼统断言"不出现 subagent_"——协议需要提到这些工具来说明"它们属于小组长、
+  // 你不调用"。所以这里只钉**直调指令**的具体措辞（2.x 里的原话）。
+  const forbidden = [
+    '直接**前台调用** `subagent_<id>`',
+    '直接用对应的 `subagent_<id>`',
+    '通道 A（专职子代理）',
+    '把这一步派给对应的 specialist',
+    '前台调用 `subagent_<id>`，结果直接返回',
+  ];
+  for (const phrase of forbidden) {
+    assert.ok(!COMMANDER_PROTOCOL.includes(phrase), `长文仍含直调指令：${phrase}`);
+    assert.ok(!SECTION.includes(phrase), `section 仍含直调指令：${phrase}`);
+  }
+  // 正面的替代口径必须在场：一次性子智能体工具属于小组长、指挥官不直接调用。
+  assert.ok(COMMANDER_PROTOCOL.includes('你**不直接调用**') || COMMANDER_PROTOCOL.includes('你不直接调用'));
+  assert.ok(COMMANDER_PROTOCOL.includes('属于小组长'));
+});
+
+test('3.0.0：名册启用时通道 A 明确标注「只有小组长用」且不属于指挥官', () => {
+  // 名册非空时 section 会出现 `subagent_<id>`，所以必须同时写清"这条通道不属于你"，
+  // 否则模型会把它当成自己的通道（2.x 就是这样，3.0.0 用门禁兜住但文本也要对齐）。
+  assert.ok(ROSTER_SECTION.includes('只有小组长用'), ROSTER_SECTION);
+  assert.ok(ROSTER_SECTION.includes('这条通道**不属于你**'), ROSTER_SECTION);
+  assert.ok(ROSTER_SECTION.includes('你调用会被门禁拒绝'), ROSTER_SECTION);
+  // 通道 B 是"你的唯一通道"。
+  assert.ok(ROSTER_SECTION.includes('你的唯一通道'), ROSTER_SECTION);
 });
 
 // ---------------------------------------------------------------- 长度与兼容 ---

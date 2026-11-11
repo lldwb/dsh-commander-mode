@@ -27,7 +27,9 @@ import {
   PIPELINE_SPECIALISTS,
   PIPELINE_STAGES,
   PROJECT_MANAGER_PROTOCOL,
+  leaderNameForSpecialist,
 } from '../lib/project-manager.js';
+import { TEAM_MODEL } from '../lib/team-model.js';
 import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
 import { DEFAULT_SPECIALISTS } from '../lib/presets.js';
 import { normalizeRoster, specialistPresetId, specialistToolName } from '../lib/specialists.js';
@@ -112,6 +114,73 @@ test('协议末尾原样拼接 lib/discipline.js 的 WORK_DISCIPLINE（不是另
 
 test('协议不使用 Markdown 表格（会与其它 section 的排版打架）', () => {
   assert.ok(!/\|\s*:?-{3,}/u.test(PROJECT_MANAGER_PROTOCOL), '协议里不应出现 Markdown 表格分隔行');
+});
+
+// ------------------------------------------------ 3.0.0 三层指挥链 ---
+
+test('3.0.0：协议原样拼接 TEAM_MODEL 正文（团队模型唯一正文来源）', () => {
+  // 规则 5：项目经理模式 = 指挥官模式特化版。团队模型的正文**只有一份**
+  // （lib/team-model.js 的 TEAM_MODEL），项目经理协议只拼接它（H1 降 H2），
+  // 不再自己抄一份——两份抄写必然漂移，而漂移的后果是同一套门禁在不同模式下
+  // 给出互相矛盾的指令。
+  const asSection = TEAM_MODEL.replace(/^# /u, '## ');
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes(asSection), '项目经理协议必须原样拼接 TEAM_MODEL（只降标题层级）');
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('## 团队模型：指挥官 → 小组长 → 子智能体'));
+  // 用户 2026-11-11 的关键口径都要在场：三层、深度 2、并行 16、只有小组长改写入权。
+  for (const phrase of ['小组长', '子智能体', '深度 2', '16', '只有小组长', '一个团队一个任务', '持续接单']) {
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(phrase), `项目经理协议缺少团队模型口径：${phrase}`);
+  }
+  // 六段流水线仍在（特化版 = 团队模型 + 六段流水线）。
+  for (const stage of PIPELINE_STAGES) {
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(stage), `协议缺流水线阶段：${stage}`);
+  }
+});
+
+test('3.0.0：六位专家是「专家小组长」，名字逐个点名', () => {
+  // 规则 5：六位专家（架构/实现/审查/测试/安全/文档）改成**专家小组长**（团队模型 L1）。
+  // 名字写进协议是有用的：模型 `spawn_teammate` 时用它当 name，任务板与通知里才认得出是谁。
+  assert.equal(PIPELINE_SPECIALISTS.length, 6);
+  for (const specialist of PIPELINE_SPECIALISTS) {
+    const lead = leaderNameForSpecialist(specialist.id);
+    assert.equal(lead, specialist.lead, `${specialist.id} 的小组长名字应稳定为 ${specialist.lead}`);
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(lead), `协议缺点名专家小组长 ${lead}`);
+  }
+  assert.deepEqual(
+    PIPELINE_SPECIALISTS.map((entry) => leaderNameForSpecialist(entry.id)),
+    ['architect-lead', 'implementer-lead', 'reviewer-lead', 'tester-lead', 'security-lead', 'doc-writer-lead'],
+  );
+  // 不在六位预置专家里的自定义名册项，按 `<id>-lead` 生成可读名字。
+  assert.equal(leaderNameForSpecialist('data-engineer'), 'data-engineer-lead');
+  // 派单通道是 spawn_teammate + send_message（规则 3：任务下发给小组长）。
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('`spawn_teammate` 建一位**专家小组长**'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('`send_message` 把该段任务发给它'));
+});
+
+test('3.0.0：协议不再指示项目经理直接调 subagent_<id>（工具仍安装，给小组长用）', () => {
+  // 这是 3.0.0 的破坏性变更：项目经理（Lead）直接调 `subagent_<id>` 会被
+  // `evaluateSpecialistDispatch()` 确定性拒绝。协议里若还留着直调指令，模型会照着做，
+  // 然后每一轮都被门禁打回。
+  //
+  // 不能笼统断言"不出现 subagent_"——协议需要点名这些工具来说明"它们属于小组长"。
+  // 所以钉的是 2.x 里**直调指令**的具体形态：
+  // ① 段标题的括号里直接是 `subagent_<id>`（2.x 的执行者身份）；
+  // ② "一次性前台工具 … 通知唤醒你"（把项目经理当调用者）；
+  // ③ "打回 `subagent_<id>`"（把项目经理当派单人）。
+  assert.ok(
+    !/^### 第 \d+ 段：.*（`subagent_/mu.test(PROJECT_MANAGER_PROTOCOL),
+    '段标题不应再直接把 subagent_<id> 写成执行者',
+  );
+  for (const phrase of ['一次性前台工具 `subagent_', '通知唤醒你', '打回 `subagent_']) {
+    assert.ok(!PROJECT_MANAGER_PROTOCOL.includes(phrase), `协议仍含直调指令：${phrase}`);
+  }
+  // 正面的替代口径必须在场：这些工具给小组长用、项目经理不直接调用。
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('这些工具是给小组长用的'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('你不直接调用'));
+  // 异步结算通知的收件人是**小组长**（不是项目经理）：它是小组长派下级子智能体的回执。
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('唤醒的是**小组长**'));
+  // 任务板写入权：项目经理只 reassign / 读板，claim/complete 由小组长做。
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('`reassign`'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('进度与排期写入由小组长做'));
 });
 
 // ---------------------------------------------------------------- 接线 ---

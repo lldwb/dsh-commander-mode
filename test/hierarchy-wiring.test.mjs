@@ -1,0 +1,258 @@
+/**
+ * 三层指挥链门禁的**接线**测试（真实 `apply()` + `tools/pre-execute` 监听器）。
+ *
+ * 纯函数测试（`test/guard-hierarchy.test.mjs`）只能证明"判定对了"，证明不了：
+ *
+ * 1. 判定真的被**注册**在 `tools/pre-execute` 上（漏接线 = 规则没落地，纯函数全绿也没用）；
+ * 2. **顺序**是对的（层级门禁排在 0.6.0 的 Mandate/工单派发门禁**之前**，所以指挥官直调
+ *    `subagent_<id>` 拿到的是层级理由，而不是 Mandate 理由）；
+ * 3. 开关 `delegationHierarchy: false` 真的能关掉（回退 2.x 只靠协议）；
+ * 4. 两个模式行（`agent.js` / `project-manager.js`）都接上了同样三条门禁
+ *    —— 项目经理模式是指挥官模式的特化版，门禁必须一致。
+ *
+ * 用 `test/helpers.mjs` 的假 ctx：它复现了 Cordis 的 `inject` 语义与
+ * "依赖缺一个就不执行"的行为。
+ */
+
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { apply as applyCommander } from '../agent.js';
+import { apply as applyProjectManager } from '../project-manager.js';
+import { LEAD, TEAMMATE, defaultRoster, flush, listenerOf, makeCtx, makeSettings, spyNext } from './helpers.mjs';
+
+/**
+ * 启动一个模式行，返回 `tools/pre-execute` 监听器与记录。
+ *
+ * @param {Function} apply - `agent.js` 或 `project-manager.js` 的 `apply`。
+ * @param {{ options?: object, specialists?: object[], ledger?: object }} [initial] - 配置与可选账本。
+ * @returns {{ listener: Function, record: object, settings: object }} 监听器与记录。
+ */
+function boot(apply, initial = {}) {
+  const settings = makeSettings({ options: initial.options, specialists: initial.specialists ?? defaultRoster() });
+  const made = makeCtx({ settings });
+  if (initial.ledger !== undefined) {
+    // 账本服务不在 helpers 的默认服务集里：用 ctx.get 的包装注入（必须在 apply 之前，
+    // 因为 apply 内部的 ctx.inject 会在调用时捕获 ctx.get）。
+    const baseGet = made.ctx.get;
+    made.ctx.get = (name) => (name === 'commanderLedger' ? initial.ledger : baseGet(name));
+  }
+  apply(made.ctx);
+  return { listener: listenerOf(made.record, 'tools/pre-execute'), record: made.record, settings };
+}
+
+/** 跑一次 pre-execute，返回决策。 */
+async function decide(listener, name, agent, args) {
+  const { next, calls } = spyNext({ kind: 'allow' });
+  const decision = await listener({ name, agent, arguments: args }, next);
+  return { decision, nextCalls: calls.count };
+}
+
+/** 断言被拒，并返回理由。 */
+function assertDenied(result, label) {
+  assert.ok(result.decision !== undefined, `${label} 应当被拒绝`);
+  assert.equal(result.decision.kind, 'deny');
+  assert.equal(result.nextCalls, 0, '拒绝时不该调用 next');
+  assert.ok(result.decision.reason.length > 0, '拒绝理由不能为空');
+  return result.decision.reason;
+}
+
+/** 断言放行（放行必须走 next，不能自己返回 allow）。 */
+function assertAllowed(result, label) {
+  assert.deepEqual(result.decision, { kind: 'allow' }, `${label} 应当放行`);
+  assert.equal(result.nextCalls, 1, '放行时必须调用 next（否则会短路后面的监听器）');
+}
+
+// ------------------------------------------------ 指挥者模式行（agent.js） ---
+
+test('指挥者模式：Lead 改任务板进展被拒、reassign/edit/delete 放行', async () => {
+  const { listener } = boot(applyCommander);
+
+  for (const action of ['claim', 'release', 'complete', 'reopen', 'set_dependencies']) {
+    const reason = assertDenied(
+      await decide(listener, 'team_task_update', LEAD, { action, task_id: 'task-1' }),
+      `Lead 的 team_task_update ${action}`,
+    );
+    assert.ok(reason.includes('小组长'), `${action} 的拒因应点名小组长：${reason}`);
+    assert.ok(reason.includes('reassign'), `${action} 的拒因应给出 reassign 出路：${reason}`);
+  }
+
+  for (const action of ['reassign', 'edit', 'delete']) {
+    assertAllowed(
+      await decide(listener, 'team_task_update', LEAD, { action }),
+      `Lead 的 team_task_update ${action}`,
+    );
+  }
+});
+
+test('指挥者模式：Lead 改工单推进状态被拒、done/cancelled 放行', async () => {
+  const { listener } = boot(applyCommander);
+
+  for (const status of ['progress', 'waiting', 'ready', 'blocked', 'failed']) {
+    const reason = assertDenied(
+      await decide(listener, 'commander_ticket_update', LEAD, { ticket: 't-1', status }),
+      `Lead 的 commander_ticket_update ${status}`,
+    );
+    assert.ok(reason.includes('小组长'), `${status} 的拒因应点名小组长：${reason}`);
+  }
+
+  for (const status of ['done', 'cancelled']) {
+    assertAllowed(
+      await decide(listener, 'commander_ticket_update', LEAD, { ticket: 't-1', status }),
+      `Lead 的 commander_ticket_update ${status}`,
+    );
+  }
+  // 只改描述字段（没有 status）也放行。
+  assertAllowed(
+    await decide(listener, 'commander_ticket_update', LEAD, { ticket: 't-1', acceptance: '新判据' }),
+    'Lead 只改 acceptance',
+  );
+});
+
+test('指挥者模式：Lead 直接派子智能体被拒，workflow / Team 通道放行', async () => {
+  const { listener } = boot(applyCommander);
+
+  for (const name of ['subagent_architect', 'subagent_implementer', 'subagent', 'subagent_fork']) {
+    const reason = assertDenied(
+      await decide(listener, name, LEAD, { task: '实现 X' }),
+      `Lead 调 ${name}`,
+    );
+    assert.ok(reason.includes('小组长'), `${name} 的拒因应点名小组长：${reason}`);
+    assert.ok(reason.includes('spawn_teammate'), `${name} 的拒因应给出 spawn_teammate 出路：${reason}`);
+  }
+
+  // workflow 是编排通道，不在拦截范围；Team 通道本来就是指挥官该用的。
+  for (const name of ['workflow', 'spawn_teammate', 'send_message', 'team_task_create', 'team_task_list']) {
+    assertAllowed(await decide(listener, name, LEAD, {}), `Lead 调 ${name}`);
+  }
+});
+
+test('指挥者模式：teammate（小组长）三条门禁全部放行（否则没人能干活）', async () => {
+  const { listener } = boot(applyCommander);
+
+  for (const [name, args] of [
+    ['team_task_update', { action: 'claim', task_id: 'task-1' }],
+    ['team_task_update', { action: 'complete', task_id: 'task-1' }],
+    ['team_task_update', { action: 'set_dependencies', task_id: 'task-1' }],
+    ['commander_ticket_update', { ticket: 't-1', status: 'progress' }],
+    ['commander_ticket_update', { ticket: 't-1', status: 'failed' }],
+    ['subagent_architect', { task: '子任务' }],
+    ['subagent', { task: '子任务' }],
+    ['workflow', {}],
+  ]) {
+    assertAllowed(await decide(listener, name, TEAMMATE, args), `teammate 的 ${name}`);
+  }
+});
+
+test('指挥者模式：delegationHierarchy:false 时三条门禁全部放行（回退 2.x 只靠协议）', async () => {
+  const { listener } = boot(applyCommander, { options: { delegationHierarchy: false } });
+
+  for (const [name, args] of [
+    ['team_task_update', { action: 'claim' }],
+    ['team_task_update', { action: 'complete' }],
+    ['commander_ticket_update', { ticket: 't-1', status: 'progress' }],
+    ['subagent_architect', { task: 'x' }],
+    ['subagent_fork', { task: 'x' }],
+  ]) {
+    assertAllowed(await decide(listener, name, LEAD, args), `关闭层级门禁后 Lead 的 ${name}`);
+  }
+  // 但执行边界不受影响：Lead 仍然不能自己写文件。
+  assertDenied(await decide(listener, 'write', LEAD, {}), '关闭层级门禁后 Lead 的 write');
+});
+
+test('指挥者模式：层级门禁排在 Mandate 派发门禁之前（Lead 拿到的是层级理由）', async () => {
+  // 这是接线顺序的回归测试：3.0.0 把三条层级门禁插在 0.6.0 的派发门禁**之前**
+  // （agent.js：执行边界 → 等待门禁 → 层级门禁 → 异步容量 → 派发门禁）。
+  // 有账本、没授权时，Lead 调 subagent_implementer 必须拿到**层级**理由
+  // （"团队活交给小组长"），而不是 Mandate 理由（"先 ask_user_question 确认计划"）。
+  const emptyLedger = { activeMandate: () => null, listTickets: () => [] };
+  const { listener } = boot(applyCommander, { ledger: emptyLedger });
+
+  const denied = assertDenied(
+    await decide(listener, 'subagent_implementer', LEAD, { task: '实现 X' }),
+    'Lead 调 subagent_implementer（无授权）',
+  );
+  assert.ok(denied.includes('小组长'), `应先命中层级门禁：${denied}`);
+  assert.ok(!denied.includes('计划授权'), `不应先命中 Mandate 门禁：${denied}`);
+
+  // 关掉层级门禁后，同一个调用才会落到 Mandate 门禁上（证明顺序与开关都真的生效）。
+  const relaxed = boot(applyCommander, { ledger: emptyLedger, options: { delegationHierarchy: false } });
+  const mandateReason = assertDenied(
+    await decide(relaxed.listener, 'subagent_implementer', LEAD, { task: '实现 X' }),
+    '关闭层级门禁后 Lead 调 subagent_implementer（无授权）',
+  );
+  assert.ok(mandateReason.includes('计划授权'), `应命中 Mandate 门禁：${mandateReason}`);
+});
+
+test('指挥者模式：执行边界拒因随 delegationHierarchy 切换（默认不教指挥官直调 subagent_*）', async () => {
+  // W3 修复的 P2 的**接线**回归：`agent.js` 必须把 `delegationHierarchy` 传给
+  // `evaluatePreExecute()`，否则 `buildDenialReason` 会按默认（开启）生成理由——虽然默认值
+  // 恰好一致，但一旦配置显式关掉，接线漏传就会让拒因继续教模型直调 `subagent_*`（与 2.x
+  // 语义相反）。这里用一份"视图里真有 subagent_*"的 Lead 同时验证两个方向。
+  const toolView = ['read', 'write', 'pwsh', 'ask_user_question', 'spawn_teammate', 'send_message', 'subagent_architect'];
+  const leadWithTools = {
+    ...LEAD,
+    ctx: { tools: { schemas: () => toolView.map((name) => ({ name })) } },
+  };
+
+  // 默认（层级门禁开启）：拒因只给 Team 通道 + 小组长，绝不出现 subagent_*。
+  const on = boot(applyCommander);
+  const deniedOn = assertDenied(await decide(on.listener, 'write', leadWithTools, {}), 'write（层级门禁开启）');
+  assert.ok(!deniedOn.includes('subagent_'), `不得教指挥官直调 subagent_*：${deniedOn}`);
+  assert.ok(deniedOn.includes('spawn_teammate'), `必须给 Team 通道：${deniedOn}`);
+  assert.ok(deniedOn.includes('小组长'), `必须落到小组长：${deniedOn}`);
+
+  // 显式关掉层级门禁（2.x 行为）：同一份视图恢复点名它真有的 specialist 工具。
+  const off = boot(applyCommander, { options: { delegationHierarchy: false } });
+  const deniedOff = assertDenied(await decide(off.listener, 'write', leadWithTools, {}), 'write（层级门禁关闭）');
+  assert.ok(deniedOff.includes('subagent_architect'), `2.x 语义应点名 specialist 工具：${deniedOff}`);
+});
+
+test('指挥者模式：不相关的工具完全不受三条门禁影响', async () => {
+  const { listener } = boot(applyCommander);
+  for (const name of ['read', 'glob', 'grep', 'todo_write', 'ask_user_question', 'list_agents', 'wait_agent']) {
+    assertAllowed(await decide(listener, name, LEAD, { timeout_ms: 30000 }), name);
+  }
+});
+
+// ------------------------------------------------ 项目经理模式行 ---
+
+test('项目经理模式：三条层级门禁同样接上（特化版与指挥官模式一致）', async () => {
+  const { listener } = boot(applyProjectManager);
+  await flush();
+
+  // Lead（项目经理）改任务板进展 / 工单推进状态 / 直接派子智能体 → 全部被拒。
+  for (const action of ['claim', 'complete', 'reopen', 'set_dependencies']) {
+    assertDenied(await decide(listener, 'team_task_update', LEAD, { action }), `项目经理的 ${action}`);
+  }
+  assertDenied(await decide(listener, 'commander_ticket_update', LEAD, { status: 'progress' }), '项目经理报 progress');
+  assertDenied(await decide(listener, 'subagent_architect', LEAD, { task: 'x' }), '项目经理直调 subagent_architect');
+
+  // reassign / 读板 / 终态工单 / Team 通道 → 放行。
+  assertAllowed(await decide(listener, 'team_task_update', LEAD, { action: 'reassign' }), 'reassign');
+  assertAllowed(await decide(listener, 'commander_ticket_update', LEAD, { status: 'done' }), '工单 done');
+  assertAllowed(await decide(listener, 'spawn_teammate', LEAD, {}), 'spawn_teammate');
+
+  // 专家小组长（teammate）自己改任务板、派下级子智能体 → 放行。
+  for (const [name, args] of [
+    ['team_task_update', { action: 'complete' }],
+    ['subagent_architect', { task: '下级子任务' }],
+  ]) {
+    assertAllowed(await decide(listener, name, TEAMMATE, args), `专家小组长的 ${name}`);
+  }
+});
+
+test('项目经理模式：delegationHierarchy:false 时层级门禁全部放行', async () => {
+  const { listener } = boot(applyProjectManager, { options: { delegationHierarchy: false } });
+  await flush();
+
+  for (const [name, args] of [
+    ['team_task_update', { action: 'complete' }],
+    ['commander_ticket_update', { status: 'progress' }],
+    ['subagent_architect', { task: 'x' }],
+  ]) {
+    assertAllowed(await decide(listener, name, LEAD, args), `关闭层级门禁后项目经理的 ${name}`);
+  }
+  // 执行边界仍在：项目经理不自己写文件。
+  assertDenied(await decide(listener, 'write', LEAD, {}), '项目经理的 write');
+});

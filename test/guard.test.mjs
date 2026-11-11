@@ -155,13 +155,24 @@ test('派发工具清单覆盖智能体团队的九个工具里的派发入口',
 
 test('拒绝理由只点名 agent 真正拥有的派发工具', () => {
   const headless = ['read', 'write', 'edit', 'pwsh', 'subagent', 'send_message', 'workflow', 'todo_write'];
+  // 3.0.0 默认（层级门禁开启）：一次性子智能体通道对指挥官关闭，派发指引落到 Team / 小组长，
+  // 但"只点名它真有的工具"这条仍然成立 —— 它没有 spawn_teammate / team_task_create /
+  // ask_user_question，就不能点名它们。
   const reason = buildDenialReason('write', headless);
-  assert.ok(reason.includes('subagent'), '应当指引到它真有的 subagent');
+  assert.ok(reason.includes('send_message'), '应当指引到它真有的 send_message（交给小组长）');
+  assert.ok(reason.includes('小组长'), '3.0.0 的指引要落到小组长身上');
   assert.ok(!reason.includes('spawn_teammate'), '不得点名它没有的 spawn_teammate');
   assert.ok(!reason.includes('team_task_create'), '不得点名它没有的 team_task_create');
   assert.ok(!reason.includes('ask_user_question'), '不得点名它没有的 ask_user_question');
+  // 3.0.0：也不能教指挥官去调 subagent_*（照做会撞上层级门禁，连吃两次互相矛盾的拒绝）。
+  assert.ok(!reason.includes('subagent_'), '层级门禁开启时不得点名 subagent_* 工具');
   // 没有 ask_user_question 时要退化成"写在正文里问用户"。
   assert.ok(reason.includes('正文'));
+
+  // 显式关掉层级门禁 → 回到 2.x 的 specialist 通道指引（这条语义也要留住覆盖）。
+  const legacy = buildDenialReason('write', headless, { delegationHierarchy: false });
+  assert.ok(legacy.includes('subagent'), '关闭层级门禁后应指引到它真有的 subagent');
+  assert.ok(!legacy.includes('spawn_teammate'), '2.x 语义下同样不得点名它没有的 spawn_teammate');
 });
 
 test('有 Agent Teams 时指引用 Team 工具', () => {
@@ -180,10 +191,19 @@ test('只有 workflow 时指引 workflow', () => {
 });
 
 test('一条派发路径都没有时给逃生口，而不是让模型死磕', () => {
+  // 3.0.0 默认（层级门禁开启）：没有 Team / 小组长通道时，逃生口措辞改成
+  // 「本模式下你没有可用的派活通道（一次性子智能体工具归小组长）」——仍然是不让死磕。
   const reason = buildDenialReason('write', ['read', 'write', 'glob']);
-  assert.ok(reason.includes('没有可用的委派工具'));
-  assert.ok(reason.includes('请用户决定'));
+  assert.ok(reason.includes('没有可用的派活通道'), reason);
+  assert.ok(reason.includes('请用户决定'), reason);
+  assert.ok(reason.includes('小组长'), reason);
   assert.ok(!reason.includes('spawn_teammate'));
+
+  // 显式关掉层级门禁 → 2.x 的逃生口措辞（这条语义也要留住覆盖）。
+  const legacy = buildDenialReason('write', ['read', 'write', 'glob'], { delegationHierarchy: false });
+  assert.ok(legacy.includes('没有可用的委派工具'), legacy);
+  assert.ok(legacy.includes('请用户决定'), legacy);
+  assert.ok(!legacy.includes('spawn_teammate'), legacy);
 });
 
 test('读不到工具视图时按"都有"处理，生成完整指引', () => {
@@ -193,15 +213,30 @@ test('读不到工具视图时按"都有"处理，生成完整指引', () => {
 });
 
 test('evaluatePreExecute 会把工具视图透传给理由生成', () => {
-  const decision = evaluatePreExecute({
+  // 2.x 语义（显式关掉层级门禁）：视图里有 subagent → 理由点名 subagent，且不点名 Team 工具。
+  const legacy = evaluatePreExecute({
+    agent: leadAgent(),
+    name: 'write',
+    canDelegate: true,
+    availableTools: ['read', 'write', 'subagent'],
+    delegationHierarchy: false,
+  });
+  assert.ok(legacy);
+  assert.ok(legacy.reason.includes('subagent'));
+  assert.ok(!legacy.reason.includes('spawn_teammate'));
+
+  // 3.0.0 默认（层级门禁开启）：同一份视图也不再点名 subagent_*；"透传"依然生效 ——
+  // 视图里没有 Team 工具，所以理由不得点名 spawn_teammate（读不到视图时才会按"都有"生成）。
+  const current = evaluatePreExecute({
     agent: leadAgent(),
     name: 'write',
     canDelegate: true,
     availableTools: ['read', 'write', 'subagent'],
   });
-  assert.ok(decision);
-  assert.ok(decision.reason.includes('subagent'));
-  assert.ok(!decision.reason.includes('spawn_teammate'));
+  assert.ok(current);
+  assert.ok(!current.reason.includes('subagent_'), current.reason);
+  assert.ok(!current.reason.includes('spawn_teammate'), '视图里没有 Team 工具，不得点名');
+  assert.ok(current.reason.includes('小组长'), '要落到"交给小组长"这条不依赖工具名的出路');
 });
 
 // ---------------------------------------------------------------- 工具视图 ---
@@ -256,28 +291,71 @@ test('空视图走"未知"分支，也就是照常拦截', () => {
   const decision = evaluatePreExecute({ agent, name: 'pwsh', canDelegate: undefined, availableTools });
   assert.ok(decision, '空视图下 pwsh 必须被拒绝 —— 这正是桌面版曾经漏掉的那一拦');
   assert.equal(decision.kind, 'deny');
-  // 而且理由要按"都有"生成完整指引，不能因为空视图就说"没有可用的委派工具"。
+  // 而且理由要按"都有"生成完整指引，不能因为空视图就落到逃生口。
+  // 逃生口在 3.0.0 有两种措辞：默认（层级开启）是"没有可用的派活通道"，
+  // 显式关掉层级门禁是 2.x 的"没有可用的委派工具" —— 两种都不该出现。
   assert.ok(decision.reason.includes('spawn_teammate'));
+  assert.ok(!decision.reason.includes('没有可用的派活通道'));
   assert.ok(!decision.reason.includes('没有可用的委派工具'));
 });
 
 // ---------------------------------------------------------------- specialist ---
 
-test('只有 specialist 工具时，拒绝理由点名 specialist 工具而不是 Team 工具', () => {
-  // 场景：用户关掉了「智能体团队」、只配置了 specialist 名册。此时 agent 的工具视图里
-  // 有 subagent_architect / subagent_reviewer，没有 spawn_teammate。拒绝理由若还点名
-  // spawn_teammate，模型就会去找一个不存在的工具 —— 0.1.x 在 headless 部署里踩过同一课。
-  const decision = evaluatePreExecute({
+test('只有 specialist 工具时，拒绝理由点名 specialist 工具而不是 Team 工具（2.x 语义）', () => {
+  // 场景：用户关掉了「智能体团队」、只配置了 specialist 名册，并**显式关掉**层级门禁
+  // （2.x 行为）。此时 agent 的工具视图里有 subagent_architect / subagent_reviewer，
+  // 没有 spawn_teammate。拒绝理由若还点名 spawn_teammate，模型就会去找一个不存在的工具
+  // —— 0.1.x 在 headless 部署里踩过同一课。
+  const view = ['read', 'write', 'subagent_architect', 'subagent_reviewer'];
+  const legacy = evaluatePreExecute({
     agent: leadAgent(),
     name: 'write',
     canDelegate: true,
-    availableTools: ['read', 'write', 'subagent_architect', 'subagent_reviewer'],
+    availableTools: view,
+    delegationHierarchy: false,
   });
-  assert.ok(decision);
-  assert.equal(decision.kind, 'deny');
-  assert.ok(decision.reason.includes('subagent_architect'), '要点名它真有的 specialist 工具');
-  assert.ok(decision.reason.includes('subagent_reviewer'));
-  assert.ok(!decision.reason.includes('spawn_teammate'), '不得点名它没有的 Team 工具');
+  assert.ok(legacy);
+  assert.equal(legacy.kind, 'deny');
+  assert.ok(legacy.reason.includes('subagent_architect'), '要点名它真有的 specialist 工具');
+  assert.ok(legacy.reason.includes('subagent_reviewer'));
+  assert.ok(!legacy.reason.includes('spawn_teammate'), '不得点名它没有的 Team 工具');
+
+  // 3.0.0 默认（层级门禁开启）：同一份视图下，一次性子智能体工具归小组长 —— 不点名它们，
+  // 也不能点名它没有的 Team 工具；出路是"交给小组长"。
+  const current = evaluatePreExecute({
+    agent: leadAgent(),
+    name: 'write',
+    canDelegate: true,
+    availableTools: view,
+  });
+  assert.ok(current);
+  assert.equal(current.kind, 'deny');
+  assert.ok(!current.reason.includes('subagent_'), `层级门禁开启时不得点名 subagent_*：${current.reason}`);
+  assert.ok(!current.reason.includes('spawn_teammate'), '不得点名它没有的 Team 工具');
+  assert.ok(current.reason.includes('小组长'), '要给出"交给小组长"的出路');
+});
+
+test('3.0.0 P2 回归：层级门禁开启时 write 的拒因不得教指挥官直调 subagent_*', () => {
+  // W3 修复的 P2：执行边界拒因曾写"用 `subagent_xxx` 把这一步派给对应的 specialist"，
+  // 与层级门禁（指挥官不直调子智能体）**互相矛盾** —— 模型照做会立刻被
+  // `evaluateSpecialistDispatch()` 拒绝，连吃两次互相矛盾的纠正指令、白烧一轮。
+  //
+  // 这条是回归保护：拒因必须给 Team 通道（spawn_teammate / send_message / 小组长），
+  // 且绝不能出现 `subagent_`。只有显式关掉层级门禁时才恢复 2.x 的 specialist 指引。
+  const view = [
+    'read', 'write', 'pwsh', 'ask_user_question',
+    'spawn_teammate', 'send_message', 'team_task_create',
+    'subagent_architect', 'subagent_reviewer',
+  ];
+  const reason = buildDenialReason('write', view);
+  assert.ok(!reason.includes('subagent_'), `拒因不得点名 subagent_*：${reason}`);
+  assert.ok(reason.includes('spawn_teammate'), `拒因必须给 Team 通道：${reason}`);
+  assert.ok(reason.includes('send_message'), `拒因必须给 Team 通道：${reason}`);
+  assert.ok(reason.includes('小组长'), `拒因必须落到小组长：${reason}`);
+  assert.ok(reason.includes('一次性子智能体工具由小组长使用'), `要明确那条通道不是给指挥官的：${reason}`);
+
+  const legacy = buildDenialReason('write', view, { delegationHierarchy: false });
+  assert.ok(legacy.includes('subagent_architect'), `关闭层级门禁后应恢复 2.x 的 specialist 指引：${legacy}`);
 });
 
 test('读不到工具视图时不猜 specialist 工具（不能点名不存在的工具）', () => {

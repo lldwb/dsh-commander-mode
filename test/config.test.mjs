@@ -52,7 +52,9 @@ test('默认配置保持 0.1.x 的行为', () => {
   const config = Config();
   assert.equal(config.confirmPlan, true);
   assert.equal(config.escalateOnConflict, true);
-  assert.equal(config.maxTeammates, 8);
+  // 3.0.0（规则 2）：并行上限取运行时「子智能体」设置（maxActiveSubagents / maxMembers
+  // 都是 16），插件不再自己压低到 8。
+  assert.equal(config.maxTeammates, 16);
   assert.equal(config.registerSkill, true);
   assert.equal(config.maxSpecialists, 20);
   assert.deepEqual(config.blockedTools, [...DEFAULT_BLOCKED_TOOLS]);
@@ -73,7 +75,7 @@ test('specialists 是唯一的 volatile 字段，默认是出厂预置名册', (
     assert.equal(entry.model, '', `${entry.id} 的 model 应为空（继承指挥者）`);
     assert.ok(entry.description.length > 0, `${entry.id} 必须有定位描述`);
   }
-  for (const key of ['maxSpecialists', 'confirmPlan', 'escalateOnConflict', 'maxTeammates', 'blockedTools', 'registerSkill']) {
+  for (const key of ['maxSpecialists', 'confirmPlan', 'escalateOnConflict', 'maxTeammates', 'delegationHierarchy', 'blockedTools', 'registerSkill']) {
     assert.notEqual(Config.dict[key].meta?.volatile, true, `${key} 不该是 volatile`);
   }
 });
@@ -101,22 +103,25 @@ test('maxSpecialists 允许 0（禁用名册），拒绝负数与小数', () => 
   assert.throws(() => Config({ maxSpecialists: 2.5 }));
 });
 
-test('maxTeammates 被限制在 1-12', () => {
+test('maxTeammates 被限制在 1-16', () => {
   // 这个数字会原样写进协议（"建议并行 N 个"）。0 会让协议写出"最多 0 个"，
   // 100 会让模型一次扇出几十个 teammate 把配额烧光。
+  // 3.0.0（规则 2）：上限从 12 抬到 16，与运行时 `subagent.maxActiveSubagents=16` /
+  // `agent-team.maxMembers=16` 对齐——插件不再自己压低并行度。
   assert.equal(Config({ maxTeammates: 1 }).maxTeammates, 1);
-  assert.equal(Config({ maxTeammates: 12 }).maxTeammates, 12);
+  assert.equal(Config({ maxTeammates: 16 }).maxTeammates, 16);
   assert.throws(() => Config({ maxTeammates: 0 }));
-  assert.throws(() => Config({ maxTeammates: 13 }));
+  assert.throws(() => Config({ maxTeammates: 17 }));
 });
 
 test('readMaxTeammates 把 null 当作"未配置"，而不是 0', () => {
   // 手写 patch 里把 `maxTeammates:` 留空会得到 YAML null；`Number(null) === 0` 曾被夹成 1，
-  // 协议于是静默变成"建议并行 1 个"，与 undefined/NaN 回退 4 的行为不一致。
-  assert.equal(readMaxTeammates(null), 8);
-  assert.equal(readMaxTeammates(undefined), 8);
-  assert.equal(readMaxTeammates(Number.NaN), 8);
-  assert.equal(readMaxTeammates({ get: () => null }), 8, 'volatile 引用解引用后是 null 也要回退');
+  // 协议于是静默变成"建议并行 1 个"，与 undefined/NaN 回退默认值的行为不一致。
+  // 3.0.0 起默认值是 16（运行时并行上限）。
+  assert.equal(readMaxTeammates(null), 16);
+  assert.equal(readMaxTeammates(undefined), 16);
+  assert.equal(readMaxTeammates(Number.NaN), 16);
+  assert.equal(readMaxTeammates({ get: () => null }), 16, 'volatile 引用解引用后是 null 也要回退');
 });
 
 test('blockedTools 的默认值必须与 guard 的默认拦截清单一致', () => {
@@ -275,19 +280,21 @@ test('readBlockedTools 的空数组表示"只留协议约束"', () => {
   assert.deepEqual(readBlockedTools([]), { tools: [], warning: undefined });
 });
 
-test('readMaxTeammates 夹到 1-12 并四舍五入', () => {
+test('readMaxTeammates 夹到 1-16 并四舍五入', () => {
   // 这个值会写进 prompt 的并行建议。0 / Infinity / NaN 都会让协议给出无法执行的
-  // 建议（"最多 0 个"或"不限量"）。
-  assert.equal(readMaxTeammates(undefined), 8);
+  // 建议（"最多 0 个"或"不限量"）。3.0.0：默认与上限都是 16（运行时并行上限）。
+  assert.equal(readMaxTeammates(undefined), 16);
   assert.equal(readMaxTeammates({ get: () => 9 }), 9, 'volatile 引用要解引用');
   assert.equal(readMaxTeammates('7'), 7, '数字字符串来自 YAML 时是合法输入');
   assert.equal(readMaxTeammates(3.5), 4);
   assert.equal(readMaxTeammates(3.4), 3);
-  assert.equal(readMaxTeammates(13), 12);
+  assert.equal(readMaxTeammates(13), 13, '13 在 1-16 内，不该再被压到 12');
+  assert.equal(readMaxTeammates(16), 16);
+  assert.equal(readMaxTeammates(17), 16);
   assert.equal(readMaxTeammates(0), 1);
   assert.equal(readMaxTeammates(-5), 1);
-  assert.equal(readMaxTeammates(Number.NaN), 8);
-  assert.equal(readMaxTeammates({}), 8);
+  assert.equal(readMaxTeammates(Number.NaN), 16);
+  assert.equal(readMaxTeammates({}), 16);
 });
 
 // ---------------------------------------------------------------- 解析 ---
@@ -301,7 +308,9 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       escalateOnConflict: true,
       registerSkill: true,
       syncGuard: true,
-      maxTeammates: 8,
+      maxTeammates: 16,
+      // 3.0.0：三层指挥链门禁（只有小组长改进度/排期、指挥官不直调子智能体）默认开启。
+      delegationHierarchy: true,
       blockedTools: [...DEFAULT_BLOCKED_TOOLS],
       maxSpecialists: 20,
       ledger: true,
@@ -312,7 +321,7 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       requireTeamTask: true,
       requireTeamTaskMarker: false,
       asyncDelegation: true,
-      maxAsyncTasks: 8,
+      maxAsyncTasks: 16,
       workerSessions: true,
       workRoot: '',
       maxWorkers: 6,
@@ -365,6 +374,7 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     registerSkill: { get: () => false },
     syncGuard: { get: () => false },
     maxTeammates: { get: () => 9 },
+    delegationHierarchy: { get: () => false },
     blockedTools: { get: () => ['read'] },
     maxSpecialists: { get: () => 3 },
   });
@@ -374,6 +384,7 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     registerSkill: false,
     syncGuard: false,
     maxTeammates: 9,
+    delegationHierarchy: false,
     blockedTools: ['read'],
     maxSpecialists: 3,
     ledger: true,
@@ -384,7 +395,7 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     requireTeamTask: true,
     requireTeamTaskMarker: false,
     asyncDelegation: true,
-    maxAsyncTasks: 8,
+    maxAsyncTasks: 16,
     workerSessions: true,
     workRoot: '',
     maxWorkers: 6,
@@ -415,7 +426,8 @@ test('0.6.0 默认：账本与计划授权/工单门禁默认开启', () => {
   assert.equal(config.requireMandate, true);
   assert.equal(config.requireTicket, true);
   assert.equal(config.asyncDelegation, true);
-  assert.equal(config.maxAsyncTasks, 8);
+  // 3.0.0：8 → 16（规则 2，与运行时并行上限对齐）。
+  assert.equal(config.maxAsyncTasks, 16);
   assert.equal(config.stateDir, '');
   assert.equal(config.ticketStallMs, 10 * 60 * 1000);
   assert.equal(config.maxTickets, 100);
@@ -455,16 +467,43 @@ test('0.6.0 已知键包含新配置，未知键警告仍列出完整清单', ()
   assert.match(warnings[0], /requireMandate/u);
 });
 
-test('0.7.0 异步配置：默认开、可关、上限夹到 1–12', () => {
+test('0.7.0 异步配置：默认开、可关、上限夹到 1–16', () => {
   const config = Config();
   assert.equal(config.asyncDelegation, true);
-  assert.equal(config.maxAsyncTasks, 8);
+  // 3.0.0：8 → 16（规则 2）。
+  assert.equal(config.maxAsyncTasks, 16);
   const disabled = resolveConfig({ asyncDelegation: false }).options;
   assert.equal(disabled.asyncDelegation, false);
-  assert.equal(resolveConfig({ maxAsyncTasks: 0 }).options.maxAsyncTasks, 8, '非正数回退默认');
-  assert.equal(resolveConfig({ maxAsyncTasks: 99 }).options.maxAsyncTasks, 99, '读取器不夹上限，schema 负责 1–12');
+  assert.equal(resolveConfig({ maxAsyncTasks: 0 }).options.maxAsyncTasks, 16, '非正数回退默认');
+  assert.equal(resolveConfig({ maxAsyncTasks: 99 }).options.maxAsyncTasks, 99, '读取器不夹上限，schema 负责 1–16');
   assert.ok(KNOWN_CONFIG_KEYS.includes('asyncDelegation'));
   assert.ok(KNOWN_CONFIG_KEYS.includes('maxAsyncTasks'));
+});
+
+// ------------------------------------------------ 3.0.0 三层指挥链配置 ---
+
+test('3.0.0：maxTeammates / maxAsyncTasks 的 schema 上限都是 16（规则 2）', () => {
+  // 用户 2026-11-11 规则 2：并行上限取运行时「子智能体」设置
+  // （`subagent.maxActiveSubagents=16`、`agent-team.maxMembers=16`），插件不再自己压低。
+  // schema 的上限与默认值必须一起改：只改默认值会让用户写 16 被 schema 拒；
+  // 只改上限不改默认值则等于没放开。
+  for (const key of ['maxTeammates', 'maxAsyncTasks']) {
+    assert.equal(Config.dict[key].meta.default, 16, `${key} 默认值应为 16`);
+    assert.equal(Config.dict[key].meta.max, 16, `${key} 上限应为 16`);
+  }
+});
+
+test('3.0.0：delegationHierarchy 默认 true，可显式关掉（回退 2.x 行为）', () => {
+  // 三条层级门禁（任务板写入 / 工单推进状态 / 子智能体派发）默认开启；关掉后只留协议约束。
+  // 默认值必须是 true：这是 3.0.0 的破坏性变更本身，默认关掉等于规则 4 没落地。
+  assert.equal(Config().delegationHierarchy, true);
+  assert.equal(Config.dict.delegationHierarchy.meta.default, true);
+  assert.equal(Config({ delegationHierarchy: false }).delegationHierarchy, false);
+  assert.equal(resolveConfig({}).options.delegationHierarchy, true);
+  assert.equal(resolveConfig({ delegationHierarchy: false }).options.delegationHierarchy, false);
+  // 非布尔值按默认处理（YAML 字符串 "false" 不能当关掉——那会让用户以为关掉了）。
+  assert.equal(resolveConfig({ delegationHierarchy: 'false' }).options.delegationHierarchy, true);
+  assert.ok(KNOWN_CONFIG_KEYS.includes('delegationHierarchy'), 'KNOWN_CONFIG_KEYS 缺少 delegationHierarchy');
 });
 
 test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限读取', () => {

@@ -63,13 +63,16 @@ function recordingLogger() {
  */
 function fakeSubagents(options = {}) {
   const settlement = options.settlement ?? { output: [{ type: 'text', text: '子代理答复' }], stopReason: 'completed' };
-  // 用 hasOwn 区分"没传"（默认透传 depth）与"显式传 undefined"（服务读不到上限）。
+  // 用 hasOwn 区分"没传"（默认按运行时口径给 2）与"显式传 undefined"（服务读不到上限）。
   const hasResolvedMaxDepth = Object.hasOwn(options, 'resolvedMaxDepth');
+  // 3.0.0（规则 2）：递归深度策略交给运行时「子智能体」设置（`subagent.maxDepth`，默认 2），
+  // 插件调用 `resolveMaxDepth()` 时**不传参数**。记录实参个数与值，测试据此断言无参调用。
   const calls = { activations: [], resolveMaxDepth: [] };
   const service = {
-    resolveMaxDepth(depth) {
-      calls.resolveMaxDepth.push(depth);
-      return hasResolvedMaxDepth ? options.resolvedMaxDepth : depth;
+    resolveMaxDepth(...args) {
+      calls.resolveMaxDepth.push({ argCount: args.length, value: args[0] });
+      if (hasResolvedMaxDepth) return options.resolvedMaxDepth;
+      return 2;
     },
     async startActivation(request) {
       calls.activations.push(request);
@@ -704,7 +707,14 @@ test('execute 的 activation 契约完整且正确', () => {
       maxTokens: 4096,
     });
     assert.equal(activation.request.maxDepth, 2);
-    assert.deepEqual(calls.resolveMaxDepth, [1], '递归预算从 1 开始问');
+    // 3.0.0（规则 2）：插件不再自己把递归预算压成 1，而是**无参**问运行时
+    // （`subagents.resolveMaxDepth()` → 取 profile 的 `subagent.maxDepth`，默认 2）。
+    // 传参数（旧的 `resolveMaxDepth(1)`）会让小组长派不出下级子智能体。
+    assert.deepEqual(
+      calls.resolveMaxDepth,
+      [{ argCount: 0, value: undefined }],
+      '递归预算必须无参调用 resolveMaxDepth()，把深度策略交给运行时',
+    );
     // label 是派活摘要；省略时用职责描述。
     assert.equal(activation.label, '负责系统架构与拆分');
     // 返回值必须覆盖 renderSettlement 的占位 childId，并与 output schema 的字段完全一致。
