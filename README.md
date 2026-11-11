@@ -609,6 +609,10 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 拒绝，一次性 specialist 由小组长自己调用（`workflow` 不在拦截范围）。两条通道可混用；
 同一批文件不要同时交给两条通道。名册为空时协议里不会出现 specialist 相关文字。
 
+**没有「智能体团队」的部署会自动降级**：一次性子智能体成为指挥官**唯一**的派活通道
+（门禁同步降级放行），协议里会显式写明"本部署没有 Team 工具、小组长这一层建不起来"——
+**不是静默降级**，见「3.4.0：门禁交叉冲突排查与降级放行」一节。
+
 ### 派活前必须做「定位匹配」
 
 每个执行者都有**固定定位**：小组长的定位写在它的 `description` 与 `prompt` 里；它派出的
@@ -874,6 +878,70 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 **重启即可**（门禁与看门狗都在启动时装配），**不需要改任何配置**。若之前被这个死锁卡过：
 重启后 Team 通道会自愈（缺投影时插件自动补建）；投影失败现在会以 warn 级带错误码出现在日志里。
 
+## 3.4.0：门禁交叉冲突排查与降级放行
+
+用户要求「再检查一下是否还有类似的问题，这种逻辑冲突可能之前在单独开发时没有注意到，
+但是完成后可能会相互冲突」。3.4.0 对**门禁 × 门禁、门禁 × 部署能力、门禁 × 配置**做了
+系统交叉审计：同类问题（"门禁假设了一个可能不存在的能力"）共 **6 处**——3.3.0 修了 1 处，
+3.4.0 修了 **5 处**（最初审计发现 3 处，收尾复核又发现 2 处）。
+
+### 六条冲突（冲突 → 后果 → 修复）
+
+1. **派发门禁 D-1 要求任务板投影 ↔ 层级门禁禁止指挥官改工单状态**（投影只能由状态更新触发）
+   → Team 通道永久不可用 → **3.3.0 已修**（缺投影时插件自愈补建，见上一节）。
+2. **一次性子智能体派发被层级门禁拦 ↔ 该部署没有 Team 工具**（`spawn_teammate` /
+   `send_message` 都不在）→ 指挥官既不能自己动手、也不能派活 → **模式死锁**
+   → **3.4.0 修**：`evaluateSpecialistDispatch()` 在没有 Team 通道时**降级放行**。
+3. **Mandate 门禁要求"用户确认的计划" ↔ 授权只能由 `ask_user_question` 记录，而该部署
+   没有这个工具** → 永远拿不到授权 → 所有派发被永久拒绝 → **3.4.0 修**：
+   `availableTools` 不含 `ask_user_question` 时**跳过授权门禁**（协议仍要求先把计划讲给用户）。
+   **同一类冲突的配置形态**：`confirmPlan: false` 关掉"规划后确认"后，协议不再让模型调用
+   `ask_user_question`，授权同样永远记录不到 → `resolveConfig` 检测到
+   `confirmPlan: false` 且 `requireMandate: true` 时**自动把 `requireMandate` 视为 false**
+   并给一条 warning（两者是同一个决策的两面）。
+4. **协议文本写"派活只用 Team" ↔ 该部署没有 Team 工具** → 模型去调不存在的工具
+   （0.1.x 踩过的坑）→ **3.4.0 修**：`renderCommanderSection()` 新增 `hasTeamTools`；
+   `false` 时渲染**降级通道段** + 顶部**显式覆盖**；`renderModeOpening()` 收尾句同步；
+   项目经理协议追加覆盖段。
+5. **`teamTaskProjection: false` ↔ `requireTeamTask: true`（配置层同冲突）** → 关掉投影后
+   工单不会出现在任务板上，而 D-1 要求 `spawn_teammate` 前工单已有投影 → **Team 通道永远
+   派不出去**（与 `def6609d` 同形状）→ **3.4.0 修**：`resolveConfig` 在
+   `teamTaskProjection === false && requireTeamTask === true` 时**自动把 `requireTeamTask`
+   视为 false** 并 warning；同时 `lib/ticket-tools.js` 现在**真的尊重** `teamTaskProjection`
+   （关掉时工单工具不再投影——此前只有 `syncTicketMirror` 尊重它，配置与行为不一致）。
+6. **`blockedTools` 把派发工具全禁掉 ↔ 执行边界仍拦 `write`（死锁）** → `canDelegate` 原来
+   只看工具视图有没有派发工具、**不看 `blockedTools`**：用户把 `spawn_teammate` /
+   `send_message` 写进 `blockedTools` 后，会得出"能派活"的假结论 → 执行边界继续拦 `write`，
+   而真正能调用的派发工具全被禁 → 既不能动手也不能派活 → **3.4.0 修**：`lib/guard.js` 新增
+   `hasUsableDispatchChannel({ availableTools, blocked, delegationHierarchy })`——按"**真的
+   能调用**"算派活通道：Team（未被 block）→ `workflow`（未被 block）→ 一次性子智能体
+   （仅在层级门禁关闭或本部署无 Team 时算，且未被 block）；`agent.js` 与根
+   `project-manager.js` 的执行边界都改用它。
+
+### 降级判据（宁严不漏）
+
+降级判据是"**工具视图可读、且确实没有那个能力**"：
+
+- `availableTools` 是数组 → 按实际内容判定（没有 Team 工具 / 没有 `ask_user_question`
+  才降级；"能派活"还要再按 `blockedTools` 过滤，见第 6 条）；
+- **视图读不到（`undefined`）→ 按"有"处理**：保持原门禁，宁可漏拦也不因为读不到而放宽。
+
+### 确认"不是问题"的四处
+
+- **执行边界门禁的 `canDelegate === false` 逃生门**与降级放行方向一致：没有**真正可用**的
+  派发通道时允许指挥官自己动手，避免死锁；
+- **Worker Session 复用 `standard` preset、工具集被限制**（无 `team_task_*` / `wait_agent` /
+  `subagent_*`），所以"worker 被当成 Lead"不会触发门禁误拦；
+- **`ledger:false` / `asyncDelegation:false` / `workerSessions:false`** 时，协议里对应小节
+  本来就条件渲染，不存在"教模型调不存在的工具"；
+- **工单结束 / 授权变更 / 容量上限**等门禁彼此不矛盾（有测试覆盖）。
+
+### 用户要做什么
+
+**重启即可**（协议文本与门禁在启动时装配），**不需要改任何配置**。没有「智能体团队」的
+部署会自动改走一次性子智能体；没有 `ask_user_question` 的部署不再被授权门禁卡死；
+关掉投影或误禁派发工具的配置也会被自动纠正（并给 warning），不会死锁。
+
 ## 配置
 
 配置挂在**顶层行 `commander-mode`**（`dsh-commander-mode/host`）上，
@@ -881,19 +949,19 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认" |
+| `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认"。3.4.0：设成 `false` 时 `requireMandate` 会被自动视为 `false`（否则授权永远记录不到，派发全被拒） |
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
 | `maxTeammates` | `16` | 写进协议的建议并行子代理上限（1–16）。3.0.0：8 → 16，与运行时 `subagent.maxActiveSubagents` / `agent-team.maxMembers` 一致；插件不再自己压低 |
 | `delegationHierarchy` | `true` | 3.0.0：三层指挥链的三条确定性门禁（任务板写入 / 工单推进状态 / 子智能体派发）；`false` = 只留协议（2.x 行为） |
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
-| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
+| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束。⚠️ 别把**唯一的派发通道**一起禁掉（`spawn_teammate` / `send_message` / `workflow` 等）；即使禁掉也不会死锁——3.4.0 起"能派活"按真的能调用计算，没有可用通道时执行边界会放行你自己动手 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
 | `ledger` | `true` | 工单账本（`commander_ticket_*` + 看板 + 计划授权门禁）；关掉退化为 0.5.0 行为 |
 | `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
-| `requireMandate` | `true` | 派发新工作前必须有用户确认的计划授权（`commander-plan`） |
+| `requireMandate` | `true` | 派发新工作前必须有用户确认的计划授权（`commander-plan`）。3.4.0：`confirmPlan: false` 时自动视为 `false`；没有 `ask_user_question` 的部署门禁也会跳过 |
 | `requireTicket` | `true` | 每次派发必须带工单（specialist 的 `ticket` 参数 / Team 的 `[ticket:t-N]`） |
-| `teamTaskProjection` | `true` | 1.2.0：工单自动投影到 Agent Teams 共享任务板（B）；没有团队服务时自动 no-op |
-| `requireTeamTask` | `true` | 1.2.0：Team 通道派发要求工单有有效投影（D-1）；没有团队服务时自动跳过 |
+| `teamTaskProjection` | `true` | 1.2.0：工单自动投影到 Agent Teams 共享任务板（B）；没有团队服务时自动 no-op。3.4.0：设为 `false` 时 `requireTeamTask` 自动视为 `false`（否则 Team 通道永远派不出去），且工单工具真的不再投影 |
+| `requireTeamTask` | `true` | 1.2.0：Team 通道派发要求工单有有效投影（D-1）；没有团队服务时自动跳过。3.4.0：`teamTaskProjection: false` 时自动视为 `false` |
 | `requireTeamTaskMarker` | `false` | 1.2.0：Team 通道派发要求 prompt 带 `[task:task-N]` 且与投影一致（D-2） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
 | `maxAsyncTasks` | `16` | 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16，与运行时并行上限对齐 |
@@ -1083,6 +1151,33 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   idle"（定时扫描，`ticketStallMs` 阈值）。两者互不替代：会话 `def6609d` 的现场属于后者，
   当时只有前者，所以指挥者永远等不到唤醒。
 
+- **没有「智能体团队」的部署：一次性子智能体是唯一通道（3.4.0）。** 这时 `evaluateSpecialistDispatch()`
+  **降级放行**指挥官直调 `subagent_<id>` / `subagent` / `subagent_fork`（否则"不能自己动手
+  也不能派活"就是死锁）；协议也**显式覆盖**成"本部署没有 Team 工具、小组长建不起来，改走
+  一次性子智能体"，不是静默降级。
+- **没有 `ask_user_question` 的部署：计划授权门禁自动跳过（3.4.0）。** Mandate 只能由
+  `ask_user_question` 的确认结果记录，没有它时授权永远拿不到，若仍拒绝派发整个模式会死锁；
+  所以门禁跳过（协议仍要求先把计划讲给用户）。
+- **降级判据是"工具视图可读且确实没有"（3.4.0）。** 两条降级都只在 `availableTools` 是数组、
+  且确实不含对应工具时生效；**视图读不到（`undefined`）时按"有"处理**——保持原门禁，
+  宁可漏拦也不因为读不到而放宽。
+
+- **`confirmPlan: false` 会自动关掉计划授权门禁（3.4.0）。** 关掉"规划后确认"后，协议不再
+  让模型调用 `ask_user_question`，Mandate 永远记录不到 → 若仍要求授权，所有派发会被永久
+  拒绝。所以 `resolveConfig` 检测到 `confirmPlan: false` 且 `requireMandate: true` 时自动把
+  `requireMandate` 视为 false，并给一条 warning（想显式表达就两个都写成 `false`，不会告警）。
+
+- **`teamTaskProjection: false` 会自动关掉 D-1 的投影要求（3.4.0）。** 关掉投影后工单不会
+  出现在任务板上，而 D-1 要求"派发前已有投影"→ Team 通道永远派不出去。所以 `resolveConfig`
+  在 `teamTaskProjection: false` 且 `requireTeamTask: true` 时自动把 `requireTeamTask` 视为
+  false 并 warning；同时工单工具**真的尊重**这个开关（关掉时不再投影，此前只有
+  `syncTicketMirror` 尊重它，配置与行为不一致）。
+- **"能派活"的判据是"真的能调用"，不是"视图里有"（3.4.0）。** 执行边界的 `canDelegate` 由
+  `hasUsableDispatchChannel()` 计算：Team / `workflow` / 一次性子智能体都要**没被
+  `blockedTools` 禁掉**才算数（一次性子智能体还要求层级门禁关闭或本部署无 Team）。
+  所以把 `spawn_teammate` / `send_message` 写进 `blockedTools` 不会造成死锁——门禁会判定
+  "没有可用派活通道"，从而放行你自己动手；读不到工具视图时按"有"处理（宁严不漏）。
+
 ## 运维：外部巡检（0.9.0）
 
 账本是文件，所以可以在**指挥者进程之外**巡检——这是 Super-agent "外部 Watchdog" 的最小可用
@@ -1236,6 +1331,42 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **3.4.0 第二十二轮（门禁交叉冲突排查 + 降级放行）**：
+  - **冲突矩阵**（四种工具视图 × 派发 / 执行边界 / 一次性派发 / `wait_agent` / 协议文本；
+    真实模块、非 mock 手动验证）：
+    - `evaluateSpecialistDispatch`：**有** Team 工具 → **DENY**；**没有** Team 工具 →
+      **ALLOW**（降级放行）；视图 `undefined` → **DENY**（宁严不漏）。
+    - `evaluateDispatchGate`（无有效授权）：**有** `ask_user_question` → **DENY**（要求先确认
+      计划）；**没有** → **ALLOW**（跳过授权门禁）；视图 `undefined` → **DENY**。
+    - `renderCommanderSection({ hasTeamTools: false })`：含顶部显式覆盖「本部署没有智能体团队」
+      与降级通道段（"一次性子智能体就是**唯一**的派活通道"）；`hasTeamTools: true` 时**不含**
+      降级段、仍渲染「通道 B」。
+    - `renderModeOpening({ hasTeamTools: false })`：收尾句改成"用一次性子智能体派活"，
+      不再教模型去 `spawn_teammate`。
+    - **执行边界门禁的 `canDelegate === false` 逃生门**方向一致（源码审阅 + 既有用例）：
+      没有派发通道时允许指挥官自己动手，避免死锁。
+    - **配置层同冲突（`teamTaskProjection`）**：`resolveConfig({ teamTaskProjection: false })`
+      → `requireTeamTask` 自动变 `false` 且给一条 warning；两者都 `false` → 无 warning；
+      默认（都 `true`）→ 均不变、无 warning。工单工具实测（fake ledger + 计数 bridge）：
+      `teamTaskProjection: false` → bridge **调用 0 次**、`teamTaskId` 为 `null`；
+      `true` → 调用 1 次并 `attachTeamTask`。
+    - **`hasUsableDispatchChannel` 八种组合**：①Team 可用 → `true`；②Team 被 block 但
+      `workflow` 在 → `true`；③Team 被 block、无 workflow、无 specialist → `false`；
+      ④Team 被 block + specialist 在、层级门禁开（specialist 不可用）→ `false`；⑤同上但
+      层级门禁关 → `true`；⑥无 Team 工具 + specialist（降级）→ `true`；⑦全部被 block →
+      `false`；⑧视图读不到（`undefined`）→ `undefined`（按"有"处理）。
+  - **反向断言**：有 Team 时**仍然拦**一次性子智能体派发（加降级不能把原门禁放松）；
+    有 `ask_user_question` 时**仍然要求**计划授权（同理）。
+  - **`node --test "test/**/*.test.mjs"`** → **657 / 657 通过、0 失败**（3.4.0 契约同步后：
+    `guard-hierarchy` 新增「无 Team 通道降级放行 / 有 Team 仍然拦 / 只影响 Lead」+「可用派活
+    通道判定」（Team 被 block 但 `workflow` 在 → 仍算能派活、无任何通道 → false 等）；
+    `dispatch-gate` 新增「无 ask_user_question 放行 / 降级不是跳过所有校验 / 视图读不到仍拒」；
+    `protocol` 新增「hasTeamTools:false + 名册 → 一次性子智能体是唯一通道 / 无名册 → 逃生段 /
+    顶部覆盖在绝对边界之前 / renderModeOpening 收尾句」；`config` 新增「confirmPlan:false
+    自动关掉 requireMandate / teamTaskProjection:false 自动关掉 requireTeamTask（均告警，
+    显式两者 false 不告警）」；`ticket-tools` 新增「teamTaskProjection:false 时工单工具真的
+    不投影（配置与行为一致）」；`project-manager` 新增「无 Team 时 PM 协议追加覆盖段」；
+    `plugin` 新增接线层「没有 Team 工具的 Lead 调 `subagent_*` 降级放行 / 有 Team 时仍拒」）。
 - **3.3.0 第二十一轮（门禁死锁修复 + Worker 停滞看门狗）**：
   - **根因用运行时源码确认**：从桌面版 `app.asar` 里读出 `writeScope()` 的实现——`\` 换 `/`、
     去掉前导 `./` 与尾随 `/` 后，若以 `/` 开头、`^[a-z]:` 盘符开头、或含空段 / `.` / `..`
@@ -1674,6 +1805,26 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **3.4.0** —— 门禁**交叉冲突**排查与降级放行（用户要求「再检查一下是否还有类似的问题，
+  这种逻辑冲突可能之前在单独开发时没有注意到，但是完成后可能会相互冲突」）：
+  ① **现象**：每条门禁单独看都正确，组合起来会互相堵死。3.3.0 修了 1 处（D-1 投影 ↔ 层级
+  门禁），这次对"门禁 × 门禁、门禁 × 部署能力、门禁 × 配置"做系统审计，找到 **5 处同类问题**
+  （"门禁假设了一个可能不存在的能力"）——最初审计 3 处，收尾复核又发现 2 处（配置层投影
+  联动、`blockedTools` 误禁派发工具）。
+  ② **修复**：**没有 Team 工具**的部署里，`evaluateSpecialistDispatch()` **降级放行**一次性
+  子智能体（否则"不能自己动手也不能派活"= 死锁）；**没有 `ask_user_question`** 的部署里，
+  派发门禁**跳过计划授权**（授权只能由该工具记录，否则永远拿不到）；协议新增
+  `hasTeamTools`——`false` 时渲染**降级通道段 + 顶部显式覆盖**，`renderModeOpening()` 收尾句
+  与项目经理协议同步覆盖（不再教模型调不存在的工具）。**配置层**：`teamTaskProjection: false`
+  时自动把 `requireTeamTask` 视为 false（且工单工具真的不再投影）、`confirmPlan: false` 时
+  自动把 `requireMandate` 视为 false（都带 warning）。**执行边界**：新增
+  `hasUsableDispatchChannel()`，按"**真的能调用**"（再过滤 `blockedTools`、考虑层级门禁）
+  判定有没有派活通道——误禁派发工具时不会死锁。所有降级判据都是"工具视图可读且确实没有"，
+  **视图读不到时按"有"处理**（宁严不漏）。
+  ③ **确认不是问题的四处**：执行边界的 `canDelegate` 逃生门、Worker 复用 `standard` preset
+  且工具受限、`ledger/asyncDelegation/workerSessions:false` 的条件渲染、工单结束/授权变更/
+  容量上限之间的判定。
+  **用户要做什么**：重启即可（协议文本与门禁在启动时装配），**不需要改任何配置**。
 - **3.3.0** —— 修 `session-def6609d` 的**门禁死锁 + 静默挂死**（用户报告"最后卡死"）：
   ① **现象**：会话最后静默挂死；模型自己在会话里写下"门禁自相矛盾形成死锁"。
   ② **根因（六步）**：工单 `scope` 是 Windows 绝对路径 → 投影器原样塞进任务板
