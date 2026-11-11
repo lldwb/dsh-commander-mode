@@ -7,6 +7,11 @@
  * 而是用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条**带门禁的
  * 六段流水线**：每段有输入、产出、验收判据与返工规则，未通过不许进入下一段。
  *
+ * 3.0.0 起这六位是**专家小组长**（`spawn_teammate` 建出的 L1 队友）：每段由项目经理
+ * 建一位小组长并 `send_message` 派单，小组长可以自己执行，也可以把子任务交给下级
+ * 子智能体（`subagent_<id>`）。团队模型正文来自 `lib/team-model.js` 的 `TEAM_MODEL`，
+ * 与指挥官协议共用同一份（项目经理模式 = 指挥官模式的特化版）。
+ *
  * 与「指挥者模式」的区别：指挥者模式解决「谁来做」（不自己动手、把活派出去）；
  * 项目经理模式解决「按什么顺序做、每段怎么验收」（流水线 + 阶段门禁 + 技能方法）。
  *
@@ -15,7 +20,8 @@
  * 本行**不是**另起一套模式，而是派生出来的：
  *
  * - **继承指挥者模式**：能力行清单（`cordis.patch.yml` 的 CAPABILITIES 块，逐字节一致）、
- *   专家名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）、
+ *   专家名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务；3.0.0 起这些工具
+ *   由**专家小组长**调用，项目经理不直接调）、
  *   `tools/pre-execute` 执行门禁（复用 `lib/guard.js`）、等待门禁
  *   （`evaluateWaitCap()`）、五条工作纪律（`lib/discipline.js` 单一真源）、
  *   异步派工与「【项目经理·派工完成】」唤醒语义。
@@ -32,9 +38,11 @@
  * 2. **六个专家工具** `subagent_<id>`：复用 `lib/specialists.js` 的 `installSpecialist`，
  *    名册来自 `commanderSettings`（与指挥者模式共用同一份），服务缺失时用出厂预置名册；
  *    默认异步派发（与指挥者模式一致）——工具立即返回，结算时用「【项目经理·派工完成】」
- *    通知唤醒项目经理。
+ *    通知唤醒**调用它的小组长**（3.0.0 起项目经理不直接调这些工具）。
  * 3. **`tools/pre-execute` 门禁**：① 执行边界（项目经理自己不写业务代码，复用
- *    `lib/guard.js`）；② **等待门禁**（2.0.0：超长 `wait_agent` 确定性拒绝）。
+ *    `lib/guard.js`）；② **层级门禁**（3.0.0：任务板进展/排期与工单推进状态只由小组长写、
+ *    项目经理不直接派子智能体，受 `delegationHierarchy` 控制）；③ **等待门禁**（2.0.0：
+ *    超长 `wait_agent` 确定性拒绝）。
  *
  * 另外把协议注册成 skill（可选，失败不影响模式）。
  *
@@ -59,9 +67,9 @@
 import { randomUUID } from 'node:crypto';
 
 import { resolveConfig } from './lib/config.js';
-import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluatePreExecute, evaluateWaitCap, isDelegatedAgent } from './lib/guard.js';
+import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluateBoardWrite, evaluatePreExecute, evaluateSpecialistDispatch, evaluateTicketWrite, evaluateWaitCap, isDelegatedAgent, isSpecialistDispatchTool } from './lib/guard.js';
 import { DEFAULT_SPECIALISTS } from './lib/presets.js';
-import { PROJECT_MANAGER_PROTOCOL } from './lib/project-manager.js';
+import { PROJECT_MANAGER_PROTOCOL, leaderNameForSpecialist } from './lib/project-manager.js';
 import {
   MAX_RESULT_CHARS,
   buildSpecialistToolDefinition,
@@ -103,6 +111,20 @@ export const SKILL_WHEN_TO_USE = '当一个项目要从架构一路做到文档�
  * 用 `resolveConfig(undefined)` 而不是手抄一份，保证默认值与 schema 一致。
  */
 export const FALLBACK_OPTIONS = Object.freeze(resolveConfig(undefined).options);
+
+/**
+ * 需要走层级门禁判定的工具名（廉价过滤）。
+ *
+ * 三条门禁只关心「任务板写入 / 工单写入 / 子智能体派发」这几类工具。先用名字过滤，
+ * 避免每次工具调用都去读 agent 的工具视图（`agentToolNames`）——那是给拒绝理由用的，
+ * 只有真要拒绝时才需要。
+ *
+ * @param {string} toolName - 工具名。
+ * @returns {boolean} 是否需要跑层级门禁判定。
+ */
+const isHierarchyGatedTool = (toolName) => toolName === 'team_task_update'
+  || toolName === 'commander_ticket_update'
+  || isSpecialistDispatchTool(toolName);
 
 /**
  * 注册项目经理模式行。
@@ -278,10 +300,11 @@ export function apply(ctx) {
         };
 
         /**
-         * 异步派发结算：把专家的最终答复（或失败原因）作为通知送回项目经理。
+         * 异步派发结算：把子智能体的最终答复（或失败原因）作为通知送回**调用该工具的小组长**。
          *
-         * 项目经理模式没有账本，所以这里只做一件事：唤醒 + 给出下一步（核对验收判据 /
-         * 返工 / 继续推进）。不建议、也不允许经理用长 `wait_agent` 等结果。
+         * 3.0.0 起项目经理不直接调 `subagent_<id>`：这些工具是专家小组长用来派下级子智能体的，
+         * 所以通知的收件人是小组长，正文点名它、并给出下一步（按验收判据核对 / 结算任务板 /
+         * 返工）。项目经理自己靠 `send_message` 与任务板掌握进度，不用长 `wait_agent` 等结果。
          *
          * @param {object} info - `installSpecialist` 的异步启动回调参数。
          * @returns {void}
@@ -297,15 +320,16 @@ export function apply(ctx) {
                 }
                 if (text.length > MAX_RESULT_CHARS) text = `${text.slice(0, MAX_RESULT_CHARS)}\n…（已截断，原始 ${text.length} 字符）`;
                 const stopReason = typeof settled?.stopReason === 'string' ? settled.stopReason : 'unknown';
+                const leader = leaderNameForSpecialist(specialistId);
                 steerManager(
                   agent,
                   [
-                    `【项目经理·派工完成】${toolName} 已结算（child ${childId}，专家 ${specialistId}，stopReason ${stopReason}）。`,
+                    `【项目经理·派工完成】小组长 ${leader} 派出的 ${toolName} 已结算（child ${childId}，专家 ${specialistId}，stopReason ${stopReason}）。`,
                     '',
                     text,
                     '',
-                    '下一步：按该段的验收判据核对产物与证据（文件、命令输出、测试结果）；不通过就打回返工（同一问题连续两次换人 / 回架构段），通过再进入下一段。',
-                    '等待其它专家时用 ≤60000ms 的短等待；不要长等，也不要轮询。',
+                    '下一步：按该段的验收判据核对产物与证据（文件、命令输出、测试结果）；通过就把该段任务结算（`team_task_update` `complete`，带 revision）并向项目经理回报结论，不通过就打回返工（同一问题连续两次换人 / 回架构段）。',
+                    '等待其它下级时用 ≤60000ms 的短等待；不要长等，也不要轮询。',
                   ].join('\n'),
                   `派工完成：${toolName}`,
                 );
@@ -315,13 +339,14 @@ export function apply(ctx) {
             },
             (error) => {
               const message = error instanceof Error ? error.message : String(error);
+              const leader = leaderNameForSpecialist(specialistId);
               steerManager(
                 agent,
                 [
-                  `【项目经理·派工完成】${toolName} 异步结算**失败**（child ${childId}，专家 ${specialistId}）。`,
+                  `【项目经理·派工完成】小组长 ${leader} 派出的 ${toolName} 异步结算**失败**（child ${childId}，专家 ${specialistId}）。`,
                   `错误：${message}`,
                   '',
-                  '下一步：先只读核对产物；能继续就补派，需要用户决定就用 `ask_user_question` 上报。不要重复派同一任务。',
+                  '下一步：先只读核对产物；能继续就补派，需要用户决定或跨段取舍就上报项目经理（`send_message`）。不要重复派同一任务。',
                 ].join('\n'),
                 `派工失败：${toolName}`,
               );
@@ -451,7 +476,15 @@ export function apply(ctx) {
                 const canDelegate = availableTools === undefined
                   ? undefined
                   : availableTools.some((name) => DELEGATION_TOOLS.includes(name) || name.startsWith('subagent_'));
-                const decision = evaluatePreExecute({ agent, name: toolName, blocked: blockedSet, canDelegate, availableTools });
+                const decision = evaluatePreExecute({
+                  agent,
+                  name: toolName,
+                  blocked: blockedSet,
+                  canDelegate,
+                  availableTools,
+                  // 3.0.0：层级门禁开启时，执行边界的拒因必须优先给 Team 通道（不能教 Lead 调 subagent_<id>）。
+                  delegationHierarchy: readOptions().delegationHierarchy !== false,
+                });
                 if (decision !== undefined) {
                   ctx.logger?.info?.('project-manager: 拒绝项目经理自己调用 %s（已要求改为派给专家）', toolName);
                   return decision;
@@ -459,7 +492,29 @@ export function apply(ctx) {
               }
             }
 
-            // ② 等待门禁（2.0.0）：超长 wait_agent 确定性拒绝。只拦超长等待，
+            // ② 层级门禁（3.0.0，与指挥者模式共用 lib/guard.js 的同三条判定）：
+            //    任务板进展/排期与工单推进状态只由小组长写；项目经理不直接派子智能体。
+            //    受 `delegationHierarchy` 控制，`false` 时只留协议约束。
+            if (readOptions().delegationHierarchy !== false && isHierarchyGatedTool(toolName)) {
+              const availableTools = agentToolNames(agent);
+              const boardDecision = evaluateBoardWrite({ agent, name: toolName, args: exec?.arguments, availableTools });
+              if (boardDecision !== undefined) {
+                ctx.logger?.info?.('project-manager: 拒绝项目经理改任务板进展（应让 owner 小组长结算）');
+                return boardDecision;
+              }
+              const ticketDecision = evaluateTicketWrite({ agent, name: toolName, args: exec?.arguments, availableTools });
+              if (ticketDecision !== undefined) {
+                ctx.logger?.info?.('project-manager: 拒绝项目经理改工单推进状态（应让 owner 小组长回报）');
+                return ticketDecision;
+              }
+              const dispatchDecision = evaluateSpecialistDispatch({ agent, name: toolName, availableTools });
+              if (dispatchDecision !== undefined) {
+                ctx.logger?.info?.('project-manager: 拒绝项目经理直接派子智能体 %s（应交给小组长）', toolName);
+                return dispatchDecision;
+              }
+            }
+
+            // ③ 等待门禁（2.0.0）：超长 wait_agent 确定性拒绝。只拦超长等待，
             //    list_agents / team_task_list / send_message 这些"读状态 / 唤醒队友"的工具不受影响。
             const waitReason = evaluateWaitCap({
               name: toolName,
@@ -482,5 +537,5 @@ export function apply(ctx) {
     });
   }
 
-  ctx.logger?.info?.('project-manager: 模式行就绪（六段流水线 / 六位专家 / 门禁）');
+  ctx.logger?.info?.('project-manager: 模式行就绪（六段流水线 / 六位专家小组长 / 门禁）');
 }

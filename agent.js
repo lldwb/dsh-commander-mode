@@ -35,6 +35,14 @@
  * waterfall 确定性地拒绝 `write` / `edit` / `pwsh` / `bash` / `job_kill` /
  * `plugin_manager`，拒绝理由就是纠正指令）。
  *
+ * ## 三层指挥链门禁（3.0.0）
+ *
+ * 在同一个 `tools/pre-execute` 上再加三条**只对指挥官**生效的门禁（`delegationHierarchy`
+ * 可关）：`team_task_update` 的 claim/release/complete/reopen/set_dependencies、
+ * `commander_ticket_update` 的六态回报、以及 `subagent_<id>` / `subagent` / `subagent_fork`
+ * —— 它们都属于小组长。拒绝理由按 agent 实际可用的工具生成，读不到身份一律放行。
+ * 判定逻辑在 `lib/guard.js`，这里只负责接线与顺序。
+ *
  * ## 结算同步（0.4.0）
  *
  * 「任务完成了但任务板 / 计划清单 / 团队状态没同步」是长会话里最贵的一种失误：用户看到的
@@ -72,7 +80,18 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { DEFAULT_BLOCKED_TOOLS, DELEGATION_TOOLS, agentToolNames, evaluatePreExecute, evaluateWaitCap, isDelegatedAgent } from './lib/guard.js';
+import {
+  DEFAULT_BLOCKED_TOOLS,
+  DELEGATION_TOOLS,
+  agentToolNames,
+  evaluateBoardWrite,
+  evaluatePreExecute,
+  evaluateSpecialistDispatch,
+  evaluateTicketWrite,
+  evaluateWaitCap,
+  isDelegatedAgent,
+  isSpecialistDispatchTool,
+} from './lib/guard.js';
 import {
   evaluateDispatchGate,
   isNewWorkTool,
@@ -433,7 +452,8 @@ export function apply(ctx) {
       const sessionId = sessionIdOf(agent);
       if (sessionId === undefined) return undefined;
       const limit = Number(readOptions().maxAsyncTasks);
-      const max = Number.isSafeInteger(limit) && limit >= 1 ? limit : 4;
+      // 3.0.0：兜底与 schema 默认一致（16）。2.x 这里是 4 的残留常量。
+      const max = Number.isSafeInteger(limit) && limit >= 1 ? limit : 16;
       if (asyncCount(sessionId) < max) return undefined;
       return [
         `指挥者模式：在飞的一次性派发已达上限（${max} 个）。`,
@@ -1033,11 +1053,59 @@ export function apply(ctx) {
     };
   };
 
+  /**
+   * 这个工具名是否落在 3.0.0 的三层指挥链门禁里。
+   *
+   * 用名字先做一次廉价过滤：绝大多数工具调用不该为了判定去读一次工具视图。
+   *
+   * @param {string} toolName - 工具名。
+   * @returns {boolean} 是否需要跑 `evaluateBoardWrite` / `evaluateTicketWrite` / `evaluateSpecialistDispatch`。
+   */
+  const isHierarchyGatedTool = (toolName) => toolName === 'team_task_update'
+    || toolName === 'commander_ticket_update'
+    || isSpecialistDispatchTool(toolName);
+
   ctx.on('tools/pre-execute', (exec, next) => {
     try {
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
-      // 0.5.0：先记一笔派发通道（Team / 一次性），供"团队闲置"判定使用。
+
+      // 3.0.0 三层指挥链门禁：任务板进展/排期、工单推进状态、子智能体派发都归小组长。
+      // 只对指挥官本人生效（三条门禁内部按 isDelegatedAgent 放行子级），受
+      // `delegationHierarchy` 控制（false = 只留协议约束，回到 2.x 行为）。
+      // ⚠️ 必须在 `observeDelegation` **之前**判定：被拒的 `subagent_*` 尝试不能进入派发
+      // 通道统计，否则看板会把"被门禁拒掉的一次性派发"误报成"派活全走一次性 specialist"。
+      // 三条都排在"记 Assignment"之前，避免"先记账、再拒绝"留下幽灵派发。
+      if (readOptions().delegationHierarchy !== false && isHierarchyGatedTool(toolName)) {
+        const hierarchyAgent = exec?.agent;
+        // 拒绝理由必须按 agent **实际拥有**的工具生成，否则会点名一个它没有的工具。
+        const hierarchyTools = agentToolNames(hierarchyAgent);
+        const hierarchyDecision = evaluateBoardWrite({
+          agent: hierarchyAgent,
+          name: toolName,
+          args: exec?.arguments,
+          availableTools: hierarchyTools,
+        })
+          ?? evaluateTicketWrite({
+            agent: hierarchyAgent,
+            name: toolName,
+            args: exec?.arguments,
+            availableTools: hierarchyTools,
+          })
+          ?? evaluateSpecialistDispatch({
+            agent: hierarchyAgent,
+            name: toolName,
+            availableTools: hierarchyTools,
+          });
+        if (hierarchyDecision !== undefined) {
+          ctx.logger?.info?.('commander-mode: 拒绝指挥官自己写团队进度 / 派子智能体（%s）', toolName);
+          return hierarchyDecision;
+        }
+      }
+
+      // 0.5.0：记一笔派发通道（Team / 一次性），供"团队闲置"判定使用。
+      // 走到这里说明层级门禁已经放行（被拒的尝试在上面 return 了，不计入统计）。
       observeDelegation(exec);
+
       const blockedSet = new Set(readOptions().blockedTools ?? DEFAULT_BLOCKED_TOOLS);
       // 快路径：绝大多数调用既不在拦截清单里，也不是 Lead 发起的。
       if (blockedSet.has(toolName) && !isDelegatedAgent(exec?.agent)) {
@@ -1048,6 +1116,9 @@ export function apply(ctx) {
           blocked: blockedSet,
           canDelegate,
           availableTools,
+          // 3.0.0：层级门禁开启时，执行边界的拒因必须优先给 Team 通道，
+          // 不能教指挥官去调 subagent_<id>（会被层级门禁当场拒绝）。
+          delegationHierarchy: readOptions().delegationHierarchy !== false,
         });
         if (decision !== undefined) {
           ctx.logger?.info?.('commander-mode: 拒绝指挥者自己调用 %s（已要求改为派发）', toolName);
