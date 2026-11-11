@@ -1,125 +1,155 @@
 /**
- * 等待门禁的单元测试（2.0.0 引入，2.0.2 起默认开启）。
+ * 「禁止等待子智能体」硬门禁的单元测试（3.1.0）。
  *
- * 这一组守的是用户 2026-11-09 复盘后明确要求的那条硬约束：**等子代理不要一直等**。
- * 历史会话里 `wait_agent` 被用来挂机：会话 5d9b3002 里 39 次合计 231 分钟、单次最长
- * 127.5 分钟；会话 3b342fc5 里 101 次合计 667.5 分钟，其中 6 次直接等满 1800000ms。
- * （2.0.1 曾按"不需要门禁"临时关闭，用户随后要求改回开启，所以 2.0.2 起默认 120000。）
+ * 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。
  *
- * 协议只能"劝"，这里必须**确定性拒绝**。同时断言另一条边界：只拦 `wait_agent` 的超长
- * `timeout_ms`，`list_agents` / `team_task_list` / `send_message` 这些"读状态 / 唤醒队友"
- * 的工具一律不受影响 —— 否则模型会被拦住却又没法推进，反而更糟。
+ * 2.0.0 的「等待上限」门禁（`maxWaitMs`，默认 120s、配 0 可关闭）已被整体删除。原因写在
+ * `lib/guard.js` 的模块注释里，但核心是：只要还能等，模型就会把"等"当成默认动作；只要还能配，
+ * 部署里就会出现"这次先关掉"。所以 3.1.0 起 `wait_agent` 对指挥官**无条件拒绝**，
+ * 没有任何配置项可以放开。
+ *
+ * 这一组守三件事：
+ *
+ * 1. **拒绝面**：Lead 调 `wait_agent` 一律被拒（不是"超长才拒"、也不看参数）；
+ * 2. **放行面**：只拦 `wait_agent`，读状态 / 派活 / 唤醒工具照常；teammate 等自己的下级
+ *    属于它自己的调度，也必须放行（拦死子代理 = 整个模式干不了活）；
+ * 3. **没有开关**：不受 `delegationHierarchy` / `blockedTools` / 任何旧配置影响，
+ *    并且 `lib/guard.js` / `lib/config.js` 里不再存在 2.0.0 的等待上限 API。
  */
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import * as guardModule from '../lib/guard.js';
 import {
-  Config,
-  KNOWN_CONFIG_KEYS,
-  readWaitCap,
-  resolveConfig,
-} from '../lib/config.js';
-import {
-  DEFAULT_MAX_WAIT_MS,
-  DSH_DEFAULT_WAIT_MS,
-  buildWaitCapReason,
-  evaluateWaitCap,
+  buildWaitForbiddenReason,
+  evaluateWaitForbidden,
 } from '../lib/guard.js';
 
-// ---------------------------------------------------------------- 默认值 ---
+/** 一个 Lead agent：有会话 header，但没有父会话（不是被委派出来的子级）。 */
+const LEAD = Object.freeze({ id: 'session-lead', session: { id: 'session-lead', header: { id: 'session-lead' } } });
 
-test('maxWaitMs 默认 120000（schema、读取器、resolveConfig 三处一致）', () => {
-  // 三处不一致会静默改变行为：schema 是设置页与 Loader 的默认，resolveConfig 是
-  // 模式行实际读到的值，门禁内部还有一份"没传上限时"的兜底。
-  assert.equal(DEFAULT_MAX_WAIT_MS, 120_000);
-  assert.equal(Config().maxWaitMs, 120_000);
-  assert.equal(Config.dict.maxWaitMs.meta.default, 120_000);
-  assert.equal(resolveConfig(undefined).options.maxWaitMs, 120_000);
-  assert.equal(resolveConfig({}).options.maxWaitMs, 120_000);
-  assert.ok(KNOWN_CONFIG_KEYS.includes('maxWaitMs'), 'KNOWN_CONFIG_KEYS 缺少 maxWaitMs');
+/** 一个 teammate：三个身份证据齐全（parentSession / origin / delegationDepth）。 */
+const TEAMMATE = Object.freeze({
+  id: 'session-child',
+  session: { id: 'session-child', header: { id: 'session-child', parentSession: 'session-lead', origin: 'subagent', delegationDepth: 1 } },
 });
 
-test('maxWaitMs 的 schema 范围：0（关闭）与 1000–1800000 合法，其余拒绝', () => {
-  assert.equal(Config({ maxWaitMs: 0 }).maxWaitMs, 0, '0 = 关闭门禁');
-  assert.equal(Config({ maxWaitMs: 1000 }).maxWaitMs, 1000);
-  assert.equal(Config({ maxWaitMs: 1_800_000 }).maxWaitMs, 1_800_000);
-  assert.throws(() => Config({ maxWaitMs: -1 }));
-  assert.throws(() => Config({ maxWaitMs: 1_800_001 }));
-  assert.throws(() => Config({ maxWaitMs: 1.5 }));
-});
+// ---------------------------------------------------------------- 拒绝面 ---
 
-test('readWaitCap：解引用、夹取范围、0 是关闭而不是回退默认', () => {
-  // 不能用 readPositiveNumber：它会把 0 回退成默认值，恰好抹掉"关闭门禁"这个显式选择。
-  assert.equal(readWaitCap(undefined), 120_000);
-  assert.equal(readWaitCap(null), 120_000);
-  assert.equal(readWaitCap(0), 0);
-  assert.equal(readWaitCap({ get: () => 0 }), 0, 'volatile 引用解引用后是 0 也要保持关闭');
-  assert.equal(readWaitCap({ get: () => 60_000 }), 60_000);
-  assert.equal(readWaitCap('60000'), 60_000);
-  assert.equal(readWaitCap(500), 1_000, '低于 1000 抬到下限');
-  assert.equal(readWaitCap(-5), 1_000);
-  assert.equal(readWaitCap(9_999_999), 1_800_000, '高于硬上限压到 1800000');
-  assert.equal(readWaitCap(Number.NaN), 120_000);
-});
-
-// ---------------------------------------------------------------- 判定 ---
-
-test('默认上限 120000：1800000 / 600000 的超长等待被拒绝', () => {
-  for (const timeout of [1_800_000, 600_000, 900_000, 120_001]) {
-    const reason = evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: timeout } });
-    assert.equal(typeof reason, 'string', `${timeout}ms 应当被拒绝`);
-    assert.ok(reason.includes(String(timeout)), `拒因要点名模型给的 ${timeout}`);
-    assert.ok(reason.includes('120000'), '拒因要给出当前上限');
-    assert.ok(reason.includes('短等待'), '拒因要告诉模型改成短等待');
-    assert.ok(reason.includes('继续推进'), '拒因要告诉模型等待期间继续推进其它工作');
-    assert.ok(reason.includes('不要长等'), '拒因要明确说不要长等');
+test('Lead 调 wait_agent 一律被拒（不是"超长才拒"，也不看 timeout_ms）', () => {
+  // 3.1.0 与 2.0.0 的关键区别：2.0.0 只拦"超过上限"的等待，短等放行；
+  // 3.1.0 是**完全禁止**——缺省参数、60 秒、5 分钟、30 分钟都一样拒。
+  const argumentShapes = [
+    undefined, // 没有 arguments
+    {},
+    { timeout_ms: 30_000 }, // DSH 的默认值
+    { timeout_ms: 60_000 },
+    { timeout_ms: 120_000 },
+    { timeout_ms: 1_800_000 },
+    { timeout_ms: '1800000' }, // 字符串数字同样拒（不做类型转换绕过）
+    { timeout_ms: -1 },
+    { timeout_ms: null },
+    { other: 'x' }, // 完全不传 timeout_ms 也拒
+  ];
+  for (const args of argumentShapes) {
+    const decision = evaluateWaitForbidden({ agent: LEAD, name: 'wait_agent', args });
+    assert.ok(decision !== undefined, `args=${JSON.stringify(args)} 时 wait_agent 应被拒绝`);
+    assert.equal(decision.kind, 'deny');
+    assert.ok(decision.reason.length > 0);
   }
 });
 
-test('60000 放行；等于上限也放行（<= 语义）', () => {
-  assert.equal(evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: 60_000 } }), undefined);
-  assert.equal(evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: 120_000 } }), undefined);
-});
-
-test('缺省 timeout_ms 按 DSH 实际默认值 30000 比较', () => {
-  // DSH 的 wait_agent：`args.timeout_ms ?? 30000`。缺省不等于"没有约束"，
-  // 否则把 maxWaitMs 调到 10 秒时，模型反而能靠不传参数绕过门禁。
-  assert.equal(DSH_DEFAULT_WAIT_MS, 30_000);
-  assert.equal(evaluateWaitCap({ name: 'wait_agent' }), undefined);
-  assert.equal(evaluateWaitCap({ name: 'wait_agent', args: {} }), undefined);
-  assert.equal(evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: undefined } }), undefined);
-  // 上限低于 30000 时，缺省调用也会被拒，拒因里给出真实生效的 30000。
-  const reason = evaluateWaitCap({ name: 'wait_agent', args: {}, maxWaitMs: 10_000 });
-  assert.equal(typeof reason, 'string');
-  assert.ok(reason.includes('30000'), reason);
-  assert.ok(reason.includes('10000'), reason);
-});
-
-test('字符串数字 / 非整数 / 非正数都拒绝（不能靠类型转换绕过）', () => {
-  // 模型把 1800000 写成 "1800000" 时语义仍是超长等待。
-  for (const timeout of ['1800000', '60000', 60_000.5, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-    const reason = evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: timeout } });
-    assert.equal(typeof reason, 'string', `timeout_ms=${String(timeout)} 应当被拒绝`);
-    assert.match(reason, /正整数毫秒/u, `拒因要说明合法形态：${reason}`);
+test('缺省 timeout_ms 也拒（不存在"不传参数就放行"的漏洞）', () => {
+  // 2.0.0 的门禁按 `args.timeout_ms ?? 30000` 比较，缺省等于"30 秒"；3.1.0 完全禁止，
+  // 所以缺省参数同样被拒。这条防的是"门禁只看显式参数"的实现退化。
+  for (const input of [
+    { agent: LEAD, name: 'wait_agent' },
+    { agent: LEAD, name: 'wait_agent', args: {} },
+    { agent: LEAD, name: 'wait_agent', args: { timeout_ms: undefined } },
+    { agent: LEAD, name: 'wait_agent', args: { timeout_ms: null } },
+  ]) {
+    const decision = evaluateWaitForbidden(input);
+    assert.ok(decision !== undefined, `${JSON.stringify(input)} 应被拒绝`);
+    assert.equal(decision.kind, 'deny');
   }
 });
 
-test('maxWaitMs = 0 时门禁关闭（任何等待都放行）', () => {
-  assert.equal(evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: 1_800_000 }, maxWaitMs: 0 }), undefined);
-  assert.equal(evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: 600_000 }, maxWaitMs: 0 }), undefined);
-});
-
-test('maxWaitMs 传非法值时按默认 120000 处理（不能静默变成"无上限"）', () => {
-  for (const cap of [Number.NaN, undefined, 'nope', {}, true]) {
-    const reason = evaluateWaitCap({ name: 'wait_agent', args: { timeout_ms: 1_800_000 }, maxWaitMs: cap });
-    assert.equal(typeof reason, 'string', `maxWaitMs=${String(cap)} 应回退默认上限并拒绝超长等待`);
+test('参数类型不能绕过：字符串 / 小数 / NaN / Infinity / 负数 / 对象一律拒', () => {
+  // 旧门禁会校验"正整数毫秒"；新门禁连参数都不看 —— 任何类型都拒，
+  // 这样就不存在"换一种写法让门禁认不出来"的绕过面。
+  const shapes = ['1800000', '60000', 60_000.5, Number.NaN, Number.POSITIVE_INFINITY, -1, 0, {}, [], () => {}];
+  for (const timeout of shapes) {
+    const decision = evaluateWaitForbidden({ agent: LEAD, name: 'wait_agent', args: { timeout_ms: timeout } });
+    assert.ok(decision !== undefined, `timeout_ms=${String(timeout)} 应被拒绝`);
+    assert.equal(decision.kind, 'deny');
   }
 });
 
-test('只拦 wait_agent：读状态 / 唤醒队友 / 建板的工具一律放行', () => {
-  // 这条是"不要拦死"的边界：模型被拒绝长等待后，正确动作正是 list_agents /
-  // team_task_list / send_message / team_task_update；拦了它们等于把人堵在原地。
+test('拒因是纠正指令：硬禁用 / 没有开关 / 完成通知会唤醒 / 三条替代动作', () => {
+  const reason = buildWaitForbiddenReason();
+  // 三件必须让模型当场知道的事：被禁的是哪个工具、为什么连"短等"也不行、不等之后做什么。
+  assert.ok(reason.includes('wait_agent'), reason);
+  assert.ok(reason.includes('硬禁用'), `要说明是硬禁用：${reason}`);
+  assert.ok(reason.includes('没有开关'), `要说明没有开关：${reason}`);
+  assert.ok(reason.includes('不要重试'), `要明确不要重试：${reason}`);
+  assert.ok(reason.includes('【派工完成】'), `要说明完成通知会主动唤醒：${reason}`);
+  // 三步替代动作：读状态 / 追问 / 汇报后结束回合。
+  assert.ok(reason.includes('list_agents'), `要给出读状态这条路：${reason}`);
+  assert.ok(reason.includes('team_task_list'), `要给出看任务板这条路：${reason}`);
+  assert.ok(reason.includes('send_message'), `要给出追问这条路：${reason}`);
+  assert.ok(reason.includes('结束回合'), `要给出"汇报后结束回合"这条路：${reason}`);
+});
+
+test('拒因文案不得暗示"可以配置"（这条门禁是硬编码的）', () => {
+  // 用户明确要求"不设开关"。文案里只要出现 maxWaitMs / 上限 / 可配置 / 可以关 之类的暗示，
+  // 模型就会去试"调小一点"或"关掉它"，白烧轮次；用户也会以为还能配。
+  const reason = buildWaitForbiddenReason();
+  for (const forbidden of ['maxWaitMs', '可配置', '可以关', '配置项', '上限', 'timeout_ms 不超过']) {
+    assert.ok(!reason.includes(forbidden), `拒因不得暗示可配置（出现「${forbidden}」）：${reason}`);
+  }
+  // 正面的替代动作必须在场（不只是"禁止"）。
+  for (const alternative of ['list_agents', 'team_task_list', 'send_message', 'interrupt_agent', '结束回合']) {
+    assert.ok(reason.includes(alternative), `拒因缺少替代动作：${alternative}`);
+  }
+});
+
+// ---------------------------------------------------------------- 没有开关 ---
+
+test('没有开关：传 delegationHierarchy / blockedTools 等配置都不改变判定', () => {
+  // 3.1.0 的硬门禁**不读任何配置**。传进去的字段一律被忽略 —— 尤其要防"看起来像开关"
+  // 的参数把判定改掉（2.0.0 的 maxWaitMs:0 就是这样一个开关）。
+  const attempts = [
+    { agent: LEAD, name: 'wait_agent' },
+    { agent: LEAD, name: 'wait_agent', delegationHierarchy: false },
+    { agent: LEAD, name: 'wait_agent', delegationHierarchy: true },
+    { agent: LEAD, name: 'wait_agent', blockedTools: [] },
+    { agent: LEAD, name: 'wait_agent', maxWaitMs: 0 }, // 旧开关名：现在只是被忽略的未知参数
+    { agent: LEAD, name: 'wait_agent', args: { timeout_ms: 1_000 }, delegationHierarchy: false },
+  ];
+  for (const input of attempts) {
+    const decision = evaluateWaitForbidden(input);
+    assert.ok(decision !== undefined, `${JSON.stringify(input)} 仍应被拒绝（没有开关）`);
+    assert.equal(decision.kind, 'deny');
+    assert.ok(decision.reason.includes('没有开关'), decision.reason);
+  }
+});
+
+test('3.1.0：2.0.0 的等待上限 API 已从 guard / config 彻底删除', () => {
+  // 只要这些符号还在，就存在"被重新接回去当开关"的可能。删干净才是"不设开关"。
+  for (const symbol of ['evaluateWaitCap', 'buildWaitCapReason', 'DEFAULT_MAX_WAIT_MS', 'DSH_DEFAULT_WAIT_MS']) {
+    assert.equal(symbol in guardModule, false, `guard.js 不应再导出 ${symbol}`);
+  }
+  // 新 API 必须在。
+  assert.equal(typeof guardModule.evaluateWaitForbidden, 'function');
+  assert.equal(typeof guardModule.buildWaitForbiddenReason, 'function');
+});
+
+// ---------------------------------------------------------------- 放行面 ---
+
+test('只拦 wait_agent：读状态 / 派活 / 唤醒工具一律放行', () => {
+  // 这条是"不要拦死"的边界：模型被拒等待后，正确动作正是这些工具；
+  // 拦了它们等于把人堵在原地。
   const unaffected = [
     'list_agents',
     'team_task_list',
@@ -131,35 +161,50 @@ test('只拦 wait_agent：读状态 / 唤醒队友 / 建板的工具一律放行
     'interrupt_agent',
     'read',
     'todo_write',
+    'ask_user_question',
+    'workflow',
+    'subagent_architect',
   ];
   for (const name of unaffected) {
     assert.equal(
-      evaluateWaitCap({ name, args: { timeout_ms: 1_800_000 } }),
+      evaluateWaitForbidden({ agent: LEAD, name, args: { timeout_ms: 1_800_000 } }),
       undefined,
-      `${name} 不该被等待门禁拦`,
+      `${name} 不该被禁止等待门禁拦`,
     );
   }
 });
 
-test('非法参数形状不 throw（门禁只约束行为，不能让工具调用整体失败）', () => {
-  const argsShapes = [undefined, null, 'nope', 42, true, [], () => {}, { timeout_ms: null }, { timeout_ms: {} }, { timeout_ms: () => {} }];
-  for (const args of argsShapes) {
-    assert.doesNotThrow(() => evaluateWaitCap({ name: 'wait_agent', args }));
-  }
-  // 工具名缺失/非法同样放行。
-  for (const name of [undefined, null, '', 42, {}]) {
-    assert.doesNotThrow(() => evaluateWaitCap({ name, args: { timeout_ms: 1_800_000 } }));
-    assert.equal(evaluateWaitCap({ name, args: { timeout_ms: 1_800_000 } }), undefined);
+test('teammate（小组长 / 子智能体）等自己的下级必须放行', () => {
+  // 小组长在 L1 等它派出的 L2 属于它自己的调度，不在本门禁范围内。
+  // 拦死子代理 = 整个模式干不了活（宁可漏拦，不可拦死）。
+  for (const args of [undefined, {}, { timeout_ms: 1_800_000 }]) {
+    assert.equal(evaluateWaitForbidden({ agent: TEAMMATE, name: 'wait_agent', args }), undefined);
   }
 });
 
-test('拒因是纠正指令：给出上限、下一步工具与"不要长等"', () => {
-  const reason = buildWaitCapReason({ cap: 120_000, value: 600_000, invalid: false });
-  assert.ok(reason.includes('wait_agent'), reason);
-  assert.ok(reason.includes('600000'), reason);
-  assert.ok(reason.includes('120000'), reason);
-  assert.ok(reason.includes('短等待'), reason);
-  assert.ok(reason.includes('list_agents'), '要给出读状态这条正确动作');
-  assert.ok(reason.includes('team_task_list'), '要给出看任务板这条正确动作');
-  assert.ok(reason.includes('【派工完成】'), '要提醒依赖完成通知');
+test('身份读不出来时放行（宁可漏拦，不可拦死）', () => {
+  for (const agent of [undefined, null, {}, { session: null }, { session: {} }, { session: { header: null } }]) {
+    assert.equal(evaluateWaitForbidden({ agent, name: 'wait_agent' }), undefined, `身份读不到（${JSON.stringify(agent)}）`);
+  }
+});
+
+test('工具名缺失 / 非法 / 空调用不抛错，也不误拦', () => {
+  // 门禁在工具调用路径上：抛错会让整次调用失败，那比"漏拦一次"糟糕得多。
+  for (const name of [undefined, null, '', 42, {}, 'wait']) {
+    assert.doesNotThrow(() => evaluateWaitForbidden({ name }));
+    assert.equal(evaluateWaitForbidden({ name }), undefined, `${String(name)} 不是 wait_agent`);
+  }
+  assert.doesNotThrow(() => evaluateWaitForbidden());
+  assert.equal(evaluateWaitForbidden(), undefined);
+});
+
+test('门禁自身出错时放行，而不是让工具调用失败', () => {
+  const hostile = {
+    get session() {
+      throw new Error('boom');
+    },
+  };
+  // isDelegatedAgent 在抛错时返回 true（当作子级放行），所以这里也放行。
+  assert.doesNotThrow(() => evaluateWaitForbidden({ agent: hostile, name: 'wait_agent' }));
+  assert.equal(evaluateWaitForbidden({ agent: hostile, name: 'wait_agent' }), undefined);
 });

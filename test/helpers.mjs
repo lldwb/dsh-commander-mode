@@ -36,7 +36,7 @@ export const TEAMMATE = Object.freeze({
  * `commanderSettings` 服务的替身（配置行提供）。
  *
  * 默认选项直接取 `resolveConfig(undefined).options`，与 schema 默认值保持同一份，
- * 避免测试里的夹具默认值落后于真实默认值（例如 `maxWaitMs`）。
+ * 避免测试里的夹具默认值落后于真实默认值（例如 `delegationHierarchy`）。
  *
  * @param {{ options?: object, specialists?: object[] }} [initial] - 初始选项与名册。
  * @returns {object} 服务替身。

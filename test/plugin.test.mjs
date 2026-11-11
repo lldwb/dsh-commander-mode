@@ -59,7 +59,7 @@ function makeSettings(initial = {}) {
     workerPermission: 'danger-full-access',
     ticketStallMs: 10 * 60 * 1000,
     maxTickets: 100,
-    maxWaitMs: 120000,
+    // 3.1.0：`maxWaitMs` 已随「禁止等待子智能体、不设开关」删除，夹具里不再提供。
     ...(initial.options ?? {}),
   };
   let roster = initial.specialists ?? [];
@@ -925,7 +925,7 @@ function ledgerWithWork() {
  * ## 为什么需要它（这不是放宽断言）
  *
  * 3.0.0 在 `tools/pre-execute` 上加了三条层级门禁，且**排在** 0.6.0 的 Mandate/工单
- * 派发门禁之前（`agent.js`：执行边界 → 等待门禁 → 层级门禁 → 异步容量 → 派发门禁）。
+ * 派发门禁之前（`agent.js`：层级门禁 → 执行边界 → 禁止等待 → 异步容量 → 派发门禁）。
  * 于是指挥官（Lead）直接调 `subagent_<id>` 时，先被 `evaluateSpecialistDispatch()`
  * 拒绝（「团队活交给小组长」），**永远走不到** Mandate/工单那一层。
  *
@@ -1316,39 +1316,49 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
 
-// ---------------------------------------------------------------- 2.0.0 等待门禁 ---
+// ------------------------------------------------ 3.1.0 禁止等待子智能体 ---
 
-test('2.0.0 等待门禁：超长 wait_agent 被拒绝，短等待与读状态工具放行', async () => {
-  // 依据：历史会话里 `wait_agent` 单次最长 127.5 分钟、会话累计 11 小时。用户明确要求
-  // "等子代理不要一直等"，所以这条在 `tools/pre-execute` 上做成确定性拒绝（默认开启）。
+test('3.1.0 禁止等待：Lead 调 wait_agent 一律被拒（不是"超长才拒"）', async () => {
+  // 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。2.0.0 的"超长才拒"
+  // 已整体下线 —— 现在缺省参数、60 秒、30 分钟都一样拒。
   const listener = preExecute(boot().record);
-  const denied = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 600000 } }, spyNext().next);
-  assert.equal(denied.kind, 'deny');
-  assert.ok(denied.reason.includes('120000'), denied.reason);
-  assert.ok(denied.reason.includes('短等待'), denied.reason);
-
-  const allowed = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 60000 } }, spyNext().next);
-  assert.deepEqual(allowed, { kind: 'allow' });
-
-  // 只拦超长等待：读状态 / 唤醒队友的工具不受影响，否则模型被拒后没法推进。
-  for (const toolName of ['list_agents', 'team_task_list', 'send_message']) {
-    const decision = await listener({ name: toolName, agent: LEAD, arguments: { timeout_ms: 1800000 } }, spyNext().next);
-    assert.deepEqual(decision, { kind: 'allow' }, `${toolName} 不该被等待门禁拦`);
+  for (const args of [undefined, {}, { timeout_ms: 30_000 }, { timeout_ms: 60_000 }, { timeout_ms: 1_800_000 }]) {
+    const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: args }, spyNext().next);
+    assert.equal(decision?.kind, 'deny', `args=${JSON.stringify(args)} 时 wait_agent 应被拒绝`);
+    assert.ok(decision.reason.includes('硬禁用'), decision.reason);
+    assert.ok(decision.reason.includes('没有开关'), decision.reason);
+    assert.ok(decision.reason.includes('【派工完成】'), decision.reason);
   }
 });
 
-test('等待门禁：maxWaitMs=0 时关闭（配置服务实时生效）', async () => {
-  const settings = makeSettings({ options: { maxWaitMs: 0 } });
+test('3.1.0 禁止等待：没有开关（配置里没有 maxWaitMs，任何配置都不改变判定）', async () => {
+  // 旧用例「maxWaitMs=0 时关闭」的**反向**断言：现在不存在能关掉它的配置。
+  // 即使夹具塞进旧的 maxWaitMs:0、关掉 delegationHierarchy、清空 blockedTools，
+  // wait_agent 仍然被拒 —— 因为这条门禁不读配置。
+  const settings = makeSettings({ options: { maxWaitMs: 0, delegationHierarchy: false, blockedTools: [] } });
   const { record } = boot({ settings });
   const listener = preExecute(record);
-  const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1800000 } }, spyNext().next);
-  assert.deepEqual(decision, { kind: 'allow' });
+  const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
+  assert.equal(decision?.kind, 'deny', '没有任何配置能放开 wait_agent');
+  assert.ok(decision.reason.includes('没有开关'), decision.reason);
+  // 夹具里**故意**塞了旧键（模拟旧 profile patch 仍写着 maxWaitMs:0）：门禁照样拒，
+  // 因为它根本不读配置。真实 config schema 里该键已删除，由 config.test.mjs 覆盖。
+  assert.equal(settings.options().maxWaitMs, 0, '夹具确实带着旧配置键（用于证明它被忽略）');
 });
 
-test('等待门禁默认开启：未显式配置 maxWaitMs 时 1800000 被拒绝', async () => {
-  const { record } = boot();
-  const listener = preExecute(record);
-  const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1800000 } }, spyNext().next);
-  assert.equal(decision.kind, 'deny');
-  assert.ok(decision.reason.includes('120000'), decision.reason);
+test('3.1.0 禁止等待：读状态 / 派活工具放行，teammate 等自己的下级也放行', async () => {
+  // 只拦指挥官的 wait_agent：被拒之后该用的正是这些工具；小组长等它派出的 L2
+  // 属于它自己的调度，拦死子代理 = 整个模式干不了活。
+  const listener = preExecute(boot().record);
+  for (const toolName of ['list_agents', 'team_task_list', 'team_task_get', 'send_message', 'interrupt_agent']) {
+    const decision = await listener({ name: toolName, agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
+    assert.deepEqual(decision, { kind: 'allow' }, `${toolName} 不该被禁止等待门禁拦`);
+  }
+  for (const args of [undefined, { timeout_ms: 1_800_000 }]) {
+    const decision = await listener({ name: 'wait_agent', agent: TEAMMATE, arguments: args }, spyNext().next);
+    assert.deepEqual(decision, { kind: 'allow' }, 'teammate 的 wait_agent 必须放行');
+  }
+  // 身份读不到同样放行（宁可漏拦，不可拦死）。
+  const anonymous = await listener({ name: 'wait_agent', agent: undefined }, spyNext().next);
+  assert.deepEqual(anonymous, { kind: 'allow' });
 });

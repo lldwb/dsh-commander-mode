@@ -18,6 +18,7 @@ import test from 'node:test';
 
 import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
 import { DEFAULT_SPECIALISTS, defaultSpecialistIds } from '../lib/presets.js';
+import * as configModule from '../lib/config.js';
 import {
   Config,
   KNOWN_CONFIG_KEYS,
@@ -28,7 +29,6 @@ import {
   readPositiveNumber,
   readSpecialists,
   readString,
-  readWaitCap,
   resolveConfig,
 } from '../lib/config.js';
 
@@ -331,7 +331,6 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       maxTickets: 100,
       eventInbox: true,
       eventPollMs: 15000,
-      maxWaitMs: 120000,
     },
     warnings: [],
   });
@@ -405,7 +404,6 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     maxTickets: 100,
     eventInbox: true,
     eventPollMs: 15000,
-    maxWaitMs: 120000,
   });
   assert.deepEqual(warnings, []);
 });
@@ -544,28 +542,30 @@ test('1.1.0 外部事件配置：默认开启、15 秒轮询、可关、低于�
   }
 });
 
-test('2.0.0 等待门禁配置：默认 120000、0 关闭、读取器夹取范围', () => {
-  // 用户 2026-11-09 的硬要求：等子代理不要一直等（2.0.1 曾短暂关闭，2.0.2 改回开启）。
-  // 默认值必须真的进到 options 里，否则模式行读到的 `maxWaitMs` 会是 undefined，门禁失效。
+test('3.1.0 禁止等待：配置里不存在 maxWaitMs（不设开关）', () => {
+  // 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。
+  // 2.0.0 的 `maxWaitMs`（默认 120000、0 = 关闭）随之下线：只要还能配，部署里就会出现
+  // "这次先关掉"。所以 schema、KNOWN_CONFIG_KEYS、resolveConfig 三处都不能再有这个键 ——
+  // 任何一处残留都会让用户以为"还能调"。
   const config = Config();
-  assert.equal(config.maxWaitMs, 120000);
-  assert.equal(resolveConfig(undefined).options.maxWaitMs, 120000);
-  assert.equal(resolveConfig({ maxWaitMs: 0 }).options.maxWaitMs, 0, '0 = 关闭门禁，不能被回退成默认值');
-  assert.equal(resolveConfig({ maxWaitMs: 60000 }).options.maxWaitMs, 60000);
-  assert.equal(resolveConfig({ maxWaitMs: 500 }).options.maxWaitMs, 1000, '低于下限抬到 1000');
-  assert.equal(resolveConfig({ maxWaitMs: 9999999 }).options.maxWaitMs, 1800000, '高于硬上限压到 1800000');
-  assert.ok(KNOWN_CONFIG_KEYS.includes('maxWaitMs'), 'KNOWN_CONFIG_KEYS 缺少 maxWaitMs');
+  assert.equal('maxWaitMs' in config, false, 'schema 不应再声明 maxWaitMs');
+  assert.equal(Config.dict.maxWaitMs, undefined, 'schema 字段已删除');
+  assert.equal(KNOWN_CONFIG_KEYS.includes('maxWaitMs'), false, 'KNOWN_CONFIG_KEYS 不应再含 maxWaitMs');
+  assert.equal('maxWaitMs' in resolveConfig({}).options, false, 'resolveConfig 不应再输出 maxWaitMs');
+  assert.equal('maxWaitMs' in resolveConfig(undefined).options, false);
+  // 即使用户在旧配置里写了这个键，也只会得到"未知配置键"警告，而不会改变任何行为。
+  const { options, warnings } = resolveConfig({ maxWaitMs: 0 });
+  assert.equal('maxWaitMs' in options, false);
+  assert.ok(warnings.some((line) => line.includes('maxWaitMs')), '旧配置键应被报成未知键');
 });
 
-test('readWaitCap 同时接受 volatile 引用、数字字符串与异常值', () => {
-  // 配置可能来自 profile patch 手写（数字字符串）、Loader 的 volatile 引用，或坏值。
-  // 缺省 / 非法一律回退默认 120000（门禁默认开启）。
-  assert.equal(readWaitCap({ get: () => 0 }), 0);
-  assert.equal(readWaitCap({ get: () => 60000 }), 60000);
-  assert.equal(readWaitCap('60000'), 60000);
-  assert.equal(readWaitCap(undefined), 120000);
-  assert.equal(readWaitCap(null), 120000);
-  assert.equal(readWaitCap(-1), 1000);
-  assert.equal(readWaitCap(Number.NaN), 120000);
-  assert.equal(readWaitCap('nope'), 120000);
+test('3.1.0：resolveConfig 恰好输出 26 个键，且等待读取器/常量已删除', () => {
+  // 26 = 3.0.0 的 27 个加载期键去掉 maxWaitMs（specialists 本来就不进 options）。
+  // 这个数字是"键集合没被悄悄改"的廉价护栏；键名逐项由上面的 deepEqual 钉住。
+  const { options } = resolveConfig({});
+  assert.equal(Object.keys(options).length, 26);
+  // 等待门禁的旧读取器与常量必须彻底删除，而不是留着当"隐藏开关"。
+  assert.equal('readWaitCap' in configModule, false, 'readWaitCap 应已删除');
+  assert.equal('MIN_MAX_WAIT_MS' in configModule, false, 'MIN_MAX_WAIT_MS 应已删除');
+  assert.equal('MAX_MAX_WAIT_MS' in configModule, false, 'MAX_MAX_WAIT_MS 应已删除');
 });

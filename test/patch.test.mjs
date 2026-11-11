@@ -302,7 +302,6 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'maxTickets',
     'eventInbox',
     'eventPollMs',
-    'maxWaitMs',
   ]) {
     assert.match(PATCH, new RegExp(`\\n {8}${key}:`, 'u'), `config 里缺 ${key}`);
   }
@@ -318,12 +317,16 @@ test('名册开箱即预置：默认来自 lib/presets.js，不是空数组', ()
   assert.ok(!/\n {8}specialists:/u.test(PATCH));
 });
 
-test('等待门禁配置写在 patch 里：默认 120000，0 = 关闭', () => {
-  // 用户 2026-11-09 要求"等子代理不要一直等"（2.0.1 短暂关闭，2.0.2 改回开启）。
-  assert.match(PATCH, /\n {8}maxWaitMs: 120000/u);
-  assert.match(PATCH, /maxWaitMs: 120000/u);
-  assert.match(PATCH, /0 = 关闭门禁|0 = 关闭/u);
-  assert.match(PATCH, /wait_agent/u);
+test('3.1.0：patch 不含 maxWaitMs 配置键（禁止等待、不设开关）', () => {
+  // 用户 2026-11-11 补充要求：禁止等待子智能体，且**不设开关**。
+  // 2.0.0 的 `maxWaitMs: 120000`（0 = 关闭）已从 patch 删除；只要这里还能写，用户就会
+  // 把它当成"关掉门禁"的开关。所以断言的是**配置键**不存在（注释里可以说明它已下线）。
+  assert.ok(!/\n {8}maxWaitMs:/u.test(PATCH), 'patch 的 config 不应再写 maxWaitMs 键');
+  // 注释要说明"禁止等待 + 没有开关"，否则用户不知道为什么配置里没有这个键。
+  assert.match(PATCH, /禁止等待/u);
+  assert.match(PATCH, /没有开关|不设开关/u);
+  // 3.1.0 起 `wait_agent` 是硬禁用：配置块里不应再有 120000 这个旧默认值。
+  assert.ok(!/maxWaitMs: 120000/u.test(PATCH), '旧默认值 120000 不应残留');
 });
 
 test('1.0.0：patch 写全 Worker Session 配置（默认开启）', () => {

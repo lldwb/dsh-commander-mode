@@ -162,7 +162,7 @@ test('指挥者模式：delegationHierarchy:false 时三条门禁全部放行（
 
 test('指挥者模式：层级门禁排在 Mandate 派发门禁之前（Lead 拿到的是层级理由）', async () => {
   // 这是接线顺序的回归测试：3.0.0 把三条层级门禁插在 0.6.0 的派发门禁**之前**
-  // （agent.js：执行边界 → 等待门禁 → 层级门禁 → 异步容量 → 派发门禁）。
+  // （agent.js：层级门禁 → 执行边界 → 禁止等待 → 异步容量 → 派发门禁）。
   // 有账本、没授权时，Lead 调 subagent_implementer 必须拿到**层级**理由
   // （"团队活交给小组长"），而不是 Mandate 理由（"先 ask_user_question 确认计划"）。
   const emptyLedger = { activeMandate: () => null, listTickets: () => [] };
@@ -208,11 +208,36 @@ test('指挥者模式：执行边界拒因随 delegationHierarchy 切换（默�
   assert.ok(deniedOff.includes('subagent_architect'), `2.x 语义应点名 specialist 工具：${deniedOff}`);
 });
 
-test('指挥者模式：不相关的工具完全不受三条门禁影响', async () => {
+test('指挥者模式：不相关的工具不受门禁影响（wait_agent 例外，见下一条）', async () => {
   const { listener } = boot(applyCommander);
-  for (const name of ['read', 'glob', 'grep', 'todo_write', 'ask_user_question', 'list_agents', 'wait_agent']) {
+  for (const name of ['read', 'glob', 'grep', 'todo_write', 'ask_user_question', 'list_agents']) {
     assertAllowed(await decide(listener, name, LEAD, { timeout_ms: 30000 }), name);
   }
+});
+
+test('指挥者模式：3.1.0 禁止等待是无条件门禁，delegationHierarchy:false 也拒绝', async () => {
+  // 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。
+  // `wait_agent` 是第 4 条确定性门禁（3.1.0），**不读任何配置** —— 关掉层级门禁、
+  // 清空 blockedTools、塞旧 maxWaitMs 都不能放开它。这条就是"没有开关"的接线级证明。
+  const cases = [
+    ['默认配置', {}],
+    ['delegationHierarchy:false', { options: { delegationHierarchy: false } }],
+    ['blockedTools:[]', { options: { blockedTools: [] } }],
+    ['旧 maxWaitMs:0 残留', { options: { maxWaitMs: 0, delegationHierarchy: false } }],
+  ];
+  for (const [label, initial] of cases) {
+    const { listener } = boot(applyCommander, initial);
+    const reason = assertDenied(
+      await decide(listener, 'wait_agent', LEAD, { timeout_ms: 1_800_000 }),
+      `wait_agent（${label}）`,
+    );
+    assert.ok(reason.includes('硬禁用'), `${label}：拒因要说明硬禁用：${reason}`);
+    assert.ok(reason.includes('没有开关'), `${label}：拒因要说明没有开关：${reason}`);
+  }
+
+  // 只拦指挥官：teammate 等自己的下级属于它的调度，必须放行。
+  const { listener } = boot(applyCommander);
+  assertAllowed(await decide(listener, 'wait_agent', TEAMMATE, { timeout_ms: 1_800_000 }), 'teammate 的 wait_agent');
 });
 
 // ------------------------------------------------ 项目经理模式行 ---
@@ -255,4 +280,6 @@ test('项目经理模式：delegationHierarchy:false 时层级门禁全部放行
   }
   // 执行边界仍在：项目经理不自己写文件。
   assertDenied(await decide(listener, 'write', LEAD, {}), '项目经理的 write');
+  // 3.1.0 禁止等待**不随 delegationHierarchy 关闭**：它是无条件门禁（不设开关）。
+  assertDenied(await decide(listener, 'wait_agent', LEAD, { timeout_ms: 1_800_000 }), '项目经理的 wait_agent（层级关闭）');
 });

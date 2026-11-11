@@ -78,6 +78,8 @@ test('紧凑版点名智能体团队的派发通道', () => {
   for (const tool of ['spawn_teammate', 'send_message', 'wait_agent', 'list_agents', 'interrupt_agent', 'team_task_']) {
     assert.ok(SECTION.includes(tool), `紧凑版应当点名 ${tool}`);
   }
+  // 3.1.0：`wait_agent` 只以"被禁用"的身份出现，不能被当成可用通道。
+  assert.ok(SECTION.includes('`wait_agent` 硬禁用'), SECTION);
   // 没有 Team 工具时的降级路径也要写，否则残缺部署会卡死。
   assert.ok(SECTION.includes('workflow'));
 });
@@ -260,6 +262,8 @@ test('名册非空时 section 列出每个工具、职责与模型', () => {
   for (const tool of ['spawn_teammate', 'send_message', 'wait_agent', 'list_agents', 'interrupt_agent', 'team_task_']) {
     assert.ok(ROSTER_SECTION.includes(tool), `启用名册后仍要保留 ${tool}`);
   }
+  // 3.1.0：`wait_agent` 只以"被禁用"的身份出现（不是可用通道）。
+  assert.ok(ROSTER_SECTION.includes('`wait_agent` 硬禁用'), ROSTER_SECTION);
 });
 
 test('双通道选择规则一眼可懂：独立模型走 A，长驻队友走 B，可混用', () => {
@@ -444,22 +448,33 @@ test('没有看板的部署里，看板那条换成"看一次，不要轮询"', 
 });
 test('a2a 效率的四条都写进紧凑版', () => {
   const section = renderCommanderSection();
-  for (const phrase of ['派活一次写全', '先约定回报协议', '超时不是事件', '回执即成功']) {
+  // 3.1.0：第 3 条从「超时不是事件」改成「禁止等待：不等、不挂起、不停摆」——
+  // 用户 2026-11-11 补充要求「禁止等待子智能体、不设开关」，等待从"短等"变成"完全禁止"。
+  for (const phrase of ['派活一次写全', '先约定回报协议', '禁止等待', '回执即成功']) {
     assert.ok(section.includes(phrase), `a2a 效率缺少：${phrase}`);
   }
   // 必须给出可执行的动作，而不是抽象要求。
   for (const phrase of ['连续跑到完成', 'list_agents', 'team_task_list', 'send_message']) {
     assert.ok(section.includes(phrase), `a2a 效率缺少事实：${phrase}`);
   }
+  // 禁止等待的替代动作也要在场：读状态 + 完成通知 + 结束回合。
+  for (const phrase of ['硬禁用', '无开关', '【派工完成】', '结束回合']) {
+    assert.ok(section.includes(phrase), `禁止等待缺少替代动作：${phrase}`);
+  }
 });
 
 test('长文给出结算同步与 a2a 效率的完整说明（含事故与数字）', () => {
-  for (const phrase of ['结算同步', '三同步', '看板是权威', '收尾三查', 'a2a 效率', '超时不是事件', '回执即成功']) {
+  // 3.1.0：a2a 第 3 条已从「超时不是事件」改成「禁止等待（硬禁用、无开关）」。
+  for (const phrase of ['结算同步', '三同步', '看板是权威', '收尾三查', 'a2a 效率', '禁止等待', '回执即成功']) {
     assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少：${phrase}`);
   }
   // 事故数字是这条纪律的依据，别在改文案时丢掉。
   assert.ok(COMMANDER_PROTOCOL.includes('1111'), '长文应写明事故规模');
   assert.ok(COMMANDER_PROTOCOL.includes('5 次'), '长文应写明 todo_write 只调了 5 次');
+  // 3.1.0：长文里的等待纪律必须是"禁止 + 没有开关"，不能残留"短等待/上限"。
+  assert.ok(COMMANDER_PROTOCOL.includes('没有开关'), '长文要说明没有开关');
+  assert.ok(!COMMANDER_PROTOCOL.includes('短等待'), '长文不应再教"短等待"');
+  assert.ok(!COMMANDER_PROTOCOL.includes('maxWaitMs'), '长文不应再提 maxWaitMs');
 });
 
 test('标准流程的监控/收尾步与同步语义一致，且不再教轮询', () => {
@@ -592,10 +607,14 @@ test('3.0.0：名册启用时通道 A 明确标注「只有小组长用」且不
 // ---------------------------------------------------------------- 长度与兼容 ---
 
 test('紧凑版长度受控：每轮注入，必须短于长文', () => {
-  // 预算随纪律增长调整过一次：2.3.0 新增第 6 条「先对齐位置与能力边界」，
-  // 它是"用缺失否定用户"那类事故的唯一防线，不能只留在长文里。
+  // 预算随纪律增长调整过两次：
+  // - 2.3.0 新增第 6 条「先对齐位置与能力边界」，它是"用缺失否定用户"那类事故的唯一防线；
+  // - 3.1.0 把 a2a 第 3 条从「超时不是事件」改成「禁止等待（硬禁用、无开关）」，并给全三条
+  //   替代动作（读状态 / 追问 / 汇报后结束回合）——这是用户 2026-11-11 的硬要求，属于
+  //   "不做就会当场跑偏"的动作级规则，必须留在 section 里，不能只搬进长文。
+  //   实测：默认 8313 字符 / 124 行，启用名册 9554 字符 / 152 行，开场 8467 / 130。
   // 上限的作用是防"把细节都塞进 section"，不是精确配额：超了就说明该搬到长文了。
-  const CHAR_BUDGET = 9500;
+  const CHAR_BUDGET = 10_000;
   for (const [label, text] of [
     ['默认 section', SECTION],
     ['启用名册 section', ROSTER_SECTION],
@@ -649,7 +668,9 @@ test('0.6.0：工单规则不提到具体 specialist 工具名（空名册也安
 
 test('0.7.0：默认 section 带异步派工契约（完成通知唤醒、不要轮询）', () => {
   assert.ok(SECTION.includes('### 异步派工（0.7.0：完成通知会唤醒你）'), SECTION);
-  for (const phrase of ['派活即返回', '完成通知会自己回来', '【指挥者·派工完成】', '不要** `wait_agent`', '在飞任务不重派']) {
+  // 3.1.0：原来的「不要 `wait_agent`」措辞升级成「不要等（wait_agent 硬禁用、无开关）」——
+  // 等待从"不推荐"变成"确定性拒绝"。
+  for (const phrase of ['派活即返回', '完成通知会自己回来', '【指挥者·派工完成】', '不要等**（`wait_agent` 硬禁用、无开关）', '在飞任务不重派']) {
     assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
   }
 });

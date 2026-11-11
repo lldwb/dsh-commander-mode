@@ -4,10 +4,10 @@
  * 这一组要证明三件事：
  *
  * 1. **协议真的把六段流水线与五条纪律写进去了** —— 用户 2026-11-09 提的四条要求
- *    （六位专家、不要长等、不要人日、git 分类提交 + 经验教训）都能在文本里逐条查到。
+ *    （六位专家、禁止等待、不要人日、git 分类提交 + 经验教训）都能在文本里逐条查到。
  * 2. **模式行真的挂上了** —— section 名字与 order、六位专家工具、skill 注册。
- * 3. **门禁是确定性的** —— 项目经理本人写文件被拒（子代理必须放行），超长 `wait_agent`
- *    被拒；没有这些，模式退化成"只会写协议"。
+ * 3. **门禁是确定性的** —— 项目经理本人写文件被拒（子代理必须放行），`wait_agent`
+ *    被**硬禁用**（3.1.0，无开关）；没有这些，模式退化成"只会写协议"。
  */
 
 import assert from 'node:assert/strict';
@@ -96,13 +96,18 @@ test('协议要求 git 分类提交与经验教训（含模式本身）', () => 
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('未提交视为该段未完成'));
 });
 
-test('协议写明等待纪律：短等待 + 门禁 + 依赖派工完成通知', () => {
+test('协议写明禁止等待：硬禁用 + 无开关 + 依赖派工完成通知', () => {
+  // 3.1.0（用户 2026-11-11 补充要求）：**禁止等待子智能体，且不设开关**。
+  // 2.0.0 的「短等待 + maxWaitMs 上限」措辞已全部下线，协议改成硬禁用口径。
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('wait_agent'));
-  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('60000'));
-  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('maxWaitMs'));
-  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('确定性拒绝'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('禁止等待'), '要写明「禁止等待」');
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('硬禁用'), '要写明是硬禁用');
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('无开关') || PROJECT_MANAGER_PROTOCOL.includes('没有开关'), '要写明没有开关');
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('【派工完成】'));
-  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('list_agents'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('list_agents'), '要给出读状态这条替代动作');
+  // 旧的"短等待 / 上限可配"措辞不得残留（否则模型会以为还能调）。
+  assert.ok(!PROJECT_MANAGER_PROTOCOL.includes('maxWaitMs'), '协议不应再提 maxWaitMs');
+  assert.ok(!PROJECT_MANAGER_PROTOCOL.includes('短等待'), '协议不应再教"短等待"');
 });
 
 test('协议末尾原样拼接 lib/discipline.js 的 WORK_DISCIPLINE（不是另写一份）', () => {
@@ -190,7 +195,8 @@ test('导出名与 section 契约正确（不与指挥者模式的 commander:mod
   assert.equal(SECTION_NAME, 'project-manager:mode');
   assert.notEqual(SECTION_NAME, 'commander:mode');
   assert.equal(SECTION_ORDER, 650);
-  assert.equal(FALLBACK_OPTIONS.maxWaitMs, 120_000, '默认选项要带上等待门禁的上限');
+  // 3.1.0：等待上限配置已删除（禁止等待、不设开关），默认选项里不应再有 maxWaitMs。
+  assert.equal('maxWaitMs' in FALLBACK_OPTIONS, false, '默认选项不应再有 maxWaitMs');
 });
 
 test('注册项目经理 prompt section；teammate 拿不到（避免与执行者人设打架）', () => {
@@ -367,41 +373,51 @@ test('放行只读工具与派发工具（门禁不能拦死管理工作）', as
   }
 });
 
-test('超长 wait_agent 被等待门禁确定性拒绝；短等待与读状态工具放行', async () => {
+test('3.1.0 禁止等待：项目经理调 wait_agent 一律被拒；读状态工具放行', async () => {
+  // 用户 2026-11-11 补充要求：**禁止等待子智能体，且不设开关**。
+  // 2.0.0 的"超长才拒 + 短等待放行"已整体下线：现在缺省参数、60 秒、30 分钟都一样拒。
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   const listener = preExecute(record);
 
-  const denied = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 600_000 } }, spyNext().next);
-  assert.equal(denied?.kind, 'deny');
-  assert.ok(denied.reason.includes('120000'), denied.reason);
-  assert.ok(denied.reason.includes('短等待'), denied.reason);
+  for (const args of [undefined, {}, { timeout_ms: 60_000 }, { timeout_ms: 600_000 }, { timeout_ms: 1_800_000 }]) {
+    const denied = await listener({ name: 'wait_agent', agent: LEAD, arguments: args }, spyNext().next);
+    assert.equal(denied?.kind, 'deny', `args=${JSON.stringify(args)} 时 wait_agent 应被拒绝`);
+    assert.ok(denied.reason.includes('硬禁用'), denied.reason);
+    assert.ok(denied.reason.includes('【派工完成】'), denied.reason);
+  }
 
-  const allowed = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 60_000 } }, spyNext().next);
-  assert.deepEqual(allowed, { kind: 'allow' });
-
-  for (const toolName of ['list_agents', 'team_task_list', 'send_message']) {
+  // 只拦 wait_agent：被拒之后该用的正是这些工具。
+  for (const toolName of ['list_agents', 'team_task_list', 'send_message', 'interrupt_agent']) {
     const decision = await listener({ name: toolName, agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
-    assert.deepEqual(decision, { kind: 'allow' }, `${toolName} 不该被等待门禁拦`);
+    assert.deepEqual(decision, { kind: 'allow' }, `${toolName} 不该被禁止等待门禁拦`);
   }
 });
 
-test('maxWaitMs = 0 时等待门禁关闭（读取配置服务实时生效）', async () => {
+test('3.1.0 禁止等待：没有开关（配置服务里塞旧 maxWaitMs / 关掉层级门禁都不改变判定）', async () => {
+  // 旧用例「maxWaitMs = 0 时等待门禁关闭」的**反向**断言：现在不存在能关掉它的配置。
   const { ctx, record, settings } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   const listener = preExecute(record);
-  settings.setOptions({ maxWaitMs: 0 });
+  // 模拟旧 profile patch 仍写着这些键（包括旧的 maxWaitMs:0）——门禁不读配置，照样拒。
+  settings.setOptions({ maxWaitMs: 0, delegationHierarchy: false, blockedTools: [] });
   const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
-  assert.deepEqual(decision, { kind: 'allow' });
+  assert.equal(decision?.kind, 'deny', '没有任何配置能放开 wait_agent');
+  assert.ok(decision.reason.includes('没有开关'), decision.reason);
 });
 
-test('等待门禁默认开启：未显式配置 maxWaitMs 时 1800000 被拒绝', async () => {
+test('3.1.0 禁止等待：teammate 等自己的下级放行（只拦项目经理本人）', async () => {
+  // 专家小组长（teammate）等它派出的 L2 属于它自己的调度；拦死子代理 = 模式干不了活。
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   const listener = preExecute(record);
-  const decision = await listener({ name: 'wait_agent', agent: LEAD, arguments: { timeout_ms: 1_800_000 } }, spyNext().next);
-  assert.equal(decision?.kind, 'deny');
-  assert.ok(decision.reason.includes('120000'), decision.reason);
+  for (const args of [undefined, { timeout_ms: 1_800_000 }]) {
+    const decision = await listener({ name: 'wait_agent', agent: TEAMMATE, arguments: args }, spyNext().next);
+    assert.deepEqual(decision, { kind: 'allow' }, 'teammate 的 wait_agent 必须放行');
+  }
+  // 身份读不到同样放行。
+  const anonymous = await listener({ name: 'wait_agent', agent: undefined }, spyNext().next);
+  assert.deepEqual(anonymous, { kind: 'allow' });
 });
 
 test('门禁自己出错时放行，而不是让工具调用失败', async () => {
