@@ -220,8 +220,34 @@ test('注册项目经理 prompt section；teammate 拿不到（避免与执行�
   assert.ok(section.text().includes('六位开发流程专家'));
 });
 
-test('注册 project-manager skill', () => {
+test('3.4.0 降级：没有智能体团队时给 PM 协议追加覆盖段（改用一次性子智能体）', () => {
+  // 交叉审计发现：PM 协议里"派单只有一条通道：spawn_teammate"在没有 Agent Teams 的
+  // 部署里指向不存在的工具；而门禁已按"没有 Team 通道"降级放行一次性子智能体。
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
+  apply(ctx);
+  const section = record.sections[0];
+  /** 一个带工具视图的 agent（`schemas()` 返回给定工具名）。 */
+  const agentWith = (names) => ({
+    id: 'session-lead',
+    session: { id: 'session-lead', header: { id: 'session-lead' } },
+    ctx: { tools: { schemas: () => names.map((name) => ({ name })) } },
+  });
+
+  const noTeam = section.text({ agent: agentWith(['read', 'write', 'subagent_architect', 'subagent_implementer']) });
+  assert.ok(noTeam.includes('本部署没有智能体团队'), noTeam.slice(-600));
+  assert.ok(noTeam.includes('改用一次性子智能体派每段任务'), noTeam.slice(-600));
+  assert.ok(noTeam.includes('subagent_architect'), '覆盖段要点名一次性专家工具');
+  assert.ok(noTeam.includes('不要自己写业务代码'), '降级后仍要守住"不自己写代码"');
+  // 原协议正文仍完整保留（覆盖段是追加，不是替换）。
+  assert.ok(noTeam.includes(PROJECT_MANAGER_PROTOCOL), '原协议正文必须原样保留');
+
+  // 有 Team 工具（或读不到视图）→ 不追加覆盖段，行为与 3.3.x 一致。
+  const withTeam = section.text({ agent: agentWith(['read', 'spawn_teammate', 'send_message']) });
+  assert.equal(withTeam, PROJECT_MANAGER_PROTOCOL);
+  assert.equal(section.text({ agent: LEAD }), PROJECT_MANAGER_PROTOCOL, 'LEAD 没有工具视图 → 按"有 Team"处理');
+});
+
+test('注册 project-manager skill', () => {  const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   assert.equal(record.skills.length, 1);
   assert.equal(record.skills[0].name, SKILL_NAME);

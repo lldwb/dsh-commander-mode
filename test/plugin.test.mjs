@@ -459,6 +459,82 @@ test('只有 specialist 工具时也算有派发通道（不会被误判成死�
   assert.equal(calls.count, 0);
 });
 
+// ------------------------------------- 3.4.0 无 Team 通道的降级（接线层） ---
+//
+// 交叉审计发现的死锁：层级门禁假设"指挥官总能用 Team 通道"。没有 Agent Teams 时，
+// 一次性子智能体是唯一出路 —— 拦了它 = 既不能自己动手也不能派活。所以接线层要能
+// 按 agent 的工具视图降级放行，**而有 Team 时仍然拦**（降级不是无条件放行）。
+
+/** 一个带工具视图的 Lead（`schemas()` 返回给定工具名）。 */
+function leadWithTools(names) {
+  return {
+    id: 'session-lead',
+    session: { id: 'session-lead', header: { id: 'session-lead' } },
+    ctx: { tools: { schemas: () => names.map((name) => ({ name })) } },
+  };
+}
+
+test('3.4.0 接线：没有 Team 工具的 Lead 调 subagent_* 不被层级门禁拒（降级放行）', async () => {
+  const listener = preExecute(boot({ specialists: ROSTER }).record);
+  const noTeamLead = leadWithTools(['read', 'write', 'subagent_architect', 'subagent_reviewer', 'workflow']);
+  const { next, calls } = spyNext();
+  const decision = await listener({ name: 'subagent_architect', agent: noTeamLead }, next);
+  assert.deepEqual(decision, { kind: 'allow' }, '没有 Team 通道时应降级放行');
+  assert.equal(calls.count, 1, '放行必须走 next');
+});
+
+test('3.4.0 接线对照：有 Team 工具的 Lead 调同一个工具仍被拒（降级不是放宽）', async () => {
+  const listener = preExecute(boot({ specialists: ROSTER }).record);
+  const teamLead = leadWithTools(['read', 'write', 'spawn_teammate', 'send_message', 'subagent_architect']);
+  const { next, calls } = spyNext();
+  const decision = await listener({ name: 'subagent_architect', agent: teamLead }, next);
+  assert.equal(decision?.kind, 'deny', '有 Team 通道时仍应拒绝指挥官直调子智能体');
+  assert.ok(decision.reason.includes('小组长'), decision.reason);
+  assert.equal(calls.count, 0);
+  // 只有 send_message（没有 spawn_teammate）也算"有 Team 通道" → 仍拒。
+  const sendOnlyLead = leadWithTools(['read', 'send_message', 'subagent_architect']);
+  const second = await listener({ name: 'subagent_architect', agent: sendOnlyLead }, spyNext().next);
+  assert.equal(second?.kind, 'deny');
+});
+
+test('3.4.0 接线：section 文本按工具视图改口（无 Team → 降级段；有 Team → 正常段）', async () => {
+  const { record } = boot({ specialists: ROSTER });
+  await flush();
+  const section = record.sections[0];
+  const noTeam = section.text({ agent: leadWithTools(['read', 'write', 'subagent_architect', 'subagent_reviewer']) });
+  assert.ok(noTeam.includes('本部署**没有**智能体团队'), noTeam.slice(0, 400));
+  assert.ok(noTeam.includes('subagent_architect'), '降级段要点名名册里的工具');
+  assert.ok(!noTeam.includes('只有小组长用'), '无 Team 时不应说"只有小组长用"');
+
+  const withTeam = section.text({ agent: leadWithTools(['read', 'spawn_teammate', 'send_message', 'subagent_architect']) });
+  assert.ok(withTeam.includes('只有小组长用'), '有 Team 时应走正常的两通道说明');
+  assert.ok(!withTeam.includes('本部署**没有**智能体团队'), withTeam.slice(0, 400));
+});
+
+test('3.4.0 接线：blockedTools 禁掉 Team 工具不再造成死锁（还有 specialist 时仍拦 write；全禁则放行）', async () => {
+  // 交叉审计的死锁：`canDelegate` 若只看工具视图，用户把 Team 工具写进 blockedTools 后
+  // 仍会得到"能派活"的假结论 → 执行边界继续拦 write → 而真正能调用的派发工具全被禁。
+  // 现在 `hasUsableDispatchChannel()` 按"真的能调用"算。
+  const lead = leadWithTools(['read', 'write', 'subagent_architect']);
+
+  // ① Team 工具被 block、视图里也没有 → specialist 是唯一可用通道 → 仍应拦 write。
+  const withSpecialist = makeSettings({
+    options: { blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'spawn_teammate', 'send_message'] },
+  });
+  const denied = await preExecute(boot({ settings: withSpecialist }).record)({ name: 'write', agent: lead }, spyNext().next);
+  assert.equal(denied?.kind, 'deny', '还有 specialist 通道时执行边界仍应拦 write');
+  assert.equal(denied.reason.includes('write'), true, denied.reason);
+
+  // ② 连 specialist 也 block → 没有任何可用派活通道 → 必须放行（逃生门，否则模式死锁）。
+  const allBlocked = makeSettings({
+    options: { blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'spawn_teammate', 'send_message', 'subagent_architect'] },
+  });
+  const { next, calls } = spyNext();
+  const allowed = await preExecute(boot({ settings: allBlocked }).record)({ name: 'write', agent: lead }, next);
+  assert.deepEqual(allowed, { kind: 'allow' }, '没有任何可用派活通道时必须放行（宁可漏拦，不可拦死）');
+  assert.equal(calls.count, 1, '放行必须走 next');
+});
+
 test('监听器自己出错时放行，而不是让工具调用失败', async () => {
   const { record } = boot();
   const listener = preExecute(record);

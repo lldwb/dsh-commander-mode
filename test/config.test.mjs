@@ -388,7 +388,9 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     maxSpecialists: 3,
     ledger: true,
     stateDir: '',
-    requireMandate: true,
+    // 3.4.0：confirmPlan=false（解引用后）会自动把 requireMandate 视为 false ——
+    // 关掉计划确认后无法记录计划授权，再要求授权会让所有派发被永久拒绝。
+    requireMandate: false,
     requireTicket: true,
     teamTaskProjection: true,
     requireTeamTask: true,
@@ -405,7 +407,92 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     eventInbox: true,
     eventPollMs: 15000,
   });
+  // 解引用本身仍然正确（没有"漏解引用"的告警），但会多一条 confirmPlan/requireMandate 冲突告警。
+  assert.equal(warnings.length, 1, `只应有冲突告警：${JSON.stringify(warnings)}`);
+  assert.match(warnings[0], /confirmPlan: false 与 requireMandate: true 冲突/u);
+  assert.match(warnings[0], /已自动把 requireMandate 视为 false/u);
+});
+
+// --------------------------------- 3.4.0 confirmPlan / requireMandate 冲突 ---
+//
+// 交叉审计发现的第 4 处死锁：`confirmPlan: false` 让协议不再要求 `ask_user_question`，
+// 而 Mandate 只能从它的 post-execute 结果记录 → 永远没有授权，所有派发被永久拒绝。
+// 两者是同一个决策的两面：关掉确认时自动关掉授权要求，并给一条告警说明原因。
+
+test('3.4.0：confirmPlan:false 自动把 requireMandate 视为 false（并告警）', () => {
+  const { options, warnings } = resolveConfig({ confirmPlan: false });
+  assert.equal(options.confirmPlan, false);
+  assert.equal(options.requireMandate, false, '关掉计划确认后不能再要求计划授权');
+  const conflict = warnings.filter((line) => line.includes('requireMandate'));
+  assert.equal(conflict.length, 1, `应有一条冲突告警：${JSON.stringify(warnings)}`);
+  assert.match(conflict[0], /confirmPlan: false 与 requireMandate: true 冲突/u);
+  assert.match(conflict[0], /会让所有派发被永久拒绝/u);
+});
+
+test('3.4.0：显式 requireMandate:false + confirmPlan:false → 无告警（不是冲突）', () => {
+  const { options, warnings } = resolveConfig({ confirmPlan: false, requireMandate: false });
+  assert.equal(options.confirmPlan, false);
+  assert.equal(options.requireMandate, false);
+  assert.deepEqual(warnings, [], '用户显式关掉两者不是冲突，不应告警');
+});
+
+test('3.4.0：confirmPlan:true + requireMandate:true（默认）→ 都开启且无告警', () => {
+  const explicit = resolveConfig({ confirmPlan: true, requireMandate: true });
+  assert.equal(explicit.options.confirmPlan, true);
+  assert.equal(explicit.options.requireMandate, true);
+  assert.deepEqual(explicit.warnings, []);
+  // 默认（不传）同样如此。
+  const defaults = resolveConfig({});
+  assert.equal(defaults.options.confirmPlan, true);
+  assert.equal(defaults.options.requireMandate, true);
+  assert.deepEqual(defaults.warnings, []);
+  // 只关 requireMandate（保留 confirmPlan）→ 合法，无告警。
+  const mandateOnly = resolveConfig({ requireMandate: false });
+  assert.equal(mandateOnly.options.confirmPlan, true);
+  assert.equal(mandateOnly.options.requireMandate, false);
+  assert.deepEqual(mandateOnly.warnings, []);
+});
+
+// ------------------- 3.4.0 teamTaskProjection / requireTeamTask 冲突 ---
+//
+// 交叉审计发现的同类死锁：关掉投影后工单不会出现在任务板上，而 D-1 要求
+// `spawn_teammate` 前工单已有投影 → Team 通道永远派不出去（与 def6609d 同一形状）。
+// 既然不投影，就不能再要求"已有投影"。
+
+test('3.4.0：teamTaskProjection:false 自动把 requireTeamTask 视为 false（并告警）', () => {
+  const { options, warnings } = resolveConfig({ teamTaskProjection: false });
+  assert.equal(options.teamTaskProjection, false);
+  assert.equal(options.requireTeamTask, false, '不投影就不可能"已有投影"，不能再要求它');
+  const conflict = warnings.filter((line) => line.includes('requireTeamTask'));
+  assert.equal(conflict.length, 1, `应有一条冲突告警：${JSON.stringify(warnings)}`);
+  assert.match(conflict[0], /teamTaskProjection: false 与 requireTeamTask: true 冲突/u);
+  assert.match(conflict[0], /会让 Team 通道永远派不出去/u);
+  assert.match(conflict[0], /已自动把 requireTeamTask 视为 false/u);
+});
+
+test('3.4.0：显式 requireTeamTask:false + teamTaskProjection:false → 无告警（不是冲突）', () => {
+  const { options, warnings } = resolveConfig({ teamTaskProjection: false, requireTeamTask: false });
+  assert.equal(options.teamTaskProjection, false);
+  assert.equal(options.requireTeamTask, false);
+  assert.deepEqual(warnings, [], '用户显式关掉两者不是冲突，不应告警');
+});
+
+test('3.4.0：默认（不传）→ teamTaskProjection 与 requireTeamTask 都开启且无告警', () => {
+  const { options, warnings } = resolveConfig({});
+  assert.equal(options.teamTaskProjection, true);
+  assert.equal(options.requireTeamTask, true);
   assert.deepEqual(warnings, []);
+  // 只关 requireTeamTask（保留投影）→ 合法，无告警。
+  const noRequire = resolveConfig({ requireTeamTask: false });
+  assert.equal(noRequire.options.teamTaskProjection, true);
+  assert.equal(noRequire.options.requireTeamTask, false);
+  assert.deepEqual(noRequire.warnings, []);
+  // 两个独立冲突同时触发时，各有一条告警（不是互相吞掉）。
+  const both = resolveConfig({ confirmPlan: false, teamTaskProjection: false });
+  assert.equal(both.warnings.filter((line) => line.includes('requireMandate')).length, 1);
+  assert.equal(both.warnings.filter((line) => line.includes('requireTeamTask')).length, 1);
+  assert.equal(both.options.requireMandate, false);
+  assert.equal(both.options.requireTeamTask, false);
 });
 
 test('resolveConfig 不快照名册 —— 名册只能由 specialists.js 实时清洗', () => {

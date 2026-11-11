@@ -32,9 +32,9 @@ function memoryLedger() {
   return ledger;
 }
 
-/** 建工具集。 */
-function tools(getLedger, getTeamBridge) {
-  const list = buildTicketTools({ getLedger, getTeamBridge });
+/** 建工具集（`getOptions` 可选：3.4.0 起工单工具按 `teamTaskProjection` 决定是否投影）。 */
+function tools(getLedger, getTeamBridge, getOptions) {
+  const list = buildTicketTools({ getLedger, getTeamBridge, getOptions });
   return {
     create: list.find((tool) => tool.name === 'commander_ticket_create'),
     update: list.find((tool) => tool.name === 'commander_ticket_update'),
@@ -176,6 +176,34 @@ test('create：有投影器时建任务并写回 team_task_id', async () => {
   assert.deepEqual(bridge.calls, [{ action: 'create', ticketId: 't-1' }]);
   // 账本里也持久化了映射
   assert.equal(ledger.getTicket('t-1', 's-1').teamTaskId, 'task-7');
+});
+
+test('3.4.0：teamTaskProjection:false 时工单工具真的不投影（配置与行为一致）', async () => {
+  // 此前只有 `syncTicketMirror` 尊重 `teamTaskProjection`，工单工具自己仍会投影 ——
+  // 用户关掉投影后板上却出现任务，而且 requireTeamTask 的自动降级也就失去意义。
+  const ledger = memoryLedger();
+  const bridge = fakeBridge({ taskId: 'task-1' });
+  const set = tools(() => ledger, () => bridge, () => ({ teamTaskProjection: false }));
+  const created = await set.create.execute({ title: '实现登录' }, EXEC);
+  assert.equal(created.ticket.team_task_id, null, '关掉投影后不应写回 team_task_id');
+  assert.deepEqual(bridge.calls, [], '关掉投影后不应调用 createProjection');
+
+  // 默认（true / 未配置）→ 仍投影一次。
+  for (const options of [{ teamTaskProjection: true }, {}]) {
+    const ledger2 = memoryLedger();
+    const bridge2 = fakeBridge({ taskId: 'task-1' });
+    const set2 = tools(() => ledger2, () => bridge2, () => options);
+    await set2.create.execute({ title: '实现登录' }, EXEC);
+    assert.deepEqual(bridge2.calls, [{ action: 'create', ticketId: 't-1' }], `options=${JSON.stringify(options)}`);
+  }
+
+  // update 的投影同步同样受开关控制。
+  const updateLedger = memoryLedger();
+  const updateBridge = fakeBridge({ taskId: 'task-2' });
+  const updateSet = tools(() => updateLedger, () => updateBridge, () => ({ teamTaskProjection: false }));
+  const created2 = await updateSet.create.execute({ title: '实现' }, EXEC);
+  await updateSet.update.execute({ ticket: created2.ticket.id, status: 'progress' }, EXEC);
+  assert.deepEqual(updateBridge.calls, [], '关掉投影后 update 也不应同步');
 });
 
 test('create：投影失败/抛错不影响建单（team_task_id 为 null）', async () => {

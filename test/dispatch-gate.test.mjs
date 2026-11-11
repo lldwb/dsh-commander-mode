@@ -149,6 +149,72 @@ test('没有计划授权 → 拒绝，理由给出固定问题 id 与确认选�
   assert.match(decision.reason, /不要重试/u);
 });
 
+// --------------------------------------- 3.4.0 无 ask_user_question 的降级 ---
+//
+// 交叉审计发现的同类死锁：Mandate 只从 `ask_user_question` 的 post-execute 结果记录。
+// 这个工具不存在时永远拿不到授权 → 原来会**永久拒绝所有派发**。所以工具视图可读且
+// 确实没有 `ask_user_question` 时跳过授权门禁（协议仍要求先讲计划）。
+
+/** 工具视图里没有 ask_user_question 的 agent 视图。 */
+const NO_ASK_TOOLS = ['read', 'write', 'spawn_teammate', 'send_message', 'subagent_architect'];
+
+test('3.4.0 降级：没有 ask_user_question + 无 mandate → 放行', async () => {
+  assert.equal(
+    await gate({ ledger: makeLedger({ mandate: null, tickets: [ticket()] }), availableTools: NO_ASK_TOOLS }),
+    undefined,
+  );
+});
+
+test('3.4.0 降级不是跳过所有校验：工单已结束 / 不存在 / 没带工单仍然拒绝', async () => {
+  const availableTools = NO_ASK_TOOLS;
+  // 工单已结束：后续校验仍生效。
+  const ended = await gate({
+    ledger: makeLedger({ mandate: null, tickets: [ticket({ status: 'done' })] }),
+    availableTools,
+  });
+  assert.equal(ended.kind, 'deny');
+  assert.match(ended.reason, /已结束/u);
+  // 工单不存在。
+  const missing = await gate({ ledger: makeLedger({ mandate: null, tickets: [] }), availableTools });
+  assert.equal(missing.kind, 'deny');
+  assert.match(missing.reason, /找不到工单/u);
+  // 没带工单（requireTicket 仍生效）。
+  const noTicket = await gate({
+    ledger: makeLedger({ mandate: null, tickets: [ticket()] }),
+    args: { task: '实现 X' },
+    availableTools,
+  });
+  assert.equal(noTicket.kind, 'deny');
+  assert.match(noTicket.reason, /commander_ticket_create/u);
+});
+
+test('3.4.0 降级：没有 mandate 时不再校验"工单挂在旧授权下"', async () => {
+  // 降级路径下 mandate 为 null —— 根本没有"授权 id 对齐"这回事，不能报"上一版计划"。
+  const decision = await gate({
+    ledger: makeLedger({ mandate: null, tickets: [ticket({ mandateId: 'm-0' })] }),
+    availableTools: NO_ASK_TOOLS,
+  });
+  assert.equal(decision, undefined, '无 mandate 时不应因 mandateId 不一致而拒绝');
+});
+
+test('3.4.0 降级判据：有 ask_user_question / 视图读不到 / 非数组 → 仍按"有"处理并拒绝', async () => {
+  const noMandate = () => makeLedger({ mandate: null, tickets: [ticket()] });
+  // 有 ask_user_question：原行为不变（必须先确认计划）。
+  const withAsk = await gate({ ledger: noMandate(), availableTools: ['read', 'ask_user_question', 'spawn_teammate'] });
+  assert.equal(withAsk.kind, 'deny');
+  assert.ok(withAsk.reason.includes(PLAN_QUESTION_ID), withAsk.reason);
+  // 视图读不到（undefined）→ 按"有"处理。
+  const unknown = await gate({ ledger: noMandate(), availableTools: undefined });
+  assert.equal(unknown.kind, 'deny');
+  assert.ok(unknown.reason.includes(PLAN_QUESTION_ID), unknown.reason);
+  // 不传 availableTools 也一样（兼容旧调用方）。
+  const absent = await gate({ ledger: noMandate() });
+  assert.equal(absent.kind, 'deny');
+  // 非数组（坏值）→ 按"有"处理。
+  const bad = await gate({ ledger: noMandate(), availableTools: 'read' });
+  assert.equal(bad.kind, 'deny');
+});
+
 test('有授权但没带工单 → 拒绝，并提示先建工单/列出已有工单', async () => {
   const open = [ticket({ id: 't-1' }), ticket({ id: 't-2' })];
   const decision = await gate({ args: { task: '实现 X' }, ledger: makeLedger({ mandate: MANDATE, tickets: open }) });

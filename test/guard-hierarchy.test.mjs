@@ -25,6 +25,7 @@ import {
   evaluateBoardWrite,
   evaluateSpecialistDispatch,
   evaluateTicketWrite,
+  hasUsableDispatchChannel,
   isSpecialistDispatchTool,
 } from '../lib/guard.js';
 import { LEAD, TEAMMATE } from './helpers.mjs';
@@ -253,6 +254,158 @@ test('子智能体派发门禁：拒因按实际可用工具生成，不点名�
   assert.ok(full.includes('`send_message`'));
   assert.ok(full.includes('`team_task_create`'));
   assert.ok(full.includes('`subagent_architect`'), '被拦工具要写进理由');
+});
+
+// ------------------------------------------- 3.4.0 无 Team 通道的降级放行 ---
+//
+// 交叉审计发现的同类死锁：`evaluateSpecialistDispatch()` 假设"指挥官总能用 Team 通道"。
+// 在没有 Agent Teams 的部署里，一次性子智能体是指挥官**唯一**能派活的路；拦了它 = 既不能
+// 自己动手（执行边界）也不能派活 —— 整个模式死锁。所以没有 Team 通道时**放行**。
+
+test('3.4.0 降级：没有 Team 通道时 Lead 调子智能体工具放行（否则模式死锁）', () => {
+  // 工具视图里既没有 spawn_teammate 也没有 send_message —— 一次性子智能体是唯一出路。
+  const noTeam = ['read', 'write', 'glob', 'subagent_architect', 'subagent_reviewer', 'workflow', 'todo_write'];
+  for (const name of ['subagent_architect', 'subagent_reviewer', 'subagent', 'subagent_fork']) {
+    allows(
+      evaluateSpecialistDispatch({ agent: LEAD, name, availableTools: noTeam }),
+      `没有 Team 通道时 Lead 调 ${name}`,
+    );
+  }
+  // 连 workflow 之外什么都没有（只有 subagent）时同样放行。
+  allows(
+    evaluateSpecialistDispatch({ agent: LEAD, name: 'subagent', availableTools: ['read', 'subagent'] }),
+    '只有通用 subagent 时',
+  );
+});
+
+test('3.4.0 降级不是无条件放行：有 Team 通道时仍然拦', () => {
+  // 这条是"降级不是放宽"的证明：只要 Team 通道在，指挥官就不该越过小组长。
+  const withSpawn = ['read', 'spawn_teammate', 'subagent_architect'];
+  const withSend = ['read', 'send_message', 'subagent_architect'];
+  const withBoth = ['read', 'spawn_teammate', 'send_message', 'subagent_architect'];
+  for (const [label, availableTools] of [
+    ['只有 spawn_teammate', withSpawn],
+    ['只有 send_message', withSend],
+    ['两者都有', withBoth],
+  ]) {
+    const reason = denyReason(evaluateSpecialistDispatch({ agent: LEAD, name: 'subagent_architect', availableTools }));
+    assert.ok(reason.includes('小组长'), `${label}：拒因应点名小组长：${reason}`);
+    assert.ok(reason.includes('subagent_architect'), `${label}：拒因应点名被拦工具：${reason}`);
+  }
+  // 工具视图读不到（undefined）时按"有 Team"处理 → 仍拦（宁可漏拦的方向不适用于这里：
+  // 读不到视图不等于"没有 Team"，而"没有 Team"是运行时事实）。
+  denyReason(evaluateSpecialistDispatch({ agent: LEAD, name: 'subagent_architect' }));
+  denyReason(evaluateSpecialistDispatch({ agent: LEAD, name: 'subagent_architect', availableTools: undefined }));
+  // 非数组的 availableTools 同样按"未知 → 有 Team"处理。
+  denyReason(evaluateSpecialistDispatch({ agent: LEAD, name: 'subagent_architect', availableTools: 'spawn_teammate' }));
+});
+
+test('3.4.0 降级只影响 Lead：teammate 无论有无 Team 通道都放行', () => {
+  // 小组长把子任务交给下级子智能体是规则 3 本身，与 Team 通道是否存在无关。
+  for (const availableTools of [undefined, ['read', 'subagent_architect'], ['read', 'spawn_teammate', 'send_message']]) {
+    for (const name of ['subagent_architect', 'subagent', 'subagent_fork']) {
+      allows(
+        evaluateSpecialistDispatch({ agent: TEAMMATE, name, availableTools }),
+        `teammate 的 ${name}（availableTools=${JSON.stringify(availableTools)}）`,
+      );
+    }
+  }
+});
+
+// ------------------------------- 3.4.0 可用派活通道判定（blockedTools 死锁） ---
+//
+// 交叉审计发现的同类死锁：`canDelegate` 原来只看工具视图里有没有派发工具，**不看
+// blockedTools**。用户把 `spawn_teammate`/`send_message` 写进 blockedTools 时，
+// 会得出"能派活"的假结论 → 执行边界继续拦 `write` → 而真正能调用的派发工具全被禁
+// → 既不能动手也不能派活。`hasUsableDispatchChannel()` 按"真的能调用"来算。
+
+test('3.4.0 hasUsableDispatchChannel：默认（有 Team + specialist + workflow，未 block）→ true', () => {
+  const tools = ['read', 'spawn_teammate', 'send_message', 'subagent_architect', 'workflow'];
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: true }), true);
+  // blocked 不传 / 传 Set 都可以。
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools }), true);
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: new Set(['read']) }), true);
+});
+
+test('3.4.0 hasUsableDispatchChannel：Team 工具全被 block 但 workflow 在 → true（不误判死锁）', () => {
+  const tools = ['read', 'spawn_teammate', 'send_message', 'workflow'];
+  assert.equal(
+    hasUsableDispatchChannel({ availableTools: tools, blocked: ['spawn_teammate', 'send_message'] }),
+    true,
+    'workflow 仍是可用派活通道',
+  );
+});
+
+test('3.4.0 hasUsableDispatchChannel：无 Team 工具（降级）+ subagent_* → true', () => {
+  const tools = ['read', 'write', 'subagent_architect', 'subagent_reviewer'];
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: true }), true);
+  // 通用 subagent / subagent_fork 同样算。
+  assert.equal(hasUsableDispatchChannel({ availableTools: ['read', 'subagent'], blocked: [] }), true);
+  assert.equal(hasUsableDispatchChannel({ availableTools: ['read', 'subagent_fork'], blocked: [] }), true);
+});
+
+test('3.4.0 hasUsableDispatchChannel：无 Team 且 subagent_* 也被 block → false', () => {
+  const tools = ['read', 'write', 'subagent_architect', 'subagent_reviewer'];
+  assert.equal(
+    hasUsableDispatchChannel({ availableTools: tools, blocked: ['subagent_architect', 'subagent_reviewer'] }),
+    false,
+  );
+});
+
+test('3.4.0 hasUsableDispatchChannel：只有 read（无任何派活通道）→ false', () => {
+  for (const tools of [['read', 'write', 'glob'], ['read', 'write', 'todo_write'], []]) {
+    assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [] }), false, JSON.stringify(tools));
+  }
+});
+
+test('3.4.0 hasUsableDispatchChannel：availableTools 读不到（undefined / 非数组）→ undefined（按"有"处理）', () => {
+  assert.equal(hasUsableDispatchChannel({ availableTools: undefined }), undefined);
+  assert.equal(hasUsableDispatchChannel({}), undefined);
+  for (const value of [null, 'read', 42, {}]) {
+    assert.equal(hasUsableDispatchChannel({ availableTools: value }), undefined, String(value));
+  }
+  // 门禁自身异常也按"未知"处理（不能把会话卡死）。
+  assert.equal(
+    hasUsableDispatchChannel({
+      availableTools: ['read'],
+      blocked: {
+        has() {
+          throw new Error('boom');
+        },
+        [Symbol.iterator]: () => {
+          throw new Error('boom');
+        },
+      },
+    }),
+    undefined,
+  );
+});
+
+test('3.4.0 hasUsableDispatchChannel：层级门禁关闭 + 只有 specialist → true', () => {
+  // 关掉层级门禁（2.x 行为）时一次性子智能体对指挥官是开放的。
+  const tools = ['read', 'write', 'subagent_architect'];
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: false }), true);
+  // 层级门禁开启 + 只有 specialist 且**没有 Team 工具** → 也 true（降级放行）。
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: true }), true);
+});
+
+test('3.4.0 hasUsableDispatchChannel：层级门禁开启 + 有 Team + 只有 specialist（被 block）→ true（Team 仍在）', () => {
+  const tools = ['read', 'spawn_teammate', 'subagent_architect'];
+  assert.equal(
+    hasUsableDispatchChannel({ availableTools: tools, blocked: ['subagent_architect'], delegationHierarchy: true }),
+    true,
+    'Team 通道未被 block，仍可派活',
+  );
+  // 反过来：层级门禁开启 + 有 Team + Team 被 block + specialist 被 block → false。
+  assert.equal(
+    hasUsableDispatchChannel({
+      availableTools: ['read', 'spawn_teammate', 'subagent_architect'],
+      blocked: ['spawn_teammate', 'subagent_architect'],
+      delegationHierarchy: true,
+    }),
+    false,
+    'Team 与 specialist 都被禁且层级门禁开着 → 没有任何可用派活通道',
+  );
 });
 
 test('三条门禁都吞掉自身异常（放行而不是让工具调用失败）', () => {
