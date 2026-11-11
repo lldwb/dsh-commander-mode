@@ -19,8 +19,8 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   （3.0.0：任务板由小组长结算，指挥官只核对）。
   每轮运行时上下文里有「**同步看板**」（任务板、计划清单、团队状态的实时快照，有未同步项
   时直接给纠正指令）；万一还是忘了，回合结束前的兜底钩子会把它拽回来。0.4.0 起生效。
-- **a2a 有纪律**：派活一次写全、开工前先约定回报格式、`wait_agent` 超时**不算异常**
-  （别紧接着 `list_agents` + `team_task_list` 复查）—— 少一轮就是一个回合。0.4.0 起生效。
+- **a2a 有纪律**：派活一次写全、开工前先约定回报格式、**不等**（`wait_agent` 3.1.0 起对
+  指挥官硬禁用、无开关）——状态用 `list_agents` / 任务板读一次，少一轮就是一个回合。0.4.0 起生效。
 - **Team 优先（0.5.0）**：多阶段 / 长任务 / 需要中途追加指令或任务板进度 → 走「智能体团队」
   （`spawn_teammate` + `team_task_*` + `send_message`）；一次性单点任务由**小组长**用
   `subagent_<id>`（3.0.0：指挥官的通道只剩 Team）。
@@ -33,7 +33,8 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   账本落在 `<DSH_HOME>/commander/<profile>.json`（原子写、损坏自动备份、重启不丢）。
 - **异步派工与完成唤醒（0.7.0）**：一次性 specialist 不再阻塞等待——工具立即返回 childId，
   结算时用一条「【指挥者·派工完成】」通知**唤醒**指挥者（带工单、`STATUS:`、摘要与下一步），
-  并同时写账本。派活后可以继续做别的或结束回合，不要 `wait_agent` / `list_agents` 轮询；
+  并同时写账本。派活后可以继续做别的或结束回合，**不要等**（3.1.0 起 `wait_agent` 对指挥官
+  硬禁用）也不要 `list_agents` 轮询；
   在飞数量有上限（`maxAsyncTasks`，3.0.0 起默认 16），`asyncDelegation: false` 可回退前台阻塞行为。
 - **Worker Session（0.8.0；1.0.0 起默认开启）**：`commander_worker_spawn` 可给一张工单开
   **独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），worker 只拿工作
@@ -50,7 +51,7 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   Agent Teams 面板里看到的板就是工单的进度，不需要模型自觉去建。没有 Agent Teams 的
   部署行为与 1.1.x 完全一致。
 - **项目经理模式（2.0.0）**：第二个 agent preset，**继承自「指挥者模式」+「Agent 预设定义」**
-  （见下文「继承关系」一节）：能力行、专家名册、执行/等待门禁、工作纪律全部复用指挥者那条，
+  （见下文「继承关系」一节）：能力行、专家名册、执行 / 禁止等待门禁、工作纪律全部复用指挥者那条，
   preset 的声明与生命周期交给随附的「Agent 预设定义」。它不写业务代码，而是调用**六位开发
   流程专家**（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条**带门禁的六段流水线**：每段都有
   输入、产出、验收判据与返工规则，实现之后必须独立审查与独立测试，安全审计与文档不得
@@ -61,9 +62,10 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   `skills/` 目录里 **20 个方法 skill** 的阶段归位（先加载方法再动手；其中
   `file-location-alignment` 专门治"位置歧义 / 用缺失否定用户"）。它明确一条边界：
   **skill 是工作方法，不替代验收证据**。
-- **等待门禁（2.0.0）**：`wait_agent` 超过 `maxWaitMs`（默认 120000，`0` = 关闭）会被
-  **确定性拒绝**并返回纠正指令（改短等待 → 继续推进其它工作 → 依赖「派工完成」通知）。
-  依据是历史会话里单次 127.5 分钟、累计 11 小时的等待：等子代理不要一直等。
+- **禁止等待子智能体（3.1.0，无开关）**：`wait_agent` 对指挥官**无条件拒绝**——没有
+  `maxWaitMs`、也没有任何配置项能放开（连"短等"也不行）。不等之后靠「派工完成」通知唤醒 +
+  读状态（`list_agents` / 任务板）+ `send_message` 追问。依据是历史会话里单次 127.5 分钟、
+  累计 11 小时的等待：等子代理不要一直等，连"等一会儿"也不行。
 
 ```text
 30 秒上手
@@ -106,7 +108,7 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 | 规划与拆分、维护 `todo_write` | 跑命令（`pwsh` / `bash`） |
 | 建任务板、派发给小组长（`spawn_teammate`） | 杀作业（`job_kill`） |
 | 结算后三同步：任务板 / 计划清单 / 团队状态 | 装插件（`plugin_manager`） |
-| `wait_agent` 等进展、核对验收判据 | 替用户拍板 |
+| 读状态（`list_agents` / 任务板）、核对验收判据 | 替用户拍板 |
 | 用 `ask_user_question` 让用户确认计划、上报分歧 | |
 
 > **3.0.0 起是三层指挥链（指挥官 → 小组长 → 子智能体）**：下表与后续小节里的「子代理」
@@ -145,8 +147,9 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 - **派活一次写全**：目标 / 产出物 / 验收判据 / 写作用域 / 回报格式 / 停手条件写进一条消息；
 - **先约定回报协议**：长任务连续跑到完成，只在一行里程碑或异常时回报，**不要每批结束回合
   等指令**（每次多两轮：它停一次、你再推一次）；
-- **超时不是事件**：`wait_agent` 超时只说明"这段时间没变化"——换更长 timeout 或做独立只读
-  核对，别紧接着 `list_agents` + `team_task_list` 复查；同一参数连续重复会被运行时警告；
+- **不等，也不轮询**：3.1.0 起 `wait_agent` 对指挥官**硬禁用（无开关）**——不存在"超时"这个
+  动作；要看状态用 `list_agents` / 任务板读一次，别紧接着 `list_agents` + `team_task_list`
+  复查；同一参数连续重复会被运行时警告；
 - **回执即成功**：`send_message` 返回 `accepted` / `queued` 都算投递成功，绝不重发。
 
 顺带修掉一个真实的**系统提示泄漏**：teammate 与指挥者共用同一个 preset scope，0.3.x 里
@@ -409,7 +412,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 
 | 继承自 | 继承/复用的东西 | 落在哪 |
 |---|---|---|
-| **指挥者模式**（`dsh-commander-mode/agent`） | ① 能力行清单（`CAPABILITIES` 块）**逐字节一致**，只多一个 `customSkillDirs`（运行时行数：指挥者 22 行 / 项目经理 23 行）；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 等待门禁 `evaluateWaitCap()`；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `cordis.patch.yml` 的 CAPABILITIES 块、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
+| **指挥者模式**（`dsh-commander-mode/agent`） | ① 能力行清单（`CAPABILITIES` 块）**逐字节一致**，只多一个 `customSkillDirs`（运行时行数：指挥者 22 行 / 项目经理 23 行）；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 禁止等待门禁 `evaluateWaitForbidden()`（3.1.0：硬禁用、无开关）；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `cordis.patch.yml` 的 CAPABILITIES 块、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
 | **「Agent 预设定义」的语义**（`@deepseek-ai/dsh-agent-preset`） | preset 的声明方式与生命周期语义：接受 `{ id, name, description, order, plugins }`、调用 `agentPresets.register()`、`order` 决定模式菜单排序（指挥者 7、项目经理 8）。**2.1.0 起本包自带等效声明器**（`lib/preset-declaration.js`，两个子路径模块 `preset-commander` / `preset-project-manager`）——原因见下：组件行标题按模块名解析 locale，两行共用随附声明器时标题会完全一样 | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `preset-commander.js` / `preset-project-manager.js` |
 | **项目经理模式新增（不属于继承）** | 六段流水线协议（阶段门禁、返工规则、经验教训要求）、项目开发工作流组件（`dsh-commander-mode/workflow`）、本包 `skills/` 目录的加载（`skill-filesystem.config.customSkillDirs`，只在 PM 模式） | `project-manager.js`、`lib/project-manager.js`、`workflow.js`、`lib/workflow.js` |
 
@@ -454,7 +457,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
   `team_task_update` 改进度/排期（`claim` / `release` / `complete` / `reopen` /
   `set_dependencies`）、自己 `commander_ticket_update` 报推进状态（`progress` / `waiting` /
   `ready` / `blocked` / `failed`）——这些交给小组长（`delegationHierarchy: false` 可关闭）；
-- 超过 `maxWaitMs`（默认 120000）的 `wait_agent` 会被**直接拒绝**（见「等待门禁」一节）；
+- `wait_agent` 会被**无条件拒绝**（3.1.0 禁止等待、无开关，见「禁止等待子智能体」一节）；
 - 协议里明确**禁止人日 / 人天 / 工期估算**，用「步骤 + 验收判据 + 依赖」代替；
 - 收尾必须写经验教训，并额外回答「这个模式本身哪一步形式化了、哪一步产物无法验收、
   哪条纪律没被协议覆盖」。
@@ -492,24 +495,35 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 「验收判据」交证据；没有证据 = 这一段没做。工作流组件不持有配置、不注册工具、不读账本，
 渲染失败一律降级为空串。
 
-## 等待门禁（2.0.0）
+## 禁止等待子智能体（3.1.0，无开关）
 
-历史会话里 `wait_agent` 被当成了"挂机等子代理"：会话 5d9b3002 里 39 次等待合计 231 分钟、
-单次最长 **127.5 分钟**；会话 3b342fc5 里 101 次合计 **667.5 分钟**，其中 6 次直接等满
-1800000ms。用户复盘时的要求是：**等子代理不要一直等**。
+历史会话里 `wait_agent` 被当成了"挂机等子代理"：会话 5d9b3002 里 39 次等待合计 **231 分钟**、
+单次最长 **127.5 分钟**；会话 3b342fc5 里 101 次合计 **667.5 分钟**（11.1 小时），其中 6 次
+直接等满 1800000ms。用户复盘时的要求是：**等子代理不要一直等**。
 
-两个模式（指挥者 / 项目经理）的 `tools/pre-execute` 门禁都调用
-`lib/guard.js` 的 `evaluateWaitCap()`：
+2.0.0 曾用 `maxWaitMs` 限制单次等待时长（默认 120s，配 `0` 可关闭）。**3.1.0 起这条不再
+"限制"，而是"禁止"**——用户 2026-11-11 的补充要求是「禁止等待子智能体，且不设开关」：
 
-- 只拦 `wait_agent`，且只在 `maxWaitMs > 0` 时生效；
-- `timeout_ms` 超过上限 → **确定性拒绝**，拒因直接告诉模型「改成 ≤ maxWaitMs 的短等待 → 继续
-  推进其它工作 → 依赖【派工完成】通知」，并给出当前上限；
-- 缺省 `timeout_ms` 按 DSH 实际默认值 30000 比较（不能靠不传参数绕过）；
-- 字符串数字（如 `"1800000"`）、非整数、非正数一律拒绝；
-- `list_agents` / `team_task_list` / `send_message` 等"读状态 / 唤醒队友 / 建板"的工具
-  **不受影响**——被拒之后模型必须还能推进，否则等于把人堵在原地。
+- `lib/guard.js` 的 `evaluateWaitForbidden()` 在 `tools/pre-execute` 上对**指挥官**的
+  `wait_agent` 调用**无条件拒绝**，拒绝理由就是纠正指令（读状态 / 追问 / 汇报收尾）；
+- **没有任何配置项可以放开**：`maxWaitMs` 已整体移除（schema / 读取器 / patch / 文档全删），
+  也**不受** `delegationHierarchy`、`blockedTools` 影响——`wait_agent` 不是"可配置的门禁"，
+  而是一个被硬禁用的工具；
+- **只拦指挥官本人**：小组长（teammate）等自己的下级属于它自己的调度，不在本门禁范围；
+  身份读不到时放行（宁可漏拦，不可拦死，与其它门禁同一原则）；
+- 传什么 `timeout_ms` 都没用：不存在"短等"，也不存在"超时"这个动作。
 
-配置项 `maxWaitMs`（默认 120000ms，范围 1000–1800000，`0` = 关闭门禁）见「配置」一节。
+**不等之后靠什么**（拒因里也这么写）：
+
+1. **完成通知会自己回来**：小组长 / 子智能体结算时用「【派工完成】」通知**主动唤醒**指挥官
+   （`agent.steer()`），不需要等；
+2. **要看状态**：`list_agents` / `team_task_list` / `team_task_get`（读状态，不挂起）；
+3. **要推进**：`send_message` 追问或追加指令；疑似停滞用 `interrupt_agent` 纠偏或换人；
+4. **没有可推进的事**：给用户一句话阶段汇报并**结束回合**，等完成通知或用户消息唤醒。
+
+历史数据说明"限制时长"不够：只要还能等，模型就会把"等"当成默认动作；只要还能配，部署里
+就会出现"这次先关掉"。所以 3.1.0 把开关一起删掉了。配置项里已不存在 `maxWaitMs`
+（见「配置」一节）。
 
 ## 开箱预置的专家（按主流软件开发流程）
 
@@ -570,7 +584,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 
 | 通道 | 工具 | 谁用 | 适合 |
 |---|---|---|---|
-| **智能体团队** | `spawn_teammate` / `send_message` / `wait_agent` / `team_task_*` | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
+| **智能体团队** | `spawn_teammate` / `send_message` / `team_task_*`（`wait_agent` 3.1.0 起对指挥官禁用） | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
 | **多模型 specialist** | `subagent_<id>`（前台，结果直接返回） | **小组长**（L1） | 独立模型/专门职责、一次性的实现/审查/分析 |
 
 3.0.0 起指挥官的通道只剩 Team：直调 `subagent_<id>` / `subagent` / `subagent_fork` 会被门禁
@@ -711,7 +725,9 @@ specialist 跑在**自己的独立 preset** 里（`commander-specialist-<id>-<ha
 
 Team 通道用的是 `@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」）
 提供的九个 Team 工具：`spawn_teammate`、`send_message`、`wait_agent`、`list_agents`、
-`interrupt_agent`、`team_task_create/list/get/update`。
+`interrupt_agent`、`team_task_create/list/get/update`。其中 `wait_agent` 在 3.1.0 起对
+**指挥官**硬禁用（无开关，见「禁止等待子智能体」一节）；它仍存在，因为小组长等自己的下级
+需要它。
 
 它们注册在每个 Team 成员 agent **自己的 ctx** 上（Lead 是隐式 Team 的 Lead，因此也是成员），
 所以**本插件的 patch 不需要、也不该重复声明它们**。那个组合包同时禁用了旧的
@@ -812,7 +828,6 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `eventInbox` | `true` | 外部事件投递（1.1.0）：轮询 `events/inbox/` 并 `steer` 对应指挥者会话；关掉不轮询 |
 | `eventPollMs` | `15000` | 外部事件轮询间隔（ms，≥1000） |
-| `maxWaitMs` | `120000` | 2.0.0：单次 `wait_agent` 的等待上限（ms，范围 1000–1800000；`0` = 关闭门禁）。超过它的等待被**确定性拒绝** |
 | `specialists` | 出厂预置名册（**volatile**） | 多模型 specialist 名册，由设置页编辑；默认 6 个按开发流程划分的专家 |
 | `maxSpecialists` | `20` | 名册条数上限（每项 = 一个 preset + 一个工具） |
 
@@ -860,7 +875,7 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   `lib/sync.js`（`STALE_OPEN_GRACE_MS`、最近 3 次），有单测覆盖。
 - **派发配比只统计指挥者自己的派活动作。** `spawn_teammate` / `send_message` 记 Team；
   `subagent_<id>` / `subagent` / `subagent_fork` / `workflow` 记一次性。
-  `wait_agent` / `list_agents` / `team_task_*` 不计入（它们是等待、读状态与建板，不是派活）。
+  `wait_agent`（3.1.0 起对指挥官禁用）/ `list_agents` / `team_task_*` 不计入（它们是读状态与建板，不是派活）。
   重启会重置计数（账本是进程内的），重启后第一次派发的配比从零开始。
   3.0.0 起指挥官只能走 Team，所以这条配比对它恒为 Team；看板保留它是为了历史会话与
   `delegationHierarchy: false` 的回退配置。
@@ -936,13 +951,14 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   两者等价——平台在进程生命周期内不变，`baseUrl` 在加载期同样可用。若将来 DSH 给声明器
   增加新字段，`PresetDeclarationConfig`（`z.object`）需要跟着补；这是刻意的：宁可显式报错，
   也不要静默丢字段。
-- **等待门禁只覆盖 DSH 工具调用（2.0.0）。** 它拦的是 `wait_agent` 的 `timeout_ms`；如果某个
-  插件用别的途径挂住会话（自定义工具、外部等待），本门禁看不到。它对**所有 agent** 生效
-  （包括 teammate）：长等待在哪里都是问题；读状态 / 唤醒队友的工具不受影响。`maxWaitMs: 0`
-  可整体关闭，但那时只剩协议约束。
-- **等待门禁的下限与 DSH 自己的下限有交叉（2.0.0）。** DSH 的 `wait_agent` 只接受
-  10000–3600000ms；把 `maxWaitMs` 设到 10000 以下时，任何 `wait_agent` 调用（含缺省 30000）
-  都会被拒——这是刻意让"短等待"变成"不等待，先去做别的"。范围由 schema 夹在 1000–1800000。
+- **禁止等待只拦指挥官（3.1.0）。** `evaluateWaitForbidden()` 只在调用者是 Lead 时拒绝
+  `wait_agent`；小组长（teammate）等自己的下级不受影响，身份读不到时放行（宁可漏拦，不可
+  拦死，与其它门禁同一原则）。门禁**不读任何配置**：`delegationHierarchy`、`blockedTools`
+  都改不了它，`maxWaitMs` 已整体移除。
+- **`wait_agent` 是被硬禁用的工具，不是"配置成很短"（3.1.0）。** 它不在 `blockedTools`
+  清单里（那份清单给 `evaluatePreExecute` 用），而是由独立门禁无条件拒绝；因此也不存在
+  "DSH 允许 10000–3600000ms"这类下限交叉问题——对指挥官来说这个调用直接不成立。传任何
+  `timeout_ms`（含字符串、缺省）结果都一样：拒绝。
 - **项目经理模式没有工单账本与计划授权门禁（2.0.0）。** 它不注册 `commander_ticket_*`，
   进度权威是**共享任务板 + 每段落盘证据**。指挥者模式的那套 Mandate/工单门禁只属于指挥者
   模式，两者不要混用。
@@ -1086,11 +1102,11 @@ node --test "test/**/*.test.mjs"
 |---|---|
 | `index.js` | **配置行**（profile 顶层）：导出 `Config`、提供 `commanderSettings` / `commanderLedger` 服务、关掉自动设置页 |
 | `agent.js` | **指挥者模式行**（preset 内）：协议 section、执行门禁、派发/计划授权门禁、工单工具、skill、specialist 安装与重建 |
-| `project-manager.js` | **项目经理模式行**（preset 内）：项目经理协议 section、六位专家安装（异步通知）、执行门禁 + 等待门禁、skill |
+| `project-manager.js` | **项目经理模式行**（preset 内）：项目经理协议 section、六位专家安装（异步通知）、执行门禁 + 禁止等待门禁、skill |
 | `workflow.js` | **项目开发工作流组件**（preset 内）：六段流水线执行手册 section（order 640）+ skill |
 | `lib/project-manager.js` | 项目经理协议文本（六段流水线门禁 + 五条纪律，末尾原样拼接 `WORK_DISCIPLINE`） |
 | `lib/workflow.js` | 项目开发工作流文本（每段六件套 + 19 个 skill 的阶段索引） |
-| `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 短等待 / 禁人日 / git 分类提交 / 经验教训），由两份协议 import 拼接 |
+| `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 禁止等待 / 禁人日 / git 分类提交 / 经验教训），由两份协议 import 拼接 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
 | `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
@@ -1099,8 +1115,8 @@ node --test "test/**/*.test.mjs"
 | `lib/ledger-service.js` | `commanderLedger` 服务：会话隔离的工单/授权/派发/回报读写与裁剪 |
 | `lib/dispatch-gate.js` | 派发门禁：没有计划授权 / 不带工单 → 确定性拒绝；子代理/缺服务/身份不明一律放行 |
 | `lib/ticket-tools.js` | 三个工单工具（create / update / list）的 schema、执行与错误文案 |
-| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**等待门禁**（`evaluateWaitCap`）、拒绝理由 |
-| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（含 `maxWaitMs`） |
+| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、拒绝理由 |
+| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除） |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
 | `lib/capabilities.js` | specialist preset 的能力行（JS 版，与 `cordis.patch.yml` 逐行对齐，由测试守护） |
 | `specialist.js` | specialist preset 里的人设行（`dsh-commander-mode/specialist`） |
@@ -1129,6 +1145,22 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **3.1.0 第十九轮（禁止等待子智能体：硬禁用、无开关）**：
+  - **门禁手动验证**（真实模块、非 mock：`node -e` 直接 import `lib/guard.js`）：
+    Lead + `wait_agent` → **deny**（拒因原文：「指挥官**不允许** `wait_agent`（本模式硬禁用，
+    **没有开关**，不要重试）」）；Lead + `list_agents` / `team_task_list` / `send_message`
+    → 放行（读状态 / 追问不受影响）；teammate（`isDelegatedAgent` 命中）+ `wait_agent`
+    → 放行；身份读不到（`null`）→ 放行。
+  - **"无开关"的结构性证据**：`evaluateWaitForbidden` 的签名只有 `{ agent, name }`，
+    **不读任何配置**；`agent.js` / `project-manager.js` 里它在 `delegationHierarchy` 判断
+    **之外**无条件调用——所以 `delegationHierarchy: false` 时它仍然拒绝，`blockedTools`
+    也改不了它。
+  - **配置事实**：`resolveConfig({}).options` **26 个键**、`KNOWN_CONFIG_KEYS` 27 个
+    （含 `specialists`），两者都**没有** `maxWaitMs`；`Config({})` 27 个键、无 `maxWaitMs`；
+    `cordis.patch.yml` 里也已删掉这个键（留着会被报成未知配置键）。
+  - **`node --test "test/**/*.test.mjs"`** → **601 / 601 通过、0 失败**（3.1.0 契约同步后；
+    删除 2.0.0 等待门禁相关用例，新增 `guard-wait` 的「禁止等待」用例：Lead 拒 / teammate 放 /
+    身份未知放 / 读状态工具放 / `delegationHierarchy: false` 仍拒）。
 - **3.0.0 第十八轮（三层指挥链：指挥官 → 小组长 → 子智能体）**：
   - `node --test "test/**/*.test.mjs"` → **602 / 602 通过、0 失败**（2.4.1 基线 553，净增 49：
     `team-model` / `guard-hierarchy` / `hierarchy-wiring` 三个新文件 + 既有文件按新契约校准）。
@@ -1514,6 +1546,22 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **3.1.0** —— 禁止等待子智能体（用户 2026-11-11 补充要求：**禁止等待，且不设开关**）：
+  ① **现象**：`wait_agent` 被当成"挂机等子代理"——历史会话里 39 次等待合计 231 分钟、
+  单次最长 127.5 分钟；另一个会话 101 次合计 667.5 分钟（11.1 小时）、6 次直接等满
+  1800000ms。2.0.0 的 `maxWaitMs` 只限制了单次时长：模型仍把"等"当默认动作，部署仍会
+  "这次先关掉"。
+  ② **变更**：`wait_agent` 对**指挥官**改为**硬禁用（无开关）**——`lib/guard.js` 新增
+  `evaluateWaitForbidden()`（删除 `evaluateWaitCap` / `buildWaitCapReason` /
+  `DEFAULT_MAX_WAIT_MS` / `DSH_DEFAULT_WAIT_MS`），在 `tools/pre-execute` 上**无条件拒绝**，
+  不读任何配置（`delegationHierarchy` / `blockedTools` 都改不了它）；teammate 放行、身份
+  读不到放行。`maxWaitMs` 配置**整体移除**（schema / `KNOWN_CONFIG_KEYS` / `resolveConfig` /
+  `readWaitCap` / 上下限常量 / `cordis.patch.yml` 全删）；协议与五条工作纪律里的
+  「短等待 ≤60s」全部改成「禁止等待」。
+  ③ **不等之后靠**：完成通知唤醒（`agent.steer()`）/ `list_agents` / `team_task_list` 读
+  状态 / `send_message` 追问 / 一句话汇报后结束回合。
+  **用户要做什么**：重启即可（门禁与配置在启动时确定）。**若 profile patch 里写过
+  `maxWaitMs`，请删掉那一行**——schema 已不认这个键，留着会得到"未知配置键"警告。
 - **3.0.0** —— 三层指挥链（用户 2026-11-11 的五条规则落地；大版本：对外契约有破坏性变更）：
   ① 新增 `lib/team-model.js` 作为团队模型的**唯一正文来源**（三层职责 + 七条规则 + 深度 2 /
   并行 16），指挥官协议与项目经理协议都拼接它，不再各抄一份；协议新增「持续接单」与
