@@ -18,11 +18,12 @@ import { buildWorkerTools } from '../lib/worker-tools.js';
 const PARENT = 's-1';
 const TICKET = 't-1';
 
-/** 内存账本 + 一张已授权工单。 */
-function ledgerWithTicket() {
+/** 内存账本 + 一张已授权工单（`now` 可注入，便于测停滞看门狗的时间逻辑）。 */
+function ledgerWithTicket({ now } = {}) {
   let state = emptyLedger();
   const ledger = new CommanderLedger({
     file: 'memory.json',
+    ...(now === undefined ? {} : { now }),
     load: () => ({ state }),
     save: (_file, next) => {
       state = JSON.parse(JSON.stringify(next));
@@ -104,17 +105,37 @@ function makeDeps({ parent = makeAgent(PARENT), workerFactory = () => makeAgent(
   return { record, parent, ctx, emit, deps: { sessionController, workspaceRegistry, agents, permissionPresets, mkdir: async (dir) => { record.mkdirs.push(dir); }, execCommand: async (command, options) => { record.commands.push({ command, options }); } } };
 }
 
-/** 简化：直接用 deps 建服务。 */
-function workersOf({ ledger, options = {}, parentAgent } = {}) {
+/** 简化：直接用 deps 建服务（`now` / 额外 deps 可注入，便于测停滞看门狗）。 */
+function workersOf({ ledger, options = {}, parentAgent, now, deps: extraDeps = {} } = {}) {
   const built = makeDeps({ parent: parentAgent ?? makeAgent(PARENT) });
   const service = new CommanderWorkers({
     ctx: built.ctx,
     ledger,
     getOptions: () => ({ workerSessions: true, workRoot: '/tmp/commander-work', maxWorkers: 3, prepareCommand: '', workerPermission: 'danger-full-access', ...options }),
-    deps: built.deps,
+    ...(now === undefined ? {} : { now }),
+    deps: { ...built.deps, ...extraDeps },
   });
-  service.install();
-  return { service, ...built };
+  const dispose = service.install();
+  return { service, dispose, ...built };
+}
+
+/** 假定时器（避免测试里留下真实的 60s interval）。 */
+function fakeTimers() {
+  const handles = [];
+  return {
+    handles,
+    setInterval: (fn, ms) => {
+      const handle = { fn, ms, unref: () => { handle.unrefed = true; } };
+      handles.push(handle);
+      return handle;
+    },
+    clearInterval: (handle) => { handle.cleared = true; },
+  };
+}
+
+/** 让 `void notifyParent(...)` 这类 fire-and-forget 的异步链路跑完。 */
+async function flushAsync() {
+  for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
 test('resolveWorkRoot：默认 <DSH_HOME>/commander/work；相对路径按 DSH_HOME 解析', () => {
@@ -302,4 +323,155 @@ test('worker 工具：指挥者专用、schema 齐全、缺服务给可执行错
   await assert.rejects(async () => spawn.execute({ ticket: ticket.id, task: 'x' }, childExec), /只有指挥者本人/u);
   const missing = buildWorkerTools({ getWorkers: () => undefined })[0];
   await assert.rejects(async () => missing.execute({ ticket: ticket.id, task: 'x' }, { agent: parent }), /Worker Session 服务不可用/u);
+});
+
+// ------------------------------------------- 停滞看门狗（3.3.0，会话 def6609d） ---
+//
+// 会话 def6609d 的现场：worker 卡在**回合中途**（28 步后长时间无事件、没有 turn/end），
+// 既不会触发 `agent/status = idle`（idle 兜底不生效），也不会 commander_report ——
+// 指挥者永远等不到唤醒，整个会话静默挂死。看门狗用定时扫描补上这一层。
+
+/** 固定基准时间。 */
+const T0 = 1_000_000_000;
+
+/** 建一个"有执行信息"的工单（startedAt = 当前账本时钟）。 */
+function withExecution(ledger, ticket) {
+  ledger.setExecution(ticket.id, PARENT, { sessionId: `worker-${ticket.id}`, directory: '/tmp/w' });
+  return ticket;
+}
+
+test('停滞看门狗：install 启动 60s 定时器并 unref，dispose 清理且不再重启', () => {
+  const { ledger } = ledgerWithTicket();
+  const timers = fakeTimers();
+  const { service, dispose } = workersOf({ ledger, deps: timers });
+  assert.equal(timers.handles.length, 1, 'install 应启动一个定时器');
+  assert.equal(timers.handles[0].ms, 60_000, '扫描间隔 60 秒');
+  assert.equal(timers.handles[0].unrefed, true, '定时器要 unref，不能拖住进程退出');
+  // 重复调用 startStallWatch 不重复启动。
+  service.startStallWatch();
+  assert.equal(timers.handles.length, 1);
+  // disposer 停止定时器。
+  dispose();
+  assert.equal(timers.handles[0].cleared, true, 'dispose 应 clearInterval');
+  // dispose 之后即使再调也不重启（disposed 标记）。
+  service.startStallWatch();
+  assert.equal(timers.handles.length, 1);
+});
+
+test('停滞看门狗：开工 11 分钟且从未回报 → 提醒一次并返回工单 id', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  withExecution(ledger, ticket); // startedAt = T0
+  const timers = fakeTimers();
+  const { service, parent } = workersOf({ ledger, now: () => clock, deps: timers });
+  clock = T0 + 11 * 60_000;
+
+  const notified = service.scanStalls();
+  assert.deepEqual(notified, [ticket.id], '应返回本次被提醒的工单 id');
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 1, '应 steer 唤醒指挥者');
+  const text = parent.record.steers[0].content[0].text;
+  // 文案要让指挥者知道"为什么 idle 兜底没生效"以及下一步怎么办。
+  assert.match(text, /执行者疑似停滞/u, text);
+  assert.match(text, /可能卡在回合中途（不会触发 idle）/u, text);
+  assert.match(text, /commander_worker_stop/u, text);
+  assert.match(text, /不要直接重派同一任务/u, text);
+  assert.match(text, /已开工约 11 分钟/u, text);
+});
+
+test('停滞看门狗：开工后回报过 → 不提醒（回报本身就是"还活着"的证据）', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  withExecution(ledger, ticket); // startedAt = T0
+  clock = T0 + 5 * 60_000;
+  ledger.recordReport(ticket.id, PARENT, { status: 'progress', summary: '还在做' }); // lastReport.at = T0+5min
+  const { service, parent } = workersOf({ ledger, now: () => clock, deps: fakeTimers() });
+  clock = T0 + 11 * 60_000;
+
+  assert.deepEqual(service.scanStalls(), [], '开工后回报过不算停滞');
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 0);
+});
+
+test('停滞看门狗：未到 ticketStallMs 阈值 → 不提醒；正好到阈值 → 提醒（>= 语义）', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  withExecution(ledger, ticket);
+  const { service, parent } = workersOf({ ledger, now: () => clock, deps: fakeTimers() });
+  clock = T0 + 5 * 60_000; // 默认阈值 10 分钟
+
+  assert.deepEqual(service.scanStalls(), []);
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 0);
+
+  // 正好 10 分钟：实现用 `now - startedAt < threshold` 跳过，所以等于阈值时**应提醒**。
+  clock = T0 + 10 * 60_000;
+  assert.deepEqual(service.scanStalls(), [ticket.id], '正好达到阈值应提醒');
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 1);
+});
+
+test('停滞看门狗：同一工单 10 分钟节流（不每分钟唤醒指挥者）', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  withExecution(ledger, ticket);
+  const { service, parent } = workersOf({ ledger, now: () => clock, deps: fakeTimers() });
+
+  clock = T0 + 11 * 60_000;
+  assert.deepEqual(service.scanStalls(), [ticket.id], '第一次提醒');
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 1);
+
+  // 9 分钟后（距上次 < 10 分钟）→ 不提醒。
+  clock = T0 + 20 * 60_000;
+  assert.deepEqual(service.scanStalls(), []);
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 1);
+
+  // 再 1 分钟（距上次正好 10 分钟）→ 允许再次提醒。
+  clock = T0 + 21 * 60_000;
+  assert.deepEqual(service.scanStalls(), [ticket.id], '节流窗口过后可再次提醒');
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 2);
+});
+
+test('停滞看门狗：workerSessions:false → 不扫描、不提醒', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  withExecution(ledger, ticket);
+  const timers = fakeTimers();
+  const { service, parent } = workersOf({ ledger, now: () => clock, options: { workerSessions: false }, deps: timers });
+  clock = T0 + 11 * 60_000;
+
+  assert.deepEqual(service.scanStalls(), []);
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 0);
+  assert.equal(timers.handles.length, 0, '未启用时不应启动看门狗定时器');
+});
+
+test('停滞看门狗：已结束工单不算停滞（activeExecutions 已过滤终态）', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  withExecution(ledger, ticket);
+  const { service, parent } = workersOf({ ledger, now: () => clock, deps: fakeTimers() });
+  ledger.setStatus(ticket.id, PARENT, 'done');
+  clock = T0 + 30 * 60_000;
+
+  assert.deepEqual(service.scanStalls(), []);
+  await flushAsync();
+  assert.equal(parent.record.steers.length, 0);
+});
+
+test('停滞看门狗：多工单里只提醒真正停滞的那张', async () => {
+  let clock = T0;
+  const { ledger, ticket } = ledgerWithTicket({ now: () => clock });
+  const second = ledger.createTicket({ sessionId: PARENT, title: '第二张', acceptance: ['ok'] });
+  withExecution(ledger, ticket); // 停滞
+  withExecution(ledger, second); // 有回报
+  clock = T0 + 3 * 60_000;
+  ledger.recordReport(second.id, PARENT, { status: 'progress', summary: '在跑' });
+  const { service } = workersOf({ ledger, now: () => clock, deps: fakeTimers() });
+  clock = T0 + 11 * 60_000;
+
+  assert.deepEqual(service.scanStalls(), [ticket.id], '只提醒从未回报的那张');
 });

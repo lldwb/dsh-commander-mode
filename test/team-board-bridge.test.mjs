@@ -16,6 +16,7 @@ import {
   mergeDescription,
   projectContent,
   projectedTicketId,
+  sanitizeWriteScopes,
   teamErrorCode,
 } from '../lib/team-board-bridge.js';
 
@@ -197,6 +198,92 @@ test('projectContent：subject 截断到 200、描述截断到 16384', () => {
   assert.ok(content.description.startsWith('[commander:ticket=t-1]'), '截断不能切掉 marker');
 });
 
+// ------------------------------------- 写作用域清洗（3.3.0，会话 def6609d） ---
+//
+// 运行时 `agentTeams.createTask()` 的 `writeScope()` 规则（内联一份做断言，防止实现漂移）：
+// `\` → `/`、去前导 `./` 与尾随 `/` 之后，不能以 `/` 开头、不能是盘符开头、
+// 不能有空段 / `.` / `..` 段。
+/**
+ * 与运行时 `writeScope()` 对齐的校验（测试用）。
+ *
+ * @param {string} scope - 待校验值。
+ * @returns {boolean} 是否合法。
+ */
+function isValidWriteScope(scope) {
+  const normalized = String(scope).replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, '');
+  if (normalized === '') return false;
+  if (normalized.startsWith('/')) return false;
+  if (/^[a-z]:/iu.test(normalized)) return false;
+  return !normalized.split('/').some((segment) => segment === '' || segment === '.' || segment === '..');
+}
+
+test('sanitizeWriteScopes：绝对路径一律丢弃（否则 createTask 抛 TEAM_INVALID_WRITE_SCOPE）', () => {
+  // 会话 def6609d 的死锁根因：工单 scope 是 Windows 绝对路径，原样透传让投影失败。
+  const scopes = [
+    'E:\\repo\\tools\\x', // Windows 盘符 + 反斜杠
+    'E:/repo/src', // Windows 盘符 + 正斜杠
+    '/root/x', // POSIX 绝对路径
+    '\\\\server\\share\\x', // UNC
+    'src/app.js', // 合法相对路径
+  ];
+  assert.deepEqual(sanitizeWriteScopes(scopes), ['src/app.js']);
+  for (const dropped of ['E:\\a\\b', 'E:/a/b', '/root/x', '\\\\server\\share\\x']) {
+    assert.ok(!sanitizeWriteScopes([dropped]).includes(dropped), `绝对路径应被丢弃：${dropped}`);
+  }
+});
+
+test('sanitizeWriteScopes：规范化相对路径（\\ → /、去 ./ 与尾随 /）', () => {
+  assert.deepEqual(
+    sanitizeWriteScopes(['src\\a.js', './docs/', 'a/b/']),
+    ['src/a.js', 'docs', 'a/b'],
+  );
+  // 已经是规范形态的原样保留。
+  assert.deepEqual(sanitizeWriteScopes(['src/login/**']), ['src/login/**']);
+});
+
+test('sanitizeWriteScopes：丢弃空段 / . / .. 段与空项', () => {
+  const scopes = ['a/../b', 'a/./b', 'a//b', '', '   ', './', '..', '.', null, undefined];
+  assert.deepEqual(sanitizeWriteScopes(scopes), []);
+  // 混合输入里只留合法项。
+  assert.deepEqual(sanitizeWriteScopes(['a/../b', 'ok/x', 'C:\\y']), ['ok/x']);
+  // 非字符串项按 String() 宽容处理（scope 是 advisory 字段，写作用域只用于板上的重叠提示）：
+  // 数字 42 会变成相对路径 '42'。若将来决定丢弃非字符串，这里会失败提醒同步改契约。
+  assert.deepEqual(sanitizeWriteScopes([42, 'ok/x']), ['42', 'ok/x']);
+});
+
+test('sanitizeWriteScopes：去重保序，上限 40 条', () => {
+  assert.deepEqual(sanitizeWriteScopes(['a', 'b', 'a', './b', 'c']), ['a', 'b', 'c']);
+  const many = Array.from({ length: 50 }, (_, index) => `dir-${index}/x`);
+  const capped = sanitizeWriteScopes(many);
+  assert.equal(capped.length, 40, '默认上限 40');
+  assert.deepEqual(capped, many.slice(0, 40), '截断保序');
+  // limit 可覆盖；非法 limit 回退默认 40。
+  assert.deepEqual(sanitizeWriteScopes(['a', 'b', 'c'], 2), ['a', 'b']);
+  assert.equal(sanitizeWriteScopes(many, 0).length, 40);
+  assert.equal(sanitizeWriteScopes(many, Number.NaN).length, 40);
+});
+
+test('sanitizeWriteScopes：非数组输入返回空数组（投影器对坏 scope 宽容）', () => {
+  for (const value of [undefined, null, 'src/a', 42, {}, { get: () => ['a'] }]) {
+    assert.deepEqual(sanitizeWriteScopes(value), []);
+  }
+});
+
+test('projectContent：writeScopes 里每一项都能通过运行时 writeScope() 校验', () => {
+  // 这是端到端的契约：清洗后的输出必须真的能被 agentTeams.createTask() 接受。
+  const content = projectContent(ticket({
+    scope: ['E:\\repo\\tools\\x', '/root/x', 'src\\app.js', './docs/', 'a/../b', 'src/app.js'],
+  }));
+  assert.deepEqual(content.writeScopes, ['src/app.js', 'docs']);
+  for (const scope of content.writeScopes) {
+    assert.ok(isValidWriteScope(scope), `writeScopes 里出现了运行时会拒绝的值：${scope}`);
+  }
+  // 工单本身仍保留完整 scope（清洗只影响任务板上的 advisory 字段）。
+  const original = ticket({ scope: ['E:\\a\\b'] });
+  projectContent(original);
+  assert.deepEqual(original.scope, ['E:\\a\\b'], '不能改动工单记录');
+});
+
 test('isProjectedTask / projectedTicketId：只认第一行 marker', () => {
   const task = { description: '[commander:ticket=t-3]\n其余' };
   assert.equal(isProjectedTask(task), true);
@@ -289,6 +376,43 @@ test('createProjection：createTask 抛错 → 返回 undefined，不抛', async
   };
   const bridge = bridgeFor(service);
   assert.equal(await bridge.createProjection(AGENT, ticket()), undefined);
+});
+
+test('投影失败记 warn（带 teamErrorCode），不再静默吞掉（会话 def6609d 根因之一）', async () => {
+  // 旧实现只记 debug → 投影失败在日志里看不见，用户只看到"派发门禁拒绝 + 门禁自相矛盾"。
+  // 3.3.0 起失败必须 warn，且带上运行时错误码（例如 TEAM_INVALID_WRITE_SCOPE）。
+  const warnings = [];
+  const debugs = [];
+  const service = makeService();
+  service.createTask = async () => {
+    throw Object.assign(new Error('writeScopes 非法'), { code: 'TEAM_INVALID_WRITE_SCOPE' });
+  };
+  const bridge = createTeamBoardBridge({
+    getService: (name) => (name === 'agentTeams' ? service : undefined),
+    logger: { warn: (...args) => warnings.push(args), debug: (...args) => debugs.push(args) },
+  });
+  assert.equal(await bridge.createProjection(AGENT, ticket()), undefined, '失败仍要降级返回 undefined');
+  assert.equal(warnings.length, 1, '失败必须记 warn');
+  assert.match(String(warnings[0][0]), /共享任务板投影失败/u);
+  assert.equal(warnings[0][2], 'TEAM_INVALID_WRITE_SCOPE', 'warn 里要带运行时错误码');
+  assert.ok(warnings[0][1].includes('创建共享任务'), '要说明是哪个动作失败');
+  // 失败路径不再走 debug（否则又会被当成"无害降级"忽略掉）。
+  assert.equal(debugs.length, 0);
+});
+
+test('投影失败：没有 error.code 时 warn 里写 unknown（仍要可见）', async () => {
+  const warnings = [];
+  const service = makeService();
+  service.createTask = async () => {
+    throw new Error('网络错误');
+  };
+  const bridge = createTeamBoardBridge({
+    getService: (name) => (name === 'agentTeams' ? service : undefined),
+    logger: { warn: (...args) => warnings.push(args), debug: () => {} },
+  });
+  assert.equal(await bridge.createProjection(AGENT, ticket()), undefined);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][2], 'unknown');
 });
 
 // ---------------------------------------------------------------- 同步 ---

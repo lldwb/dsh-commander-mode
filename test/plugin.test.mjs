@@ -703,10 +703,13 @@ test('派发通道观测：连续三次一次性 specialist 后，看板报"团�
   assert.ok(!text.includes('channel-drift'), text);
 });
 
-test('3.0.0 P3 回归：被层级门禁拒绝的 subagent_* 尝试不计入派发通道统计', () => {
+test('3.0.0 P3 回归：被层级门禁拒绝的 subagent_* 尝试不计入派发通道统计', async () => {
   // W3 修复的 P3-3：层级门禁已上移到 `observeDelegation` **之前**。被拒的直调尝试不是
   // "派活"——若仍计入配比，看板会把"被门禁拒掉的 subagent_* 尝试"误报成
   // 「派活全走一次性 specialist」，给模型一个与事实相反的自我认知。
+  //
+  // 3.3.0：`tools/pre-execute` 监听器改成 async（派发门禁要 await 补建投影），
+  // 所以这里必须 `await` —— 拿到 Promise 再断言 `.kind` 会得到 undefined。
   const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-14', status: 'pending', subject: '核验', ready: true }] });
   const { record } = boot({ agentTeams });
   const context = syncContext(record);
@@ -715,7 +718,7 @@ test('3.0.0 P3 回归：被层级门禁拒绝的 subagent_* 尝试不计入派�
   context.text({ agent: LEAD }); // 建看板基线
   const decisions = [];
   for (let index = 0; index < 3; index += 1) {
-    decisions.push(preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next));
+    decisions.push(await preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next));
   }
   // 三次都真的被层级门禁拒绝（否则这条回归用例没有意义）。
   for (const decision of decisions) {
