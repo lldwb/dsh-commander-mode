@@ -1065,7 +1065,9 @@ export function apply(ctx) {
     || toolName === 'commander_ticket_update'
     || isSpecialistDispatchTool(toolName);
 
-  ctx.on('tools/pre-execute', (exec, next) => {
+  // 3.3.0：监听器改成 async —— 派发门禁需要 await「补建任务板投影」（自愈）。
+  // 事件本身是 waterfall（返回 Promise<PreToolDecision>），异步监听器是受支持的。
+  ctx.on('tools/pre-execute', async (exec, next) => {
     try {
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
 
@@ -1150,7 +1152,7 @@ export function apply(ctx) {
       // 只对指挥者本人生效；子代理、缺失账本、身份不明一律放行（宁可漏拦）。
       if (ledgerEnabled()) {
         const options = readOptions();
-        const mandateDecision = evaluateDispatchGate({
+        const mandateDecision = await evaluateDispatchGate({
           agent: exec?.agent,
           name: toolName,
           args: exec?.arguments,
@@ -1161,6 +1163,16 @@ export function apply(ctx) {
           requireTeamTask: options.requireTeamTask !== false,
           requireTeamTaskMarker: options.requireTeamTaskMarker === true,
           teamBoard: teamBoardFor(exec?.agent),
+          // 3.3.0 自愈：缺投影时由插件补建，而不是让模型去调一个可能被层级门禁禁止的动作
+          // （会话 def6609d 的"两条门禁互相矛盾"就是这么来的）。
+          ensureTeamTask: async (gateAgent, gateTicket) => {
+            try {
+              const projected = await teamBridge.createProjection(gateAgent, gateTicket);
+              return projected?.taskId;
+            } catch {
+              return undefined;
+            }
+          },
         });
         if (mandateDecision !== undefined) {
           ctx.logger?.info?.('commander-mode: 派发被计划授权/工单门禁拒绝（%s）', toolName);
