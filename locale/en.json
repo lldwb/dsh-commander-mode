@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Commander Mode · Project Manager Mode",
-    "description": "Commander Mode: you judge and coordinate while subagents execute; plans and disagreements come back to you. Project Manager Mode: run a gated six-stage pipeline with six built-in specialists (architecture, implementation, review, testing, security, docs), with per-stage artifacts and git commits verified. Both share an editable specialist roster with optional per-specialist models. (Project Manager Mode inherits from Commander Mode + the Agent preset definition)"
+    "description": "Commander Mode: a three-tier chain (commander → team lead → subagent) — you judge and coordinate while team leads execute, and plans or disagreements come back to you. Project Manager Mode: run a gated six-stage pipeline with six built-in specialists acting as specialist team leads (architecture, implementation, review, testing, security, docs), with per-stage artifacts and git commits verified. Both share an editable specialist roster with optional per-specialist models. (Project Manager Mode inherits from Commander Mode + the Agent preset definition)"
   },
   "settings": {
     "title": "Commander specialists",

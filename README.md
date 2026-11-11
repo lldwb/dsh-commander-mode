@@ -1,24 +1,29 @@
 # dsh-commander-mode
 
 DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者接单、分析、规划与拆分，
-把执行全部派给子代理（自己不执行操作，规划与分歧都交回用户确认）；项目经理调用六位开发
-流程专家跑一条**六段带门禁的流水线**（架构 → 实现 → 审查 → 测试 → 安全 → 文档）。
+把执行全部派给**小组长**（自己不执行操作，规划与分歧都交回用户确认）；项目经理调用六位
+开发流程专家（3.0.0 起是**专家小组长**）跑一条**六段带门禁的流水线**（架构 → 实现 → 审查 →
+测试 → 安全 → 文档）。
 
-**一句话**：你只做判断，子代理做执行；要按流程做完一个项目，就用项目经理模式。
+**一句话**：你只做判断，小组长做执行（它也可以再交子智能体）；要按流程做完一个项目，就用项目经理模式。
 
 - **指挥者不执行**：`write` / `edit` / `pwsh` 这类调用会被**确定性拒绝**并附上纠正指令
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
-- **两条派发通道**：① 开箱六位专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档），每位一个
-  `subagent_<id>` 前台工具，可继承你的模型或绑定专属模型；② 「智能体团队」解决长驻队友、
-  持续对话、共享任务板与后台并行。
+- **三层指挥链（3.0.0）**：**指挥官 → 小组长 → 子智能体**。指挥官的下一级只有小组长
+  （`spawn_teammate` 建出的具名队友）：它自己执行，或把子任务交给下级子智能体。最大递归
+  深度 2、并行上限 16，都来自运行时「子智能体」设置，插件不再自己压低。
+- **派发通道（3.0.0 起指挥官只剩一条）**：指挥官的通道是「智能体团队」（小组长）；一次性
+  `subagent_<id>`（开箱六位专家，可继承你的模型或绑定专属模型）归**小组长**使用。
 - **两次必须问你**：规划拆分完成后先确认再派活；出现分歧、歧义或取舍时交回你选。
-- **结算即同步**：任务一完成就同步**任务板 / 计划清单 / 团队状态**，而不是收尾才补。
+- **结算即同步**：任务一完成就同步**任务板 / 计划清单 / 团队状态**，而不是收尾才补
+  （3.0.0：任务板由小组长结算，指挥官只核对）。
   每轮运行时上下文里有「**同步看板**」（任务板、计划清单、团队状态的实时快照，有未同步项
   时直接给纠正指令）；万一还是忘了，回合结束前的兜底钩子会把它拽回来。0.4.0 起生效。
 - **a2a 有纪律**：派活一次写全、开工前先约定回报格式、`wait_agent` 超时**不算异常**
   （别紧接着 `list_agents` + `team_task_list` 复查）—— 少一轮就是一个回合。0.4.0 起生效。
 - **Team 优先（0.5.0）**：多阶段 / 长任务 / 需要中途追加指令或任务板进度 → 走「智能体团队」
-  （`spawn_teammate` + `team_task_*` + `send_message`）；一次性单点任务才用 `subagent_<id>`。
+  （`spawn_teammate` + `team_task_*` + `send_message`）；一次性单点任务由**小组长**用
+  `subagent_<id>`（3.0.0：指挥官的通道只剩 Team）。
   看板会显示**派发通道配比**并点名**孤儿任务**（没人认领 / 主人已停手），防止"重启后队友没了
   就退化成只用一次性 specialist、任务板留下 6 项没收尾"。
 - **工单与计划授权（0.6.0）**：每一件被派出去的活都挂一张**工单**（`commander_ticket_*`），
@@ -29,7 +34,7 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 - **异步派工与完成唤醒（0.7.0）**：一次性 specialist 不再阻塞等待——工具立即返回 childId，
   结算时用一条「【指挥者·派工完成】」通知**唤醒**指挥者（带工单、`STATUS:`、摘要与下一步），
   并同时写账本。派活后可以继续做别的或结束回合，不要 `wait_agent` / `list_agents` 轮询；
-  在飞数量有上限（`maxAsyncTasks`，默认 4），`asyncDelegation: false` 可回退前台阻塞行为。
+  在飞数量有上限（`maxAsyncTasks`，3.0.0 起默认 16），`asyncDelegation: false` 可回退前台阻塞行为。
 - **Worker Session（0.8.0；1.0.0 起默认开启）**：`commander_worker_spawn` 可给一张工单开
   **独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），worker 只拿工作
   工具、结束时用 `commander_report` 汇报并用通知唤醒你；有槽位上限（`maxWorkers`）与重启恢复
@@ -64,9 +69,9 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 30 秒上手
 1) 插件页安装本包，重启桌面版
 2) 新建会话，模式菜单选「指挥者模式」或「项目经理模式」
-3) 指挥者：把任务丢给它 → 只读侦察 → 计划 → 你确认 → 建工单 → 派给专家 → 汇总验收
+3) 指挥者：把任务丢给它 → 只读侦察 → 计划 → 你确认 → 建工单 → 派给小组长 → 汇总验收
    项目经理：给一个项目目标 → 它建 Team/任务板 → 按架构→实现→审查→测试→安全→文档
-             逐段派给六位专家，每段验收 + git 分类提交，最后写经验教训
+             逐段派给六位专家小组长，每段验收 + git 分类提交，最后写经验教训
    （想调专家？设置 → 插件 → 指挥者专家名册：增删、改定位、绑模型、一键恢复预置）
 ```
 
@@ -99,10 +104,13 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 |---|---|
 | 只读侦察（`read` / `glob` / `grep` / `web_search`） | 写文件、改文件（`write` / `edit`） |
 | 规划与拆分、维护 `todo_write` | 跑命令（`pwsh` / `bash`） |
-| 建任务板、派发给 specialist 或 teammate | 杀作业（`job_kill`） |
+| 建任务板、派发给小组长（`spawn_teammate`） | 杀作业（`job_kill`） |
 | 结算后三同步：任务板 / 计划清单 / 团队状态 | 装插件（`plugin_manager`） |
 | `wait_agent` 等进展、核对验收判据 | 替用户拍板 |
 | 用 `ask_user_question` 让用户确认计划、上报分歧 | |
+
+> **3.0.0 起是三层指挥链（指挥官 → 小组长 → 子智能体）**：下表与后续小节里的「子代理」
+> 现在特指**小组长**；一次性 `subagent_<id>` 归小组长使用。详见「3.0.0 团队模型」一节。
 
 ### 结算同步（0.4.0）
 
@@ -118,7 +126,8 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 
 1. **每轮运行时上下文**里的一行「指挥者·同步看板」（`systemPrompt.context`，比 section
    遵从率高得多）：任务板几项已结算 / 谁还没结算、计划清单完成度、每个成员 running 还是
-   inactive；有未同步项时直接给出 `todo_write` / `team_task_update` 的纠正指令。
+   inactive；有未同步项时直接给出 `todo_write` / `send_message` 让 owner（小组长）结算的
+   纠正指令（3.0.0：任务板进展由小组长写，指挥官只核对，见「3.0.0 团队模型」）。
 2. **回合结束兜底**（`agent/turn-stopping`）：回合要结束了还有未同步项，就注入一次提醒
    （每回合最多一次），让模型在同一个回合里补完，并要求它补一条 1–2 行的同步回执而不是
    重复报告。
@@ -191,10 +200,12 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
    （`title` + `acceptance`，可选 `intent` / `scope`）。一张工单可多次派发（实现 / 返工 / 审查）。
 3. **每次派发都带工单**：specialist 工具传 `ticket` 参数；Team 的 `spawn_teammate` 在
    prompt 首行写 `[ticket:t-N]`。
-4. **回报必须结构化**：执行者最终答复最后一行写
-   `STATUS: progress|waiting|ready|blocked|failed|dropped`；指挥者核对后用
-   `commander_ticket_update` 更新工单（`blocked`/`failed` 时用 `question` 写清要用户决定什么）。
-5. **验收后结算**：`commander_ticket_update` `status=done`（或 `cancelled` 写 `reason`）。
+4. **回报必须结构化**：执行者（3.0.0 起是小组长）最终答复最后一行写
+   `STATUS: progress|waiting|ready|blocked|failed|dropped`；**推进状态由小组长**用
+   `commander_ticket_update` 回报（3.0.0 门禁：指挥官自己报 `progress` / `waiting` / `ready` /
+   `blocked` / `failed` 会被拒绝——工单状态会投影到共享任务板，绕道同样算改进度）。
+5. **验收后结算**：指挥者在验收通过后用 `commander_ticket_update` `status=done`
+   （或 `cancelled` 写 `reason`）——`done` / `cancelled` 仍是指挥官的验收动作。
 
 **确定性门禁**（`tools/pre-execute`，不是提示词）：
 
@@ -237,7 +248,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
   Report）；③ 用 `agent.steer()` 发一条「【指挥者·派工完成】」通知（**会唤醒空闲的指挥者**），
   带工单、STATUS、摘要与"下一步"。
 - **失败也一样**：结算 reject 时记 `failed` + 一条带错误与工单的通知。
-- **容量上限**：`maxAsyncTasks`（默认 4）在**启动前**检查；超限拒绝并提示等完成或改 Team，
+- **容量上限**：`maxAsyncTasks`（3.0.0 起默认 16）在**启动前**检查；超限拒绝并提示等完成或改 Team，
   不会先启动 child 再失败。
 - **在飞不重派**：同一工单已有在飞派发时不要重复派同一任务；要追加/纠偏走 Team 的 `send_message`。
 - **回退**：`asyncDelegation: false` 回到 0.5.0 的前台阻塞行为。
@@ -285,8 +296,88 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 
 1. **规划/拆分完成后**——必须停下来用 `ask_user_question` 把计划摆给用户，问是否有问题、
    是否需要调整。**用户确认之前不派任何活。**
-2. **出现分歧或不确定时**——specialist / 子代理之间结论冲突、需求有歧义、必须做取舍、
-   要动高风险的东西、子代理报回 BLOCKER，都交回用户选。
+2. **出现分歧或不确定时**——小组长之间结论冲突、需求有歧义、必须做取舍、
+   要动高风险的东西、小组长报回 BLOCKER，都交回用户选。
+
+## 3.0.0 团队模型：指挥官 → 小组长 → 子智能体
+
+3.0.0 起，两个模式都按**三层指挥链**工作。2.x 只有两层（指挥者 → 子代理），指挥者可以绕过
+队友直接派一次性 specialist；3.0.0 把中间那层固定下来：**指挥官只和小组长打交道**。
+
+### 三层职责
+
+- **L0 指挥官**（主会话 / Lead）：目标、拆分、派单、验收、与用户沟通。它不执行操作，也不越过
+  小组长去派一次性子智能体。
+- **L1 小组长**（`spawn_teammate` 建出的具名队友）：各背**一个团队任务**，可以**自己执行**
+  （它继承同一 preset scope，有写文件与跑命令的能力），也可以把子任务交给**下级子智能体**；
+  **任务进展与排期由它写**。
+- **L2 子智能体**（小组长派出的 `subagent_<id>` / `subagent` / `workflow` 子代理）：只负责执行，
+  **不再向下派**（运行时递归深度上限 2）。
+
+### 用户 2026-11-11 的五条规则
+
+1. **持续接单**：主会话作为指挥官持续接收用户输入并调整团队目标，把新内容与已有内容一起
+   纳入团队排期；描述不清时由小组长反馈指挥官、指挥官与用户交底后再回给小组长。
+   **一个团队一个小任务，多个团队一个大任务。**
+2. **使用运行时的「子智能体」限制**：最大递归深度 2、并行数量上限 16。
+3. **一项任务下发给一个小组长**：小组长可以自己执行，也可以交给下级子智能体执行。
+4. **只有小组长可以修改智能体团队的任务进展并做排期**（`claim` / `release` / `complete` /
+   `reopen` / `set_dependencies`）；指挥官只建任务、`reassign` 指派 owner、读板与验收。
+5. **项目经理模式 = 指挥官模式的特化版**：改指挥官模式即可，不要在两处各写一份。
+
+这五条在实现里落成 `lib/team-model.js` 的**七条规则**（hierarchy / runtime-limits /
+one-team-one-task / continuous-intake / ambiguity-chain / leader-owns-board /
+leader-may-execute）；指挥官协议与项目经理协议都拼接同一份正文，不会出现两套说法。
+
+### 运行限制：深度 2 / 并行 16（来自运行时，插件不再压低）
+
+- **最大递归深度 2**：`subagent.maxDepth = 2`。小组长是 L1、子智能体是 L2；L2 再向下派会被
+  运行时拒绝，硬试只是白烧轮次。
+- **并行上限 16**：`subagent.maxActiveSubagents = 16`、`agent-team.maxMembers = 16`。互不依赖
+  的工作流各开一个小组长并行推进；**真到上限才排队或复用**，不要因为"怕撞上限"提前串行化。
+- 插件**不再自己压低**这两个数字：`maxTeammates` / `maxAsyncTasks` 的默认值与上限都改成 16，
+  与运行时一致（见「配置」）。2.x 里 `maxTeammates` 默认 4 / 8 的"建议并行度"是历史包袱，
+  会让模型提前串行化。
+- 这两个数字写在协议正文里（模型读不到运行时配置）：文本与运行时不一致时以本节口径为准。
+
+### 确定性门禁：三条「谁来做」
+
+协议是概率性的，3.0.0 把三条最容易被绕过的边界做成 `tools/pre-execute` 门禁（`lib/guard.js`），
+**只拦指挥官本人**：小组长 / 子智能体（`isDelegatedAgent` 命中）与身份读不出来的调用一律放行。
+
+- **任务板写入**（`evaluateBoardWrite`）：`team_task_update` 的 `claim` / `release` / `complete` /
+  `reopen` / `set_dependencies` 由小组长做；指挥官做会被拒，拒因会告诉它「用 `send_message`
+  让 owner 结算，或 `reassign` 改派」。`reassign` / `edit` / `delete` 仍由指挥官做。
+- **工单推进状态**（`evaluateTicketWrite`）：`commander_ticket_update` 的 `progress` / `waiting` /
+  `ready` / `blocked` / `failed` 只允许小组长回报——工单会投影到共享任务板，只拦任务板的话
+  指挥官仍能绕道工单间接改进度。`done` / `cancelled` 仍是指挥官的验收动作。
+- **子智能体派发**（`evaluateSpecialistDispatch`）：`subagent_<id>` / `subagent` / `subagent_fork`
+  被拒（团队活交给小组长，一次性专家由小组长自己调用）。`workflow` **不在**拦截范围——它是
+  编排，不产生"某个子智能体在执行"的层级派发。
+- 三条都受新配置 `delegationHierarchy` 控制（默认 `true`）；设成 `false` 时门禁全部关闭，
+  回到 2.x 的"只靠协议"行为（文本仍在，但没有硬拦截）。
+
+### 3.0.0 破坏性变更与迁移
+
+大版本：对外契约有结构性变化，"指挥者直接派 specialist、自己改进度"的旧用法不再被允许。
+
+1. **指挥官不再直接调用 `subagent_<id>` / `subagent` / `subagent_fork`**：团队活一律
+   `spawn_teammate` 建小组长 + `send_message` 派活；直调会被确定性拒绝（见上）。一次性专家
+   仍可用，但只由**小组长**调用。
+2. **任务板进度与排期写入权从指挥官移到小组长**：`team_task_update` 的
+   `claim` / `release` / `complete` / `reopen` / `set_dependencies`，以及
+   `commander_ticket_update` 的 `progress` / `waiting` / `ready` / `blocked` / `failed` 只允许
+   小组长做。指挥官只做：`team_task_create` 建任务、`team_task_update` `action:"reassign"`
+   指派 owner、`team_task_list` / `team_task_get` 读板，以及验收后的工单 `done` / `cancelled`。
+3. **项目经理模式的六位专家改为「专家小组长」**：每一段先 `spawn_teammate` 建一位专家小组长
+   （如 `architect-lead`），再 `send_message` 派该段任务；专家小组长可以自己执行，也可以把
+   子任务交给下级 `subagent_<id>`。项目经理**不直接调** `subagent_<id>`。
+4. **新配置 `delegationHierarchy`**（默认 `true`）：关闭后回到 2.x 的"只靠协议"行为，适合
+   暂时不想让门禁拦住旧流程的部署；协议文本仍是 3.0.0 的三层模型。
+
+**用户要做什么**：重新安装 / 重启 DSH（preset 与协议文本都在启动时确定）。旧习惯（指挥官自己
+`claim` / `complete`、直接调 `subagent_<id>`）会收到拒绝与纠正指令，按拒因改走小组长即可；
+确实要回退硬门禁就设 `delegationHierarchy: false`。
 
 ## 项目经理模式（2.0.0）
 
@@ -296,11 +387,18 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 | | 指挥者模式 | 项目经理模式 |
 |---|---|---|
 | 回答的问题 | **谁来做**：接单、拆解、派活、验收 | **按什么顺序做、每段怎么验收** |
-| 专家名册 | 六位开发流程专家，单点派发 | **同一份名册**，按六段流水线逐段派 |
+| 专家名册 | 六位开发流程专家（3.0.0 起是专家小组长） | **同一份名册**，按六段流水线逐段派给专家小组长 |
 | 流程 | 规划 → 用户确认 → 派发 → 汇总 | 架构 → 实现 → 审查 → 测试 → 安全 → 文档，**每段有门禁** |
 | 工单账本 / 计划授权 | 有（`commander_ticket_*` + Mandate 门禁） | **没有**（进度权威是共享任务板 + 每段落盘证据） |
 | 质量门禁 | 不自己执行操作 | 不自己写业务代码 + **流水线阶段门禁**（不通过不许进下一段） |
 | 收尾 | 汇总验收 | 汇总验收 + **必须写经验教训（含模式本身的问题）** |
+
+**3.0.0 起：六位专家 = 六位专家小组长**（团队模型 L1）。每一段先 `spawn_teammate` 建一位
+专家小组长、`send_message` 派该段任务；专家小组长可以自己执行，也可以把子任务交给下级
+子智能体（`subagent_<id>`）。项目经理**不直接调用** `subagent_<id>` / `subagent` /
+`subagent_fork`——直调会被门禁拒绝（见「3.0.0 团队模型」）。建议的小组长名字：
+`architect-lead`、`implementer-lead`、`reviewer-lead`、`tester-lead`、`security-lead`、
+`doc-writer-lead`（`security-auditor` 的小组长名是 `security-lead`）。
 
 ### 继承关系：项目经理模式 = 指挥者模式 + Agent 预设定义
 
@@ -332,24 +430,30 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 
 **六段流水线**（每段都写清输入、产出、验收判据、不通过怎么办）：
 
-1. **架构**（`subagent_architect`）：需求 → 方案 + 任务拆分（写作用域、验收判据、依赖）。
-2. **实现**（`subagent_implementer`）：按方案产出可运行改动 + 自检证据。
-3. **审查**（`subagent_reviewer`，**必须独立于实现者**）：按严重程度给可定位意见。
-4. **测试**（`subagent_tester`，**必须独立于实现者**）：真实执行用例并保留原始输出。
-5. **安全**（`subagent_security-auditor`，**不得省略**）：按攻击面排查，带证据与风险等级。
-6. **文档**（`subagent_doc-writer`，**不得省略**）：文档与最终实现一致，可直接照做。
+1. **架构**（专家小组长 `architect-lead`，需要时由它交给下级 `subagent_architect`）：需求 → 方案 + 任务拆分（写作用域、验收判据、依赖）。
+2. **实现**（专家小组长 `implementer-lead`，可交下级 `subagent_implementer`）：按方案产出可运行改动 + 自检证据。
+3. **审查**（专家小组长 `reviewer-lead`，**必须独立于实现者**）：按严重程度给可定位意见。
+4. **测试**（专家小组长 `tester-lead`，**必须独立于实现者**）：真实执行用例并保留原始输出。
+5. **安全**（专家小组长 `security-lead`，**不得省略**）：按攻击面排查，带证据与风险等级。
+6. **文档**（专家小组长 `doc-writer-lead`，**不得省略**）：文档与最终实现一致，可直接照做。
 
-**每段结束三件事**：git 分类提交（**未提交视为该段未完成**）、任务板同步、证据归档。
+**每段结束三件事**：git 分类提交（**未提交视为该段未完成**）、任务板结算（3.0.0 起由该段
+小组长 `complete`，项目经理只核对）、证据归档。
 最终汇报要列提交分类与短哈希、是否还有未提交内容。
 
 **开局**：按工作纪律优先建 Team（`spawn_teammate`）与共享任务板（`team_task_create`）；
-专家工具默认**异步派发**（立即返回 childId，结算时用「【项目经理·派工完成】」通知唤醒），
-所以派活后不要等——继续推进其它阶段或做只读核对。
+3.0.0 起每一段都要先建**专家小组长**再派活（它自己执行或交下级），项目经理不再直接派
+`subagent_<id>`。专家工具默认**异步派发**（立即返回 childId，结算时用「【项目经理·派工完成】」
+通知唤醒**调用它的小组长**），所以派活后不要等——继续推进其它阶段或做只读核对。
 
 **确定性约束**（不靠提示词自觉）：
 
 - 项目经理自己调用 `write` / `edit` / `pwsh` / `bash` / `job_kill` / `plugin_manager`
   会被**直接拒绝**（复用 `lib/guard.js`；子代理必须放行，否则专家干不了活）；
+- 3.0.0 起还会拒绝：直接调 `subagent_<id>` / `subagent` / `subagent_fork`、自己
+  `team_task_update` 改进度/排期（`claim` / `release` / `complete` / `reopen` /
+  `set_dependencies`）、自己 `commander_ticket_update` 报推进状态（`progress` / `waiting` /
+  `ready` / `blocked` / `failed`）——这些交给小组长（`delegationHierarchy: false` 可关闭）；
 - 超过 `maxWaitMs`（默认 120000）的 `wait_agent` 会被**直接拒绝**（见「等待门禁」一节）；
 - 协议里明确**禁止人日 / 人天 / 工期估算**，用「步骤 + 验收判据 + 依赖」代替；
 - 收尾必须写经验教训，并额外回答「这个模式本身哪一步形式化了、哪一步产物无法验收、
@@ -366,6 +470,10 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 项目经理模式里的第二个组件（`dsh-commander-mode/workflow`，section order 640，在项目经理
 协议 650 之前）。它把六段流水线写成可执行手册：每段的**目的 / 必做动作 / 必须落盘的产物 /
 验收判据 / 失败返工规则 / 对应专家与团队用法**。
+
+3.0.0 起每段的「对应专家」是**专家小组长**：组件里写清该段用哪位小组长（如 `architect-lead`）、
+它可以把哪些子任务交给下级子智能体（如 `subagent_architect`）、以及**任务板由该段小组长
+结算**（`team_task_update` `complete`）——项目经理只核对 owner 与证据，不自己改状态。
 
 它同时是 **20 个方法 skill 的阶段索引**——这些 skill 在本包 `skills/` 目录里，由项目经理
 模式的 `skill-filesystem.config.customSkillDirs` 加载（**只在项目经理模式加载**，指挥者模式
@@ -408,6 +516,9 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 0.2.0 参考 [ToxicantX/dsh-multi-model-orchestrator](https://github.com/ToxicantX/dsh-multi-model-orchestrator)
 加了第二条派发通道：**名册里的每个 specialist 是一个独立工具**。
 
+> **3.0.0 起这些专家由小组长使用**：指挥官的通道只剩 Team（`spawn_teammate` 建小组长），
+> 一次性 `subagent_<id>` 归小组长调用；指挥官直调会被门禁拒绝。见「3.0.0 团队模型」。
+
 0.3.0 起**开箱就带一套按主流软件开发生命周期划分的专家**，装好即可派活，不用先配置：
 
 | id | 定位 |
@@ -449,41 +560,44 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 | `reasoningEffort` | 否 | 该模型支持的推理等级 |
 | `maxTokens` | 否 | 该专家的输出上限 |
 
-保存后：**新会话**立刻拿到新的 `subagent_<id>` 工具（工具清单在启动时确定）；
-已打开的会话保持启动时的名册 —— 设置页里也这么写。
+保存后：**新会话**立刻拿到新的 `subagent_<id>` 工具（工具清单在启动时确定；3.0.0 起这些工具
+由小组长使用，指挥官直调会被门禁拒绝）；已打开的会话保持启动时的名册 —— 设置页里也这么写。
 
-于是同一个会话里，指挥者可以把"实现"派给跑在小模型上的 `subagent_implementer`、
-把"审查"派给跑在强模型上的 `subagent_reviewer`，而不是所有子代理都继承父会话的模型。
+于是同一个会话里，小组长可以把"实现"交给跑在小模型上的 `subagent_implementer`、把"审查"交给
+跑在强模型上的 `subagent_reviewer`，而不是所有子代理都继承父会话的模型。
 
-### 两条派发通道怎么选
+### 派发通道怎么选（3.0.0：指挥官只走 Team）
 
-| 通道 | 工具 | 适合 |
-|---|---|---|
-| **多模型 specialist** | `subagent_<id>`（前台，结果直接返回） | 独立模型/专门职责、一次性的实现/审查/分析 |
-| **智能体团队** | `spawn_teammate` / `send_message` / `wait_agent` / `team_task_*` | 长期存在的具名队友、持续对话、共享任务板、后台并行 |
+| 通道 | 工具 | 谁用 | 适合 |
+|---|---|---|---|
+| **智能体团队** | `spawn_teammate` / `send_message` / `wait_agent` / `team_task_*` | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
+| **多模型 specialist** | `subagent_<id>`（前台，结果直接返回） | **小组长**（L1） | 独立模型/专门职责、一次性的实现/审查/分析 |
 
-可混用；同一批文件不要同时交给两条通道。名册为空时协议里不会出现 specialist 相关文字。
+3.0.0 起指挥官的通道只剩 Team：直调 `subagent_<id>` / `subagent` / `subagent_fork` 会被门禁
+拒绝，一次性 specialist 由小组长自己调用（`workflow` 不在拦截范围）。两条通道可混用；
+同一批文件不要同时交给两条通道。名册为空时协议里不会出现 specialist 相关文字。
 
 ### 派活前必须做「定位匹配」
 
-每个执行者都有**固定定位**：specialist 的定位写在名册那一行的**职责描述**里（工具描述里也写着
-同一句），teammate 的定位写在它的 `description` 与 `prompt` 里。派一个任务之前，先拿任务性质
-去对：**领域、产出类型、需要的技能**。
+每个执行者都有**固定定位**：小组长的定位写在它的 `description` 与 `prompt` 里；它派出的
+一次性 specialist 的定位写在名册那一行的**职责描述**里（工具描述里也写着同一句）。派一个
+任务之前，先拿任务性质去对：**领域、产出类型、需要的技能**。
 
 | 情况 | 做法 |
 |---|---|
-| 任务落在定位内 | 用对应的执行者，正常派活 |
-| **差距大**（跨领域 / 不同产出 / 另一套技能） | **不要硬派**：先换一个匹配的执行者；没有就**开一个新的子智能体** |
+| 任务落在定位内 | 用对应的小组长，正常派活 |
+| **差距大**（跨领域 / 不同产出 / 另一套技能） | **不要硬派**：先换一个匹配的小组长；没有就**开一个新的小组长**（3.0.0 起"开新子智能体"= `spawn_teammate`） |
 | 一个任务里混着两种定位的工作 | 拆成两个任务，分别派 |
 | 找不到任何匹配定位 | 把任务与候选定位写进正文，问用户 |
 
-**"开一个新的子智能体"怎么做**：
+**"开一个新的小组长"怎么做**（3.0.0：开新子智能体 = 开新小组长）：
 
-- **通道 B 的 `spawn_teammate` 就是入口** — 名字、`description`、`prompt` 都由指挥者写，
-  所以可以按这次任务的定位新建一个执行者（例：现有 `reviewer` 做代码审查，这次要"依赖漏洞
-  扫描" → spawn 一个 `security-auditor`，把定位写进它的 description 与 prompt）。
-- **通道 A 的名册不能由指挥者改**（那是用户在设置页配的）。若这个新定位以后会反复用，
-  指挥者会用 `ask_user_question` 建议把它加进名册 —— 下次就能复用，还能绑定专属模型。
+- **`spawn_teammate` 就是入口** — 名字、`description`、`prompt` 都由指挥者写，
+  所以可以按这次任务的定位新建一个小组长（例：现有 `reviewer-lead` 做代码审查，这次要"依赖
+  漏洞扫描" → spawn 一个 `security-lead`，把定位写进它的 description 与 prompt）。
+- **名册不能由指挥者改**（那是用户在设置页配的，决定小组长能派哪些 `subagent_<id>`）。
+  若这个新定位以后会反复用，指挥者会用 `ask_user_question` 建议把它加进名册 —— 下次小组长
+  就能直接复用，还能绑定专属模型。
 - **判断口径**："顺带多做一点同领域的小事"可以接受；**"这是另一类工作"必须换人**。
   硬塞的代价是双向的：它要么硬做出低质量结果，要么回来报范围冲突，指挥者都得再来一轮。
 - **执行者侧也有兜底**：specialist 的人设要求它在收到明显超出定位的任务时先报"任务与我的
@@ -527,9 +641,12 @@ pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/
 1. **协议**（system-prompt section，`order: 650`，每轮重新求值）——告诉模型它是指挥者，
    该派活。它不会被遗忘，也不会被上下文压缩掉。
 2. **门禁**（`tools/pre-execute` waterfall）——指挥者自己调用执行类工具会被**直接拒绝**，
-   拒绝理由就是纠正指令（"先用 `ask_user_question` 确认计划 → 派给 specialist / teammate"）。
+   拒绝理由就是纠正指令（"先用 `ask_user_question` 确认计划 → 派给小组长"）。
 
 门禁挂在 preset scope 上，所以**只对指挥者模式下的 agent 生效**，别的模式完全不受影响。
+
+3.0.0 起还多三条「谁来做」门禁（任务板写入 / 工单推进状态 / 子智能体派发），同样是
+`tools/pre-execute` 上的确定性拒绝，见「3.0.0 团队模型」一节。
 
 ### 执行边界：什么算「执行操作」（2.2.0 起补齐）
 
@@ -588,6 +705,9 @@ specialist 跑在**自己的独立 preset** 里（`commander-specialist-<id>-<ha
 `header.origin === 'subagent'`、`header.delegationDepth > 0`。
 
 ## 依赖：智能体团队
+
+3.0.0 起 Team 是**指挥官唯一的天然通道**：没有它就建不出小组长，三层指挥链退化为协议
+（见「已知边界」）。
 
 Team 通道用的是 `@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」）
 提供的九个 Team 工具：`spawn_teammate`、`send_message`、`wait_agent`、`list_agents`、
@@ -669,7 +789,8 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 |---|---|---|
 | `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认" |
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
-| `maxTeammates` | `8` | 写进协议的建议并行子代理上限（1–12）。2.4.0：4 → 8，与 Team 运行时上限对齐；想再高要同时调 profile 的 `agent-team.maxMembers`（默认已由本部署调到 16） |
+| `maxTeammates` | `16` | 写进协议的建议并行子代理上限（1–16）。3.0.0：8 → 16，与运行时 `subagent.maxActiveSubagents` / `agent-team.maxMembers` 一致；插件不再自己压低 |
+| `delegationHierarchy` | `true` | 3.0.0：三层指挥链的三条确定性门禁（任务板写入 / 工单推进状态 / 子智能体派发）；`false` = 只留协议（2.x 行为） |
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
 | `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
@@ -681,7 +802,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `requireTeamTask` | `true` | 1.2.0：Team 通道派发要求工单有有效投影（D-1）；没有团队服务时自动跳过 |
 | `requireTeamTaskMarker` | `false` | 1.2.0：Team 通道派发要求 prompt 带 `[task:task-N]` 且与投影一致（D-2） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
-| `maxAsyncTasks` | `8` | 同一会话同时在飞的一次性 specialist 上限（1–12）。2.4.0：4 → 8 |
+| `maxAsyncTasks` | `16` | 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16，与运行时并行上限对齐 |
 | `workerSessions` | `true` | 每工单独立 Worker Session + 独立目录（1.0.0 起默认开启；`false` 回退到 specialist/Team） |
 | `workRoot` | `''` | Worker 目录根；空 = `<DSH_HOME>/commander/work`。相对路径以 `DSH_HOME` 为基准 |
 | `maxWorkers` | `6` | 每个指挥者会话同时最多几个 Worker Session（1–12）。2.4.0：3 → 6 |
@@ -741,6 +862,8 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   `subagent_<id>` / `subagent` / `subagent_fork` / `workflow` 记一次性。
   `wait_agent` / `list_agents` / `team_task_*` 不计入（它们是等待、读状态与建板，不是派活）。
   重启会重置计数（账本是进程内的），重启后第一次派发的配比从零开始。
+  3.0.0 起指挥官只能走 Team，所以这条配比对它恒为 Team；看板保留它是为了历史会话与
+  `delegationHierarchy: false` 的回退配置。
 - **工单门禁只覆盖 DSH 工具调用（0.6.0）。** 与执行门禁同一边界：如果某个插件通过别的途径
   派活（例如自定义工具自己起子代理），本插件的 `tools/pre-execute` 看不到。
 - **工单是"状态"不是"锁"（0.6.0）。** 工单的 `scope`（写作用域）只是提示；执行环境仍共享
@@ -828,12 +951,30 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   **只补 `subagent_<id>` 工具**，不会丢掉专家通道。代价：专家 preset 的生命周期归先注册的
   那一行（插件重载时两个模式一起释放）；专家名册改动对两个模式同时生效（同一个
   `commanderSettings` 服务）。
-- **项目经理协议固定点名六位专家工具（2.0.0）。** 协议是静态文本（不像指挥者协议按名册渲染）。
-  若某个部署里专家工具没挂上（名册被清空 / 服务缺失），协议里已经写明降级路径：改用 Team
-  通道按同样定位新开队友，不要硬调不存在的工具。
+- **项目经理协议固定点名六位专家小组长（2.0.0；3.0.0 起专家=小组长）。** 协议是静态文本
+  （不像指挥者协议按名册渲染）。若某个部署里 `subagent_<id>` 工具没挂上（名册被清空 / 服务
+  缺失），协议里已经写明降级路径：让专家小组长自己执行，或改用 Team 通道按同样定位新开队友，
+  不要硬调不存在的工具。
 - **`skills/` 目录是项目经理模式专有的（2.0.0）。** 通过 `skill-filesystem.config.customSkillDirs`
   加载，只加在项目经理 preset 里；目录缺失或 skill 文件损坏时只影响 skill 加载，不影响协议
   section 与门禁。`skill` 只是方法入口，验收仍看产物与证据。
+- **三条「谁来做」门禁只拦指挥官本人（3.0.0）。** `evaluateBoardWrite` / `evaluateTicketWrite` /
+  `evaluateSpecialistDispatch` 只对 Lead 生效：小组长 / 子智能体（`isDelegatedAgent` 命中）
+  与身份读不出来的调用一律放行（宁可漏拦，不可拦死）。`delegationHierarchy: false` 时三条
+  全部关闭，只剩协议约束。
+- **没有「智能体团队」时三层指挥链退化为协议（3.0.0）。** 没有 `spawn_teammate` /
+  `send_message` 就建不出小组长：门禁按"宁可漏拦"放行（否则会话死锁），协议里的 Team 通道
+  自动降级为"把任务连同验收判据写进正文，请用户决定"。此时"只有小组长改进度"没有执行者，
+  规则 4 实际不生效。
+- **深度 2 是运行时限制，不是插件限制（3.0.0）。** 插件只把 `subagent.maxDepth=2` 写进协议
+  文本；L2 再向下派由运行时拒绝。想加深要改运行时「子智能体」设置，插件不会（也不能）绕过它。
+- **任务板写入权只判断"调用者是不是 Lead"（3.0.0）。** 门禁不校验 owner 归属：指挥官
+  `reassign` 给某个 teammate 后，那个 teammate 就能 claim / complete。owner 指错人（例如
+  指给不存在的成员）时进度会卡在"无人结算"——看板会提示，门禁不会替你修。
+- **`workflow` 不在子智能体派发门禁内（3.0.0）。** `evaluateSpecialistDispatch` 只拦
+  `subagent` / `subagent_fork` / `subagent_<id>`；`workflow` 是编排工具（一次性扇出 fresh
+  子代理），不产生"某个小组长背任务"的层级，所以仍可由指挥官调用——它适合无状态扇出，
+  不适合需要排期与验收的长任务。
 
 ## 运维：外部巡检（0.9.0）
 
@@ -987,6 +1128,61 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 `persona` 参数）：`lib/capabilities.js` 提供完整能力行，`specialist.js` 提供人设 section。
 
 ### 验证过什么
+
+- **3.0.0 第十八轮（三层指挥链：指挥官 → 小组长 → 子智能体）**：
+  - `node --test "test/**/*.test.mjs"` → **602 / 602 通过、0 失败**（2.4.1 基线 553，净增 49：
+    `team-model` / `guard-hierarchy` / `hierarchy-wiring` 三个新文件 + 既有文件按新契约校准）。
+    连跑 3 次稳定。新增覆盖里最关键的三条是：①层级开启时 `write` 的拒绝理由**不得出现
+    `subagent_`**、必须指向 `spawn_teammate`+`send_message`+小组长（P2 回归）；②被层级门禁
+    拒绝的 `subagent_*` 尝试**不计入**派发通道统计（P3 回归）；③`agent.js` 必须把
+    `delegationHierarchy` 真的传给 `evaluatePreExecute()`（接线漏传会立刻红）。
+  - **真实 Loader（devkit web 沙箱 `commander-web`，本插件 `link:` 安装）**：
+    启动日志与页面清单确认 `dsh-commander-mode@3.0.0` 已加载、client 半在页面 manifest 里、
+    **0 条 console error**；`devkit_sandbox_compose` 里三行齐全（`dsh-commander-mode` 配置行、
+    `preset-commander`、`preset-project-manager`，以及 `agent` / `project-manager` / `workflow`
+    三个子行）。headless 沙箱 `commander-regress` 也能正常启动，只有两行 preset 声明报
+    `pending (waiting for service: agentPresets)` —— 那是 **headless 模板不含 `agentPresets`
+    的已知边界**，不是加载失败。两个沙箱用完即 destroy。
+  - **门禁手动验证**（真实模块、非 mock）：Lead + `team_task_update` `claim` / `complete` /
+    `set_dependencies` → deny；`reassign` / `edit` / `delete` → 放行；Lead +
+    `subagent_architect` / `subagent` / `subagent_fork` → deny（`workflow` 不拦）；Lead +
+    `commander_ticket_update` `progress` / `blocked` → deny，`done` / `cancelled` / 只改
+    acceptance → 放行；teammate（`isDelegatedAgent` 命中）全部放行；身份读不到放行；
+    `delegationHierarchy: false` 时以上九条全部放行。拒绝理由的文案也按
+    `availableTools` 生成，不点名对方没有的工具。
+  - **P2 自相矛盾修复的证据**：修复前，指挥者调 `write` 的拒绝理由会让它去调
+    `subagent_architect`（随后被层级门禁拒），一轮白烧；修复后默认（层级开启）第 2 步只给
+    Team 通道、正文不含 `subagent_`，显式 `delegationHierarchy: false` 才恢复 2.x 的
+    specialist 指引 —— 两种语义都有测试钉住。
+  - **未覆盖的边界（如实记录）**：web 沙箱没有凭据，登录弹窗挡住 composer，所以
+    **没有在沙箱 UI 里点选两个模式跑真实回合**；模式是否出现在选择器里，依据是
+    `agentPresets` 声明行加载成功 + compose 树 + 真实 profile 的 `preset_audit`（2.4.1 时
+    审计过 `commander` 22 行/116 工具、`project-manager` 23 行/112 工具，3.0.0 未增删 preset
+    行，只改文本与门禁）。下次有凭据时补一次真实回合更稳。
+
+#### 3.0.0 的经验教训
+
+- **现象**：2.x 的协议写「指挥者不执行操作」，但没说"派给谁"的层级；于是指挥者既可以直接
+  调 `subagent_<id>`，也可以开 teammate，两条通道并存，用户在长会话里看到的是"指挥者自己
+  在改任务板、自己直接派一次性专家"，与"一个团队一个小组长"的预期不一致。
+  **根因**：**只有禁令、没有层级**。协议把"不自己做"写死了，却没定义"谁来做"的中间层，
+  模型就会挑最省事的那条通道（一次性工具），任务板上于是没有 owner、没有排期。
+  **正确做法**：把层级写成**唯一正文来源**（`lib/team-model.js`），两个模式都拼接它；
+  再用**确定性门禁**把"谁能写什么"钉住（任务板进展/排期、工单推进状态、子智能体派发），
+  最后才用协议解释"为什么"。**反例**：把层级只写进协议、门禁照旧 —— 模型第一次顺手
+  `team_task_update` 成功，后面就再也劝不住了（本插件 2.x 的历史就是"劝"）。
+- **现象**：新门禁上线后，W4 发现"执行边界"的拒绝理由仍在教模型去调 `subagent_<id>`，
+  而这条通道刚被新门禁封死 —— 两条规则各自正确，组合起来自相矛盾。
+  **根因**：**门禁与提示词没有一起改**。拒因是一段模型会照着做的指令，它必须知道当前
+  门禁状态；否则"拒绝 A 并建议 B"会变成"拒绝 A 并建议另一个会被拒的 B"。
+  **正确做法**：让拒因生成函数接收 `delegationHierarchy`（与门禁同一个开关），
+  开启时只给合法通道；两种状态都写测试。**反例**：只测"门禁会拒绝"，不测"拒绝之后模型
+  被指到哪" —— 后者才是真正决定下一轮是否白烧的地方。
+- **现象**：新门禁把 `observeDelegation` 挤到了后面，被拒绝的派发尝试仍被记成"真实派活"，
+  看板误报"团队闲置 / 派活全走一次性 specialist"。
+  **根因**：**统计口径与门禁顺序耦合**，但没人把"被拒的尝试"当成一个状态。
+  **正确做法**：门禁判定放在观测之前（拒绝即返回、不记账），并加一条"被拒尝试不计入配比"
+  的回归测试。**反例**：只看"看板数字变了"，不看数字里混进了什么。
 
 - **1.3.1 第十六轮（DSH 0.2.2-rc.1 · 智能体团队通道针对性实测）**：
   0.2.2 改了 `@deepseek-ai/dsh-experimental-agent-team` 的实现（`TeamService` 的投影注册移进
@@ -1318,6 +1514,22 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **3.0.0** —— 三层指挥链（用户 2026-11-11 的五条规则落地；大版本：对外契约有破坏性变更）：
+  ① 新增 `lib/team-model.js` 作为团队模型的**唯一正文来源**（三层职责 + 七条规则 + 深度 2 /
+  并行 16），指挥官协议与项目经理协议都拼接它，不再各抄一份；协议新增「持续接单」与
+  「歧义链路」（小组长报指挥官、指挥官汇总后一次性问用户）。
+  ② 运行限制对齐运行时「子智能体」设置：`maxTeammates` 默认 8 → 16、上限 12 → 16；
+  `maxAsyncTasks` 默认 8 → 16、上限 12 → 16；插件不再自己压低并行度。
+  ③ **破坏性变更**：指挥官不再直接调用 `subagent_<id>` / `subagent` / `subagent_fork`
+  （团队活交给小组长）；`team_task_update` 的 `claim` / `release` / `complete` / `reopen` /
+  `set_dependencies` 与 `commander_ticket_update` 的 `progress` / `waiting` / `ready` /
+  `blocked` / `failed` 只允许小组长做，指挥官只建任务 / `reassign` / 读板 / 验收 `done`、
+  `cancelled`；项目经理模式六位专家改为**专家小组长**（`architect-lead` 等）。
+  ④ 三条门禁由新配置 `delegationHierarchy`（默认 `true`）控制，`false` 回到 2.x 的
+  "只靠协议"行为；看板与协议文案同步改成"核对小组长是否已结算，未结算就催 owner"。
+  **用户要做什么**：重新安装 / 重启 DSH。旧习惯（指挥官自己 `claim` / `complete`、直接调
+  `subagent_<id>`）会收到拒绝与纠正指令；要保留 2.x 的软约束行为就把 `delegationHierarchy`
+  设为 `false`。
 - **2.4.0** —— 放开并发度（用户 2026-11-09 反馈「子智能体数量限制过严，导致效率太低」）：
   ① **Team 成员上限 8 → 16**：随附的 `agent-team-profile` 把 `maxMembers` 显式写成 8
   （包自身默认是 16），在 profile patch 里用 id 定向覆盖回 16（四个键必须全写，整块替换）。
