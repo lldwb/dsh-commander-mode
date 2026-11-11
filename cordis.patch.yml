@@ -61,8 +61,9 @@
 # `tool-pwsh`：子代理通过 `agentPresets.composeFrom()` 加入**父会话的同一个 preset
 # scope**，裁掉会让 teammate 也失去这些能力（per-child 的工具限制只能收紧、不能扩展）。
 #
-# 3.1.0 起「禁止等待子智能体」：`wait_agent` 对指挥官**无条件拒绝**（硬编码，**没有开关**，
-# 配置行里不存在 `maxWaitMs` 之类的键）。不等之后靠「【派工完成】」通知唤醒 +
+# 3.1.0 起「禁止等待子智能体」：`wait_agent` **无条件拒绝**（硬编码，**没有开关**；
+# 3.2.0 起整条链生效：指挥官、小组长、子智能体一视同仁）。配置行里不存在 `maxWaitMs`
+# 之类的键）。不等之后靠「【派工完成】」通知唤醒 +
 # `list_agents` / `team_task_list` 读状态 + `send_message` 追问；
 # `list_agents` / `team_task_list` / `send_message` 这类工具不受影响。
 #

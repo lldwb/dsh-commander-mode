@@ -514,12 +514,13 @@ export function apply(ctx) {
               }
             }
 
-            // ③ 3.1.0「禁止等待子智能体」：项目经理调用 `wait_agent` **无条件拒绝**。
-            //    用户 2026-11-11 补充要求：禁止等待，且不设开关 —— 不读任何配置项。
-            //    只拦项目经理本人；小组长等自己的下级由 `isDelegatedAgent` 放行。
-            const waitDecision = evaluateWaitForbidden({ agent, name: toolName });
+            // ③ 3.1.0 / 3.2.0「禁止等待子智能体」：本模式里任何 agent 调 `wait_agent`
+            //    都**无条件拒绝**。用户 2026-11-11 补充要求：禁止等待、不设开关；随后追加
+            //    「不要等」→ 整条链都不许等（项目经理、专家小组长、子智能体一视同仁）。
+            //    不读任何配置项。
+            const waitDecision = evaluateWaitForbidden({ name: toolName });
             if (waitDecision !== undefined) {
-              ctx.logger?.info?.('project-manager: 拒绝项目经理的 wait_agent（禁止等待，无开关）');
+              ctx.logger?.info?.('project-manager: 拒绝 wait_agent（禁止等待，无开关，整条链生效）');
               return waitDecision;
             }
           } catch (error) {

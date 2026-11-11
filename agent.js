@@ -1126,13 +1126,13 @@ export function apply(ctx) {
         }
       }
 
-      // 3.1.0「禁止等待子智能体」：指挥官调用 `wait_agent` **无条件拒绝**。
-      // 用户 2026-11-11 补充要求：禁止等待，且不设开关 —— 所以这里不读任何配置项
+      // 3.1.0 / 3.2.0「禁止等待子智能体」：本模式里任何 agent 调 `wait_agent` **无条件拒绝**。
+      // 用户 2026-11-11 补充要求：禁止等待、不设开关；随后追加「不要等」→ 整条链都不许等
+      // （指挥官、小组长、子智能体一视同仁）。所以这里不读任何配置项
       // （`delegationHierarchy` / `blockedTools` / 已移除的 `maxWaitMs` 都不影响它）。
-      // 只拦指挥官本人：小组长在 L1 等自己的下级是它的调度，由 `isDelegatedAgent` 放行。
-      const waitDecision = evaluateWaitForbidden({ agent: exec?.agent, name: toolName });
+      const waitDecision = evaluateWaitForbidden({ name: toolName });
       if (waitDecision !== undefined) {
-        ctx.logger?.info?.('commander-mode: 拒绝指挥官的 wait_agent（禁止等待，无开关）');
+        ctx.logger?.info?.('commander-mode: 拒绝 wait_agent（禁止等待，无开关，整条链生效）');
         return waitDecision;
       }
 
