@@ -229,6 +229,9 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 - **安静默认**：没有工单且没有授权时不产生任何文本；
 - **停滞**是代理指标：派发后超过 `ticketStallMs`（默认 10 分钟）且没有新回报 → 提示"先只读核对，
   再决定问用户 / 补派 / 标记受阻"，**不自动重派或结束**（Super-agent 也承认任务层巡检最难）。
+  **3.3.0 起对 Worker Session 另有一条停滞看门狗**：每 60 秒扫描带 `execution` 的未结束工单，
+  超过 `ticketStallMs` 且**开工后从未回报**就 `steer` 指挥者（同工单 10 分钟节流），提示它
+  可能卡在回合中途——只提醒、不自动改状态（见「Worker Session」与「3.3.0」）。
 
 **账本**：
 
@@ -284,7 +287,12 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
   `tools.guard` 白名单兜底（restrict 在 agent 组装早期可能抛"unknown global tool"）、
   注册 `commander_report`，并加"工单已结束"guard。结束前必须 `commander_report`
   （status + summary；blocked/failed 用 question）；汇报会写账本并 `steer` 唤醒指挥者。
-  worker 空转未汇报时，idle 兜底每 10 分钟提醒一次。
+  **两种兜底分工（3.3.0 补齐）**：**idle 兜底**只在 `agent/status = idle`（回合已结束却没汇报）
+  时每 10 分钟提醒一次；**停滞看门狗**（每 60 秒扫一次）覆盖"回合中途卡住、永远不 idle"的情况
+  ——带 `execution` 的未结束工单，若 `now - startedAt >= ticketStallMs`（默认 10 分钟）且
+  开工后**从未回报**，就 `steer` 指挥者（同工单 10 分钟节流），提示它可能卡在回合中途，
+  给出三步处置（追问 / `commander_worker_stop` 后补派 / 标记 blocked）。看门狗**只提醒、
+  不自动改状态**。
 - **槽位与恢复**：`maxWorkers`（默认 3）在启动前检查；DSH 重启后，指挥者会话创建时会为
   open 工单的 worker 投递恢复提示（先检查目录/产物再继续）并标记 `resumedAt`。
 - **边界**：worker 目录与工具收敛**不是安全边界**（worker 仍以操作员身份执行，默认
@@ -806,9 +814,65 @@ Team 通道：owner 由插件自动绑定
 **Team 通道自动绑定（D）**：`spawn_teammate` 成功后，插件把这张工单的投影任务
 `reassign` 给该队友（Lead 权限），所以"建板必有主"不再依赖模型自觉。派发门禁额外要求
 Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Teams 时自动跳过）。
+**3.3.0 起缺投影会自愈**：门禁先让插件自己补建（`ensureTeamTask`），补建成功直接放行；
+只有补建失败才拒绝，且拒因只给当前实现允许的动作（见「3.3.0」一节）。
+
+**writeScopes 清洗规则（3.3.0）**：工单的 `scope` 会经 `sanitizeWriteScopes()` 清洗后才进
+任务板 `writeScopes`——**只接受工作区相对路径**（如 `src/app`、`docs/README.md`）；绝对路径
+（`E:\repo\src`、`/home/user/src`）、空段、`.` / `..` 段一律**丢弃**，`\` 统一成 `/`、去掉
+前导 `./` 与尾随 `/`、去重保序、最多 40 条。理由：运行时 `agentTeams.createTask()` 的
+`writeScope()` 会拒绝这些值并抛 `TEAM_INVALID_WRITE_SCOPE`，原样透传会让整次投影失败
+（会话 `def6609d` 就是这么死锁的）。后果与边界：`writeScopes` 只是 advisory（板上"写作用域
+重叠"提示），**丢弃不影响派发**；工单本身保留完整 `scope`，任务描述里也有背景说明。
 
 **降级**：没有 `agentTeams` 服务 / 当前 agent 不是 Team 成员 / 方法缺失 → 全部 no-op，
 行为与 1.1.x 逐字一致（协议文本都不变，有测试钉住）。
+
+## 3.3.0：门禁死锁修复 + Worker 停滞看门狗
+
+3.3.0 修的是**一个真实会话（`session-def6609d`）最后静默挂死**的问题。它不是单个 bug，而是
+"投影 → 派发门禁 → 层级门禁 → Worker 兜底"四层叠起来的死锁。
+
+### 根因链（六步）
+
+1. **工单 `scope` 是 Windows 绝对路径**（`E:\repo\tools\...`）；
+2. **投影器把它们原样塞进任务板 `writeScopes`**，而运行时 `agentTeams.createTask()` 的
+   `writeScope()` **拒绝绝对路径**——盘符开头（`^[a-z]:`）、前导 `/`、空段 / `.` / `..` 段
+   都算非法，直接抛 `TEAM_INVALID_WRITE_SCOPE`；
+3. **投影失败被静默吞掉**（只记 debug）→ 工单没有 `teamTaskId`；
+4. **派发门禁 D-1 拒绝 `spawn_teammate`**，并让模型"更新工单状态（例如 progress）触发投影"；
+5. **但 3.0.0 起指挥官改工单推进状态被层级门禁拒绝** → **两条门禁互相矛盾，Team 通道永久
+   不可用**（会话里模型自己写下"门禁自相矛盾形成死锁"）；
+6. **模型退到 Worker Session**，worker 卡在**回合中途**（长时间无事件、没有 `turn/end`）：
+   idle 兜底只在 `agent/status = idle` 触发，worker 永远不 idle、也不 `commander_report` →
+   指挥者等不到唤醒，整个会话静默挂死。
+
+### 三条修复
+
+1. **投影层：清洗 `writeScopes` + 失败不再静默。**
+   - 新增导出纯函数 `sanitizeWriteScopes()`：按运行时 `writeScope()` 的规则清洗——绝对路径
+     （盘符 / 前导 `/`）、空段、`.` / `..` 段一律丢弃；`\` 统一成 `/`、去掉前导 `./` 与
+     尾随 `/`、去重保序、最多 40 条。**丢弃是安全的**：`writeScopes` 只是 advisory（板上
+     "写作用域重叠"提示），工单本身保留完整 `scope`，任务描述里也有背景说明。
+     `projectContent()` 已改用它。
+   - 投影失败从 debug **升到 warn**（带错误码，例如 `TEAM_INVALID_WRITE_SCOPE`）：投影失败
+     不是无害降级——它会让 Team 通道被派发门禁挡死，必须能在日志里看到。
+2. **派发门禁自愈：缺投影时插件自己补建。** `evaluateDispatchGate()` 变成 async，新增
+   `ensureTeamTask`：缺投影时走投影器**自己补建**（`teamBoardBridge.createProjection`），
+   成功就直接放行；只有补建失败才拒绝，且拒绝理由只给**当前实现允许**的动作——
+   用 `commander_ticket_update` **只改描述字段**（title / intent / acceptance / scope，
+   **不要带 status**）让投影重建，或改用 `commander_worker_spawn`（Worker Session 不要求
+   任务板投影）；并明确写「不要用 status 触发投影，会被层级门禁拒绝」。
+3. **Worker 停滞看门狗**（`lib/worker-sessions.js`）：每 **60 秒**扫描一次；带 `execution`
+   的未结束工单，若 `now - startedAt >= ticketStallMs`（默认 10 分钟）且**开工后从未回报**，
+   就 `steer` 指挥者（同一张工单 10 分钟节流），提示"可能卡在回合中途（不会触发 idle）"，
+   给出三步处置：①有产物在增长 → 追问进度；②完全没动静 → `commander_worker_stop` 停掉后
+   补派；③标记 blocked 上报用户。**只提醒，不自动改状态。**
+
+### 用户要做什么
+
+**重启即可**（门禁与看门狗都在启动时装配），**不需要改任何配置**。若之前被这个死锁卡过：
+重启后 Team 通道会自愈（缺投影时插件自动补建）；投影失败现在会以 warn 级带错误码出现在日志里。
 
 ## 配置
 
@@ -1005,6 +1069,19 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   `subagent` / `subagent_fork` / `subagent_<id>`；`workflow` 是编排工具（一次性扇出 fresh
   子代理），不产生"某个小组长背任务"的层级，所以仍可由指挥官调用——它适合无状态扇出，
   不适合需要排期与验收的长任务。
+- **投影失败现在会 warn（3.3.0）。** 以前只记 debug，投影失败看起来"无害"；现在失败会以
+  warn 级带**错误码**（例如 `TEAM_INVALID_WRITE_SCOPE`）出现在日志里——因为投影失败会让
+  Team 通道被派发门禁挡死。看到这个错误码先查工单 `scope` 里有没有绝对路径。
+- **writeScopes 里的绝对路径会被丢弃（3.3.0）。** `sanitizeWriteScopes()` 只把合法的工作区
+  相对路径交给任务板；绝对路径 / 空段 / `.` / `..` 段直接丢弃。**任务板不会因此失败**，
+  但"写作用域重叠"提示会少几条——`writeScopes` 只是 advisory，工单的完整 `scope` 仍在账本里。
+- **停滞看门狗只提醒、不自动改状态（3.3.0）。** 它每 60 秒扫一次，超过 `ticketStallMs`
+  且开工后从未回报才 `steer` 指挥者（同工单 10 分钟节流）；是追问、停掉补派还是标 blocked，
+  由指挥者判断。阈值与节流都写死在 `lib/worker-sessions.js`，有单测覆盖。
+- **idle 兜底 vs 停滞看门狗（3.3.0）。** idle 兜底覆盖"worker 回合已结束却没汇报"（
+  `agent/status = idle` 触发，10 分钟节流）；停滞看门狗覆盖"worker 卡在回合中途、永远不
+  idle"（定时扫描，`ticketStallMs` 阈值）。两者互不替代：会话 `def6609d` 的现场属于后者，
+  当时只有前者，所以指挥者永远等不到唤醒。
 
 ## 运维：外部巡检（0.9.0）
 
@@ -1159,6 +1236,26 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **3.3.0 第二十一轮（门禁死锁修复 + Worker 停滞看门狗）**：
+  - **根因用运行时源码确认**：从桌面版 `app.asar` 里读出 `writeScope()` 的实现——`\` 换 `/`、
+    去掉前导 `./` 与尾随 `/` 后，若以 `/` 开头、`^[a-z]:` 盘符开头、或含空段 / `.` / `..`
+    段，就抛 `TEAM_INVALID_WRITE_SCOPE`；`sanitizeWriteScopes()` 的拒绝条件与它**逐条对齐**。
+  - **`sanitizeWriteScopes` 对 def6609d 实际 scope 的输出为空**：
+    `['E:\repo\tools\render','E:\repo\src']` → `[]`（这正是死锁起点）；
+    混合 `['E:\repo\src','src/app','/etc/passwd','docs']` → `['src/app','docs']`；
+    `['./src/app/','src/lib/']` → `['src/app','src/lib']`；
+    `['src/./app','src/../lib']` → `[]`；`projectContent()` 的 `writeScopes` 同样为空。
+  - **门禁自愈两种情形**（真实模块 + fake ledger/teamBoard）：
+    `ensureTeamTask` 返回 `task-7` → **放行**；返回 `undefined` → **拒绝**，且拒因同时含
+    「只改描述字段」「不要用 status」「commander_worker_spawn」「progress 会被层级门禁拒绝」
+    四条纠正口径；没有 `ensureTeamTask` 且缺投影时同样拒绝。
+  - **看门狗四情形**（真实 `CommanderWorkers.scanStalls()`，注入假时钟与 steer）：
+    A 超阈值且开工后从未回报 → **提醒**（steer 1 次，文案含「疑似停滞」）；B 10 分钟内
+    重复扫描 → **节流**（0 次）；C 开工后回报过 → **不提醒**；D 未到阈值 → **不提醒**。
+  - **`node --test "test/**/*.test.mjs"`** → **625 / 625 通过、0 失败**（3.3.0 契约同步后：
+    新增 `sanitizeWriteScopes` 用例、D-1 自愈四种分支（成功 / 失败 / 未提供 / 已有投影不重复建）
+    与 8 条停滞看门狗用例（定时器与 unref、超阈值提醒、已回报不提醒、未到阈值不提醒、
+    10 分钟节流、关闭 workerSessions 不扫描、终态不提醒、多工单只提醒真正停滞的那张））。
 - **3.2.0 第二十轮（禁止等待扩到整条指挥链）**：
   - **门禁手动验证**（真实模块、非 mock：`node -e` 直接 import `lib/guard.js`）：
     `evaluateWaitForbidden` 对**四种身份全部 deny** —— Lead / teammate（`isDelegatedAgent`
@@ -1577,6 +1674,22 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **3.3.0** —— 修 `session-def6609d` 的**门禁死锁 + 静默挂死**（用户报告"最后卡死"）：
+  ① **现象**：会话最后静默挂死；模型自己在会话里写下"门禁自相矛盾形成死锁"。
+  ② **根因（六步）**：工单 `scope` 是 Windows 绝对路径 → 投影器原样塞进任务板
+  `writeScopes` → 运行时 `writeScope()` 拒绝绝对路径、抛 `TEAM_INVALID_WRITE_SCOPE` →
+  投影失败被静默吞掉（无 `teamTaskId`）→ 派发门禁 D-1 拒绝 `spawn_teammate` 并让模型
+  "更新工单状态触发投影"，而 3.0.0 起指挥官改工单推进状态被层级门禁拒绝 → **Team 通道
+  永久不可用**；模型退到 Worker Session，worker 卡在回合中途（不 idle、不汇报）→ idle 兜底
+  不触发 → 指挥者永远等不到唤醒。
+  ③ **修复**：新增 `sanitizeWriteScopes()`（按运行时规则清洗，绝对路径丢弃；`writeScopes`
+  只是 advisory，工单保留完整 scope）；投影失败从 debug 升到 **warn**（带错误码）；
+  派发门禁**自愈**（`evaluateDispatchGate` 变 async + `ensureTeamTask`，缺投影时插件自己
+  补建，成功放行；失败拒因只给当前实现允许的动作，明确"不要用 status 触发"）；
+  **Worker 停滞看门狗**（每 60 秒扫描，超过 `ticketStallMs` 且开工后从未回报 → steer
+  指挥者，同工单 10 分钟节流，只提醒不自动改状态）。
+  **用户要做什么**：重启即可（门禁与看门狗在启动时装配），**不需要改任何配置**；之前被
+  这个死锁卡过的会话，重启后 Team 通道会自愈。
 - **3.2.0** —— 禁止等待扩到**整条指挥链**（用户 2026-11-11 追加要求「**不要等**」——
   在被问及"是否连小组长也不许等"时明确回答）：
   ① **现象**：3.1.0 只拦了指挥官——小组长（teammate）等自己的下级仍然放行，于是长会话里
