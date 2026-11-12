@@ -42,11 +42,13 @@ function preExecute(record) {
 
 // ---------------------------------------------------------------- 协议文本 ---
 
-test('协议第一句就声明「本模式调用六位开发流程专家」', () => {
+test('协议第一句就声明「本模式带六位开发流程专家」，且说明它们不是必须走完的流水线', () => {
   assert.ok(
-    PROJECT_MANAGER_PROTOCOL.startsWith('# 项目经理模式\n\n本模式调用六位开发流程专家'),
+    PROJECT_MANAGER_PROTOCOL.startsWith('# 项目经理模式\n\n本模式带六位开发流程专家'),
     PROJECT_MANAGER_PROTOCOL.slice(0, 200),
   );
+  // 3.6.0：紧跟着就要说清"队伍不是流水线"，否则模型会把六位专家当成六道必须过的关卡。
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('不是一条必须走完的流水线'));
 });
 
 test('协议点名六位专家 id 与工具名', () => {
@@ -60,24 +62,29 @@ test('协议点名六位专家 id 与工具名', () => {
   }
 });
 
-test('协议按顺序写出六段流水线，每段都有输入 / 产出 / 验收判据 / 不通过怎么办', () => {
+test('3.6.0：协议按任务形状拆分，六段流水线降级为可选项（不再强制走完）', () => {
   assert.deepEqual(PIPELINE_STAGES, ['架构', '实现', '审查', '测试', '安全', '文档']);
-  let previous = -1;
-  for (let index = 1; index <= 6; index += 1) {
-    const marker = `第 ${index} 段`;
-    const found = PROJECT_MANAGER_PROTOCOL.indexOf(marker);
-    assert.ok(found >= 0, `缺 ${marker}`);
-    assert.ok(found > previous, `${marker} 的顺序不对`);
-    previous = found;
+  // 用户 2026-11-12 指出（session-137678b5）：PM 把"读交接文档 + 打安装包发版"也拆成
+  // 架构→实现→审查→测试→安全→文档 六段串行。病根是协议写着"每段都必须走完、顺序固定"。
+  for (const forbidden of ['每段都必须走完', '顺序固定', '不得省略', '不允许进入下一段']) {
+    assert.ok(!PROJECT_MANAGER_PROTOCOL.includes(forbidden), `协议不应再强制流水线：${forbidden}`);
   }
-  for (const keyword of ['输入：', '产出：', '验收判据：', '不通过怎么办：']) {
-    const count = PROJECT_MANAGER_PROTOCOL.split(keyword).length - 1;
-    assert.ok(count >= 6, `「${keyword}」只出现 ${count} 次（六段都应写明）`);
+  // 正面的新口径必须在场：按任务形状拆 + 六段可选 + 指向按需 skill。
+  for (const phrase of ['按任务形状拆', '可选项', '不是强制流程', 'project-dev-workflow', '不为了走流程制造依赖']) {
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(phrase), `协议缺少按任务拆分的口径：${phrase}`);
   }
-  // 实现之后必须有独立审查与独立测试（不能由实现者兼）。
-  assert.match(PROJECT_MANAGER_PROTOCOL, /独立于实现者/u);
-  // 安全审计与文档不得省略。
-  assert.match(PROJECT_MANAGER_PROTOCOL, /安全审计与文档\*\*不得省略\*\*/u);
+  // 典型"不该套六段"的任务形状要举例，否则模型仍会套模板。
+  for (const phrase of ['打安装包', '发版', '交接', '单点缺陷', '排障', '从零开发']) {
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(phrase), `协议缺少任务形状示例：${phrase}`);
+  }
+  // 无论什么形状都成立的硬要求仍在：验收判据 / 落盘证据 / 独立于实现者。
+  for (const phrase of ['可观察的验收判据', '落盘证据', '独立于实现者']) {
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(phrase), `协议缺少硬要求：${phrase}`);
+  }
+  // 六段名仍作为可选工作流的阶段出现（名册与 skill 手册要对得上）。
+  for (const stage of PIPELINE_STAGES) {
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(stage), `协议缺可选工作流阶段：${stage}`);
+  }
 });
 
 test('协议禁止人日 / 人天 / 工期估算', () => {
@@ -93,7 +100,7 @@ test('协议要求 git 分类提交与经验教训（含模式本身）', () => 
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('短哈希'));
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('经验教训'));
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('项目经理模式本身'));
-  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('未提交视为该段未完成'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('未提交视为该任务未完成'));
 });
 
 test('协议写明禁止等待：硬禁用 + 无开关 + 依赖派工完成通知', () => {
@@ -142,9 +149,9 @@ test('3.0.0：协议原样拼接 TEAM_MODEL 正文（团队模型唯一正文来
   for (const phrase of ['小组长', '子智能体', '深度 2', '16', '只有小组长', '一个团队一个任务', '持续接单']) {
     assert.ok(PROJECT_MANAGER_PROTOCOL.includes(phrase), `项目经理协议缺少团队模型口径：${phrase}`);
   }
-  // 六段流水线仍在（特化版 = 团队模型 + 六段流水线）。
+  // 可选六段工作流仍在（协议里作为"从零开发/大改造"的一种推进方式出现）。
   for (const stage of PIPELINE_STAGES) {
-    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(stage), `协议缺流水线阶段：${stage}`);
+    assert.ok(PROJECT_MANAGER_PROTOCOL.includes(stage), `协议缺可选工作流阶段：${stage}`);
   }
 });
 
@@ -165,7 +172,7 @@ test('3.0.0：六位专家是「专家小组长」，名字逐个点名', () => 
   assert.equal(leaderNameForSpecialist('data-engineer'), 'data-engineer-lead');
   // 派单通道是 spawn_teammate + send_message（规则 3：任务下发给小组长）。
   assert.ok(PROJECT_MANAGER_PROTOCOL.includes('`spawn_teammate` 建一位**专家小组长**'));
-  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('`send_message` 把该段任务发给它'));
+  assert.ok(PROJECT_MANAGER_PROTOCOL.includes('`send_message` 把任务发给它'));
 });
 
 test('3.0.0：协议不再指示项目经理直接调 subagent_<id>（工具仍安装，给小组长用）', () => {
@@ -235,7 +242,7 @@ test('3.4.0 降级：没有智能体团队时给 PM 协议追加覆盖段（改�
 
   const noTeam = section.text({ agent: agentWith(['read', 'write', 'subagent_architect', 'subagent_implementer']) });
   assert.ok(noTeam.includes('本部署没有智能体团队'), noTeam.slice(-600));
-  assert.ok(noTeam.includes('改用一次性子智能体派每段任务'), noTeam.slice(-600));
+  assert.ok(noTeam.includes('改用一次性子智能体派任务'), noTeam.slice(-600));
   assert.ok(noTeam.includes('subagent_architect'), '覆盖段要点名一次性专家工具');
   assert.ok(noTeam.includes('不要自己写业务代码'), '降级后仍要守住"不自己写代码"');
   // 原协议正文仍完整保留（覆盖段是追加，不是替换）。

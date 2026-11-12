@@ -1,28 +1,24 @@
 /**
- * 「项目开发工作流」组件的测试：协议文本 + 模式行接线。
+ * 「项目开发工作流」组件的测试：可选执行手册的正文 + 按需 skill 接线。
  *
- * 这个组件是项目经理模式调用的**六段流水线执行手册**。测试要钉住四件事：
+ * 3.6.0 起这个组件**只注册 skill**（不再注入常驻 prompt section），因为 3.5.0 及以前
+ * 的"常驻 section + 六段必须走完"把发版打包、交接这类任务也逼成六段串行
+ * （真实会话 session-137678b5）。测试要钉住四件事：
  *
- * 1. 六段齐全、顺序固定，每段都写清目的 / 必做动作 / 落盘产物 / 验收判据 / 失败返工 /
- *    对应专家与团队用法；
+ * 1. 六段齐全、顺序固定（作为**推荐顺序**），每段都写清目的 / 必做动作 / 落盘产物 /
+ *    验收判据 / 失败返工 / 对应专家与团队用法；
  * 2. 本包 `skills/` 目录里 20 个方法 skill 全部出现在"该在哪个阶段用"的索引里；
- * 3. 「skill 是工作方法，不替代验收证据」这条边界在场；
+ * 3. 「可选、按需、可只取一段」与「skill 是工作方法，不替代验收证据」这两条边界在场；
  * 4. 不出现人日 / 人天 / 人月 / 工期这类被用户明确否掉的表述。
  */
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  SECTION_NAME,
-  SECTION_ORDER,
-  SKILL_NAME,
-  apply,
-  name as pluginName,
-} from '../workflow.js';
+import { SKILL_NAME, apply, name as pluginName } from '../workflow.js';
 import { WORKFLOW_PROTOCOL, WORKFLOW_SKILLS, WORKFLOW_STAGES } from '../lib/workflow.js';
 import { leaderNameForSpecialist } from '../lib/project-manager.js';
-import { LEAD, TEAMMATE, makeCtx, makeSettings, defaultRoster } from './helpers.mjs';
+import { makeCtx, makeSettings, defaultRoster } from './helpers.mjs';
 
 /** 19 个已吸纳 skill 的期望清单（与任务书一致；改名/增删都要同步改这里与协议正文）。 */
 const EXPECTED_SKILLS = [
@@ -50,10 +46,24 @@ const EXPECTED_SKILLS = [
 
 // ---------------------------------------------------------------- 协议文本 ---
 
-test('协议定位：六段流水线的可执行步骤与门禁，供项目经理模式调用', () => {
+test('协议定位：可选执行手册（不是强制流程），供项目经理与专家小组长按需加载', () => {
   assert.ok(WORKFLOW_PROTOCOL.startsWith('# 项目开发工作流'), WORKFLOW_PROTOCOL.slice(0, 120));
   assert.ok(WORKFLOW_PROTOCOL.includes('项目经理模式'));
   assert.match(WORKFLOW_PROTOCOL, /架构 → 实现 → 审查 → 测试 → 安全 → 文档/u);
+  // 3.6.0：必须是"可选"，不能再写成硬门禁 / 必须走完。
+  for (const phrase of ['可选执行手册', '不是强制流程', '不是门禁', '推荐顺序', '按需加载', '只读对应那一段']) {
+    assert.ok(WORKFLOW_PROTOCOL.includes(phrase), `工作流正文缺少可选性说明：${phrase}`);
+  }
+  // 只禁**肯定式**的强制措辞；"不是必须走完的流水线"这类否定句是我们要的。
+  for (const forbidden of ['每一段都是硬门禁', '不允许进入下一段', '必须按顺序走完', '六段必须走完']) {
+    assert.ok(!WORKFLOW_PROTOCOL.includes(forbidden), `工作流正文不应再写强制措辞：${forbidden}`);
+  }
+  // 必须给出"什么时候不用它"，否则模型仍可能硬套。
+  for (const phrase of ['什么时候值得用', '不用硬套', '发版', '交接']) {
+    assert.ok(WORKFLOW_PROTOCOL.includes(phrase), `工作流正文缺少使用边界：${phrase}`);
+  }
+  // 不要为了顺序制造依赖（这是 session-137678b5 的直接病根）。
+  assert.ok(WORKFLOW_PROTOCOL.includes('不要为了"顺序"给任务加 blocked_by 依赖'));
 });
 
 test('六段齐全、顺序固定，每段都有六件套（目的/动作/产物/判据/返工/专家用法）', () => {
@@ -150,41 +160,34 @@ test('不以人日 / 人天 / 人月 / 工期表述工作量', () => {
 
 // ---------------------------------------------------------------- 接线 ---
 
-test('导出名与 section 契约正确（order 640 在项目经理协议 650 之前）', () => {
-  assert.equal(pluginName, 'project-dev-workflow');
-  assert.equal(SECTION_NAME, 'project-workflow:mode');
-  assert.equal(SECTION_ORDER, 640);
-  assert.ok(SECTION_ORDER < 650);
-});
-
-test('注册项目开发工作流 section；teammate 拿不到', () => {
+test('3.6.0：不再注册常驻 prompt section（这是"拆成按需组件"的关键）', () => {
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
-  assert.equal(record.sections.length, 1);
-  const section = record.sections[0];
-  assert.equal(section.name, SECTION_NAME);
-  assert.equal(section.order, SECTION_ORDER);
-  assert.equal(typeof section.text, 'function');
-  assert.ok(section.text({ agent: LEAD }).includes('项目开发工作流'));
-  assert.equal(section.text({ agent: TEAMMATE }), '');
-  assert.ok(section.text().includes('六段流水线执行手册') || section.text().includes('第 1 段'));
+  assert.equal(record.sections.length, 0, '工作流组件不应再注入常驻 section');
 });
 
-test('注册 project-dev-workflow skill', () => {
+test('注册 project-dev-workflow skill，且模型与用户都能调用（小组长按需加载）', () => {
+  assert.equal(pluginName, 'project-dev-workflow');
   const { ctx, record } = makeCtx({ settings: makeSettings({ specialists: defaultRoster() }) });
   apply(ctx);
   assert.equal(record.skills.length, 1);
-  assert.equal(record.skills[0].name, SKILL_NAME);
-  assert.equal(record.skills[0].name, 'project-dev-workflow');
-  assert.equal(record.skills[0].source, 'runtime');
-  assert.ok(record.skills[0].content.includes('第 6 段'));
-  assert.deepEqual(record.skills[0].invocation, { modelInvocable: true, userInvocable: true });
+  const skill = record.skills[0];
+  assert.equal(skill.name, SKILL_NAME);
+  assert.equal(skill.name, 'project-dev-workflow');
+  assert.equal(skill.source, 'runtime');
+  assert.ok(skill.content.includes('第 6 段'));
+  assert.deepEqual(skill.invocation, { modelInvocable: true, userInvocable: true });
+  // 描述与 whenToUse 必须自己说清"可选 / 按需 / 什么时候不用"。
+  for (const phrase of ['可选', '按需']) {
+    assert.ok(skill.description.includes(phrase), `skill 描述缺少：${phrase}`);
+  }
+  assert.ok(skill.whenToUse.includes('发版打包') && skill.whenToUse.includes('不需要加载它'));
 });
 
 test('没有 skills 服务的部署里不炸（只损失 skill 加载入口）', () => {
   const { ctx, record } = makeCtx({ withSkills: false });
   apply(ctx);
   assert.equal(record.skills.length, 0);
-  assert.equal(record.sections.length, 1);
-  assert.ok(record.sections[0].text({ agent: LEAD }).includes('项目开发工作流'));
+  assert.equal(record.sections.length, 0);
+  assert.equal(record.warnings.length, 0, `不该刷 warning：${record.warnings.join(' | ')}`);
 });

@@ -232,10 +232,12 @@ test('preset-project-manager 声明正确（id / 显示名 / 描述 / order 8 / 
   assert.match(PATCH, /- id: preset-project-manager\n(?:\s+#.*\n)*\s+name: 'dsh-commander-mode\/preset-project-manager'/u);
   assert.match(PATCH, /config:\n\s+id: project-manager\n\s+name: 项目经理模式/u);
   assert.match(PATCH, /order: 8/u);
-  // 描述要写清"六位专家 + 带门禁流水线 + 只编排与验收"。
+  // 3.6.0 起描述要写清"六位专家 + 按任务形状拆分 + 六段可选"，不能再写"带门禁流水线"。
   assert.match(PATCH, /description: 用六位开发流程专家/u);
-  assert.match(PATCH, /只编排与验收、不自己写代码/u);
-  // 两行组件：项目经理协议 + 流水线执行手册。
+  assert.match(PATCH, /按任务形状拆分与派单/u);
+  assert.match(PATCH, /六段工作流可选/u);
+  assert.ok(!/跑一条带门禁的项目流水线/u.test(PATCH), 'preset 描述不应再写强制流水线');
+  // 两行组件：项目经理协议 + 可选工作流手册（3.6.0 起只注册 skill）。
   assert.match(PATCH, /\n {10}- id: project-manager-agent\n {12}name: 'dsh-commander-mode\/project-manager'/u);
   assert.match(PATCH, /\n {10}- id: project-dev-workflow\n {12}name: 'dsh-commander-mode\/workflow'/u);
 });
@@ -376,4 +378,26 @@ test('0.6.0：patch 写全账本与计划授权配置（默认开）', () => {
   assert.match(PATCH, /\n {8}maxTickets: 100/u);
   // 为什么默认开：注释要能让用户知道关掉后的后果（回退 0.5 行为）。
   assert.match(PATCH, /关掉后退化为 0\.5\.0/u);
+});
+
+test('3.6.0：所有 locale JSON 可解析，且中英键完全一致', () => {
+  // 3.5.0 发布时踩过：改 `locale/en.json` 的描述时写进了未转义的双引号
+  // （`... the bundled "Agent preset definition".)`），文件变成非法 JSON，而当时没有任何
+  // 测试解析 locale —— 插件页读不到描述，但测试全绿。这条守卫把这类事故挡在提交前。
+  const dirs = ['locale', 'preset-commander/locale', 'preset-project-manager/locale'];
+  /** 递归收集一个对象的所有键路径（只用于比对中英是否同构）。 */
+  const keyPaths = (value, prefix = '') => {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return [prefix];
+    return Object.entries(value).flatMap(([key, child]) => keyPaths(child, prefix === '' ? key : `${prefix}.${key}`));
+  };
+  for (const dir of dirs) {
+    const zh = JSON.parse(fs.readFileSync(new URL(`../${dir}/zh.json`, import.meta.url), 'utf8'));
+    const en = JSON.parse(fs.readFileSync(new URL(`../${dir}/en.json`, import.meta.url), 'utf8'));
+    assert.deepEqual(keyPaths(zh).sort(), keyPaths(en).sort(), `${dir} 的中英键不一致`);
+    // 描述类字段不能为空（空描述会让插件页显示成一片空白）。
+    for (const locale of [zh, en]) {
+      assert.ok(typeof locale.meta?.title === 'string' && locale.meta.title.length > 0, `${dir} 缺 meta.title`);
+      assert.ok(typeof locale.meta?.description === 'string' && locale.meta.description.length > 0, `${dir} 缺 meta.description`);
+    }
+  }
 });
