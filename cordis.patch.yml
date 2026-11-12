@@ -2,9 +2,13 @@
 #
 # 这份 patch 声明**两个 agent preset**：指挥者模式（做判断、派活）与项目经理模式
 # （六位开发流程专家 + 六段带门禁的流水线）。在 DSH 里，一个模式**就是**一个 agent
-# preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。这一行用
-# `@deepseek-ai/dsh-agent-preset`，即随附的通用声明器：它接受
-# `{ id, name, description, order, plugins }`，并替你调用 `ctx.agentPresets.register()`。
+# preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。两个模式各由
+# **本包自带的等效声明器**（`dsh-commander-mode/preset-commander` /
+# `dsh-commander-mode/preset-project-manager`，实现见 `lib/preset-declaration.js`）注册：
+# 语义等价于随附的 `@deepseek-ai/dsh-agent-preset`（接受
+# `{ id, name, description, order, plugins }` 并调用 `ctx.agentPresets.register()`），
+# 自带一份只是为了组件行标题能显示各自的真实身份（见下）。**两个模式都不依赖随附的
+# 「Agent 预设定义」那一行**——禁用 / 缺失它不会让本包的模式消失。
 #
 # ⚠️ preset 是一份**完整组合**，不是全局工具集上的叠加层。
 #
@@ -87,10 +91,13 @@
 #    `skill-filesystem` 多一个 `customSkillDirs`，加载本包 `skills/` 目录），再加两行
 #    `project-manager-agent`（项目经理协议 + 门禁 + 专家安装）与 `project-dev-workflow`
 #    （六段流水线执行手册）。
-#    继承关系：**项目经理模式 = 指挥者模式 + Agent 预设定义**——运行时行为（能力行、专家
-#    名册、执行/等待门禁、工作纪律）继承上一条指挥者行；preset 的声明与生命周期继承
-#    `@deepseek-ai/dsh-agent-preset`（插件页「Agent 预设定义」），后者被禁用时两个模式
-#    一起消失。本行只额外提供六段流水线与 skills 目录加载。详见 README「继承关系」一节。
+#    继承关系：**没有继承**。两个模式是**并列的完整 preset**（preset 是完整组合，不是
+#    叠加层，没法真的"继承"），关系是**共享同一批模块**：能力行清单（本文件的
+#    CAPABILITIES 块，两份逐字节一致，由 `test/capabilities.test.mjs` 防漂移）、专家名册、
+#    执行 / 等待门禁、工作纪律都复用 `lib/` 里的同一份代码；各自只加自己的协议行
+#    （`commander-mode-agent` / `project-manager-agent`），项目经理再多一行
+#    `project-dev-workflow`。两个 preset 各由本包自带的声明器注册，**不经过**随附的
+#    「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）。详见 README「两个模式的关系」一节。
 #
 # ⚠️ 两份 preset 共用同一份专家名册，而 `agentPresets.register()` 对 preset id 是全局唯一
 # 的：两个模式都会急切挂载，后挂载的那一行会收到 `Duplicate agent preset`。项目经理行

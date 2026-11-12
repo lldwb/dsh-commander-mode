@@ -50,9 +50,9 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   自动同步；走 Team 通道派发后，投影任务的 owner 会**自动绑定**到那个队友。你在
   Agent Teams 面板里看到的板就是工单的进度，不需要模型自觉去建。没有 Agent Teams 的
   部署行为与 1.1.x 完全一致。
-- **项目经理模式（2.0.0）**：第二个 agent preset，**继承自「指挥者模式」+「Agent 预设定义」**
-  （见下文「继承关系」一节）：能力行、专家名册、执行 / 禁止等待门禁、工作纪律全部复用指挥者那条，
-  preset 的声明与生命周期交给随附的「Agent 预设定义」。它不写业务代码，而是调用**六位开发
+- **项目经理模式（2.0.0）**：第二个 agent preset，与指挥者模式**并列**（见下文「两个模式的
+  关系」一节）：两者是完整独立的 preset，共享同一份能力行清单、专家名册、执行 / 禁止等待
+  门禁与工作纪律模块，各自只加自己的协议行。它不写业务代码，而是调用**六位开发
   流程专家**（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条**带门禁的六段流水线**：每段都有
   输入、产出、验收判据与返工规则，实现之后必须独立审查与独立测试，安全审计与文档不得
   省略；每段结束做 git 分类提交（未提交视为该段未完成）。与指挥者模式的区别：指挥者解决
@@ -85,9 +85,11 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   + 工作流组件 `dsh-commander-mode/workflow`）+ 设置页（Client 半）
 - 依赖：`@deepseek-ai/schemastery`（声明 `Config` 所需，装进本包 `node_modules`）、
   `@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」，可选但推荐）
-- 前置条件：两个模式都由随附的 **「Agent 预设定义」**（`@deepseek-ai/dsh-agent-preset`）声明。
-  它是 DSH 随附插件页里的一行组件；**该行被禁用时，两个模式都不会出现在模式菜单里**
-  （插件页里能看到这条组件行的状态）。本插件不提供、也不重复声明它。
+- 前置条件：两个模式由**本包自带的声明器**注册（`dsh-commander-mode/preset-commander` /
+  `dsh-commander-mode/preset-project-manager`，实现见 `lib/preset-declaration.js`，语义等价于
+  随附的 `@deepseek-ai/dsh-agent-preset`）。它们只依赖随附的 `agentPresets` 服务（agent preset
+  注册表）；**随附的「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）那一行与本包两个模式
+  无关**——禁用 / 缺失它不会让两个模式消失（2.1.0 起自带声明器，2.0.x 时才是依赖）。
 
 > **为什么拆成两行**：preset 子行是运行时挂载的 Cordis fiber，**不在 Loader 的 entry 树里**，
 > 而设置页的 `Config.listConfigs` 与 `settings.describe()` 读的都是那棵树。把 `Config`
@@ -415,25 +417,22 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 `architect-lead`、`implementer-lead`、`reviewer-lead`、`tester-lead`、`security-lead`、
 `doc-writer-lead`（`security-auditor` 的小组长名是 `security-lead`）。
 
-### 继承关系：项目经理模式 = 指挥者模式 + Agent 预设定义
+### 两个模式的关系：并列，不继承
 
-项目经理模式**不是另起一套模式**，而是在两条既有基础之上派生出来的：运行时行为继承
-**指挥者模式**，preset 的声明与生命周期继承**「Agent 预设定义」**（插件页里那一行
-`@deepseek-ai/dsh-agent-preset`）。它自己只加一条六段流水线。理解这一点，出问题时才知道
-该查哪一层——协议不对查 PM 自己，门禁不生效查指挥者那一层，模式整个不见查预设定义那一行。
+preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层，所以两个模式之间**没有"继承"**
+这回事。它们是两个**并列的完整 preset**：各自重述自己需要的每一行，共享同一批模块。
 
-| 继承自 | 继承/复用的东西 | 落在哪 |
+| 关系 | 内容 | 落在哪 |
 |---|---|---|
-| **指挥者模式**（`dsh-commander-mode/agent`） | ① 能力行清单（`CAPABILITIES` 块）**逐字节一致**，只多一个 `customSkillDirs`（运行时行数：指挥者 22 行 / 项目经理 23 行）；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 禁止等待门禁 `evaluateWaitForbidden()`（3.1.0 起硬禁用、无开关；3.2.0 起整条链生效）；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `cordis.patch.yml` 的 CAPABILITIES 块、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
-| **「Agent 预设定义」的语义**（`@deepseek-ai/dsh-agent-preset`） | preset 的声明方式与生命周期语义：接受 `{ id, name, description, order, plugins }`、调用 `agentPresets.register()`、`order` 决定模式菜单排序（指挥者 7、项目经理 8）。**2.1.0 起本包自带等效声明器**（`lib/preset-declaration.js`，两个子路径模块 `preset-commander` / `preset-project-manager`）——原因见下：组件行标题按模块名解析 locale，两行共用随附声明器时标题会完全一样 | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `preset-commander.js` / `preset-project-manager.js` |
-| **项目经理模式新增（不属于继承）** | 六段流水线协议（阶段门禁、返工规则、经验教训要求）、项目开发工作流组件（`dsh-commander-mode/workflow`）、本包 `skills/` 目录的加载（`skill-filesystem.config.customSkillDirs`，只在 PM 模式） | `project-manager.js`、`lib/project-manager.js`、`workflow.js`、`lib/workflow.js` |
+| **共享（同一份代码 / 同一份清单）** | ① 能力行清单（`CAPABILITIES` 块）两份**逐字节一致**，只多一个 `customSkillDirs`（运行时行数：指挥者 22 行 / 项目经理 23 行），并由 `test/capabilities.test.mjs` 逐行比对防漂移；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 禁止等待门禁 `evaluateWaitForbidden()`（3.1.0 起硬禁用、无开关；3.2.0 起整条链生效）；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `cordis.patch.yml` 的 CAPABILITIES 块、`lib/capabilities.js`、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
+| **各自声明** | 两个模式各由**本包自带的声明器**注册（`preset-commander` / `preset-project-manager` 两个子路径模块，实现见 `lib/preset-declaration.js`）：语义等价于随附的 `@deepseek-ai/dsh-agent-preset`（接受 `{ id, name, description, order, plugins }` 并调用 `agentPresets.register()`），`order` 决定模式菜单排序（指挥者 7、项目经理 8）。**两个模式都不依赖随附的「Agent 预设定义」那一行**——禁用 / 缺失它不会让本包的模式消失（2.0.x 时代才是依赖，2.1.0 起自带声明器） | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `preset-commander.js` / `preset-project-manager.js` |
+| **项目经理模式独有** | 六段流水线协议（阶段门禁、返工规则、经验教训要求）、项目开发工作流组件（`dsh-commander-mode/workflow`）、本包 `skills/` 目录的加载（`skill-filesystem.config.customSkillDirs`，只在 PM 模式） | `project-manager.js`、`lib/project-manager.js`、`workflow.js`、`lib/workflow.js` |
+| **指挥者模式独有** | 指挥者协议与派发门禁（工单账本 `commander_ticket_*`、计划授权 Mandate、dispatch-gate）、异步 specialist 派工的记账。**项目经理模式故意不带这些**：它的进度权威是**共享任务板 + 每段落盘证据**，再叠一层工单只会让两套状态互相打架 | `agent.js`、`lib/protocol.js`、`lib/tickets.js`、`lib/ledger.js` |
 
-**故意不继承**：工单账本与计划授权门禁（`commander_ticket_*` / Mandate / dispatch-gate）。
-那套属于指挥者模式的派活记账；项目经理模式的进度权威是**共享任务板 + 每段落盘证据**，
-再叠一层工单只会让两套状态互相打架。
-
-一句话：**指挥者模式给「怎么派、怎么拦、怎么等」，Agent 预设定义给「怎么声明、怎么排、
-怎么消失」，项目经理模式只负责「按什么顺序做、每段拿什么证据验收」。**
+一句话：**两个模式是同级的两份完整组合，共享能力与门禁的实现，各自只加自己的协议行。**
+指挥者解决「谁来做、怎么派、怎么拦」，项目经理解决「按什么顺序做、每段拿什么证据验收」；
+出问题时按这个分工定位——协议不对查各自那一层，门禁不生效查 `lib/guard.js`，
+能力行缺失查 `CAPABILITIES` 块。
 
 > 为什么声明器要自带一份：插件页「包含的组件」每一行的标题由**该行的模块名**决定
 > （Host 的 `declaredRows()` 调 `pluginPackages.metaOf(row.name, base)` 读该模块的
@@ -661,9 +660,11 @@ pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/
 装好后在模式菜单里会出现「指挥者模式」（`order: 7`）与「项目经理模式」（`order: 8`）。
 模式在**新会话**里选择，已有会话的 preset 在第一轮之前就已绑定。
 
-> **前置条件：「Agent 预设定义」**。这两个模式都由随附的 `@deepseek-ai/dsh-agent-preset`
-> 声明（插件页里显示为「Agent 预设定义」）。这一行被禁用 / 缺失时，两个模式都不会出现在
-> 模式菜单里——它是模式能存在的前提，不是本插件的可选组件。
+> **声明方式：本包自带声明器**。两个模式由 `preset-commander` / `preset-project-manager`
+> 两个子路径模块注册（实现见 `lib/preset-declaration.js`，语义等价于随附的
+> `@deepseek-ai/dsh-agent-preset`），它们只依赖随附的 `agentPresets` 服务。
+> **随附的「Agent 预设定义」那一行被禁用 / 缺失时，本包的两个模式照常出现**——
+> 2.1.0 起就不再依赖它了（2.0.x 时代才是依赖）。
 >
 > **`skills/` 目录**：本包 `skills/` 下的 19 个方法 skill 由项目经理模式的
 > `skill-filesystem.config.customSkillDirs` 加载（按包名定位包目录，不写死绝对路径）；
@@ -1331,6 +1332,26 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **3.5.0 第二十三轮（小组长交下级判据 + 过期继承叙事纠正）**：
+  - **判据三处落地**（源码审阅 + 文本断言，非 mock）：
+    - `lib/team-model.js` 的 `leader-may-execute` 规则正文：含「什么时候该交下级」判据、
+      单点 → `subagent_<id>`、扇出 → `workflow`、多阶段 / 要持续对话 → 自己执行，
+      并写明"一次性子智能体没有任务板、没有后台通知、每次调用都是新 child"。
+    - `lib/protocol.js` 紧凑 section 的「通道选择」：同口径判据三行（单点 → `subagent_<id>`；
+      扇出 → `workflow`；多阶段 → 自己执行）。
+    - `lib/protocol.js` 长文「通道 A」定义：补「单点任务」判据与一次性子智能体的三条硬约束。
+  - **两个模式都覆盖**：`TEAM_MODEL` 同时拼进指挥官协议与项目经理协议（`lib/project-manager.js`
+    原样拼接），所以判据在两个模式里都生效，不需要各写一份。
+  - **过期叙事纠正的可验证事实**：`grep` 全仓库确认代码层**没有任何**对
+    `@deepseek-ai/dsh-agent-preset` 的 import / 依赖（只有注释与文档提到它）；
+    两个 preset 行在 `cordis.patch.yml` 里的 `name` 是本包子路径模块
+    （`dsh-commander-mode/preset-commander` / `preset-project-manager`），
+    实测 `plugin_manager list_bundles` 返回的 rows 也是这两条 + 配置行。
+  - **`node --test "test/**/*.test.mjs"`** → **659 / 659 通过、0 失败**（连跑 2 次稳定）。
+    新增 2 条：`protocol.test.mjs`「3.5.0：通道选择给出小组长什么时候交下级的判据」与
+    「3.5.0：长文通道 A 定义里写明交下级判据」；`team-model.test.mjs` 的
+    `leader-may-execute` 断言补判据关键词 + 方向正则（单点 → `subagent_<id>`、
+    多阶段 → 自己执行）。
 - **3.4.0 第二十二轮（门禁交叉冲突排查 + 降级放行）**：
   - **冲突矩阵**（四种工具视图 × 派发 / 执行边界 / 一次性派发 / `wait_agent` / 协议文本；
     真实模块、非 mock 手动验证）：
@@ -1804,6 +1825,40 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **3.5.0** —— 两件事：**补「小组长什么时候该交下级」的判据** + **纠正「项目经理模式 =
+  指挥者模式 + Agent 预设定义」的过期叙事**（用户 2026-11-12：「小组长会在什么时候安排子
+  智能体给他干活？」「PM 模式只是比指挥官模式多出「Agent 预设定义」+「工作流」，这种情况
+  不应该出现」）。
+  ① **现象 A（缺判据）**：协议里关于"小组长要不要把子任务交给下级子智能体"只有**授权**
+  （"可以自己执行，也可以交给下级"），没有**判据**——于是它可能把该自己干的活（多阶段、
+  要持续对话、要中途纠偏）塞给一次性子智能体，把上下文扔掉；也可能反过来什么都自己干，
+  白白放弃并行。
+  ② **修复 A**：三处正文补同一口径的判据（`lib/team-model.js` 的 `leader-may-execute`
+  规则、`lib/protocol.js` 的「通道选择」与长文「通道 A」定义）：**单点、产出明确、前台等
+  一会就能拿到结果**（写一个文件 / 跑一次审查 / 做一次分析）→ 交 `subagent_<id>`；
+  **一次性扇出多个互不依赖的 fresh 子代理**（并行调研 / 并行审查多个模块）→ `workflow`；
+  **多阶段、要持续对话、要中途纠偏、要留任务板进度** → **自己执行**（一次性子智能体没有
+  任务板、没有后台通知、每次调用都是新 child）。判据同时说明"为什么"：把要持续对话的活
+  塞给一次性子智能体 = 把上下文扔了。
+  ③ **现象 B（过期叙事）**：README / 插件卡片描述 / `cordis.patch.yml` 注释 /
+  `project-manager.js` 注释里写着「项目经理模式继承自「指挥者模式」+「Agent 预设定义」，
+  后者被禁用时两个模式一起消失」。这是 **2.0.x 时代的事实**：当时两个 preset 由随附的
+  `@deepseek-ai/dsh-agent-preset` 声明。**2.1.0 起本包自带等效声明器**
+  （`lib/preset-declaration.js` + 两个子路径模块），代码里**已无任何对该包的依赖**
+  （只有注释/文档还提它），禁用那一行**不会**让两个模式消失。
+  ④ **修复 B**：把"继承"叙事整体改成"**并列，不继承**"——preset 是完整组合、不是叠加层，
+  两个模式共享同一批模块（能力行清单 `lib/capabilities.js` 单一来源 + `lib/guard.js` /
+  `lib/specialists.js` / `lib/discipline.js`），各自只加自己的协议行；声明方式改由本包
+  自带声明器负责，**只依赖随附的 `agentPresets` 服务**。同步改了 README 顶部简介、
+  「两个模式的关系」一节、「前置条件」两处、`package.json` 的 `description` /
+  `meta.description`、`locale/{zh,en}.json` 的插件卡片描述、`cordis.patch.yml` 头部注释、
+  `project-manager.js` 模块注释；工作区约定（`dsh-plugin-devkit` 2.1.1）里的同一说法也一并
+  修正。
+  ⑤ **测试**：657 → **659**（新增 2 条：`protocol.test.mjs` 的「通道选择判据」与「长文通道 A
+  判据」；`team-model.test.mjs` 的 `leader-may-execute` 断言补判据关键词）。全量
+  **659 / 659 pass / 0 fail**（连跑 2 次稳定）。
+  **用户要做什么**：重新安装 / 重启桌面版。纯文本与文档改动，无配置变更、无破坏性接口变更。
 
 - **3.4.0** —— 门禁**交叉冲突**排查与降级放行（用户要求「再检查一下是否还有类似的问题，
   这种逻辑冲突可能之前在单独开发时没有注意到，但是完成后可能会相互冲突」）：

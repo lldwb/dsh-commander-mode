@@ -10,25 +10,28 @@
  * 3.0.0 起这六位是**专家小组长**（`spawn_teammate` 建出的 L1 队友）：每段由项目经理
  * 建一位小组长并 `send_message` 派单，小组长可以自己执行，也可以把子任务交给下级
  * 子智能体（`subagent_<id>`）。团队模型正文来自 `lib/team-model.js` 的 `TEAM_MODEL`，
- * 与指挥官协议共用同一份（项目经理模式 = 指挥官模式的特化版）。
+ * 与指挥官协议共用同一份（两个模式是**并列的完整 preset**，不是派生关系）。
  *
  * 与「指挥者模式」的区别：指挥者模式解决「谁来做」（不自己动手、把活派出去）；
  * 项目经理模式解决「按什么顺序做、每段怎么验收」（流水线 + 阶段门禁 + 技能方法）。
  *
- * ## 模式继承关系：项目经理模式 = 指挥者模式 + Agent 预设定义
+ * ## 与指挥者模式的关系：并列，不继承
  *
- * 本行**不是**另起一套模式，而是派生出来的：
+ * preset 是**完整组合**、不是全局工具集上的叠加层，所以两个模式之间没有"继承"这回事：
+ * 它们是两个并列的 preset，共享同一批模块。
  *
- * - **继承指挥者模式**：能力行清单（`cordis.patch.yml` 的 CAPABILITIES 块，逐字节一致）、
- *   专家名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务；3.0.0 起这些工具
- *   由**专家小组长**调用，项目经理不直接调）、
+ * - **共享**：能力行清单（`cordis.patch.yml` 的 CAPABILITIES 块，与指挥者逐字节一致，
+ *   由 `test/capabilities.test.mjs` 防漂移）、专家名册与 `subagent_<id>` 工具（同一个
+ *   `commanderSettings` 服务；3.0.0 起这些工具由**专家小组长**调用，项目经理不直接调）、
  *   `tools/pre-execute` 执行门禁（复用 `lib/guard.js`）、禁止等待门禁
  *   （`evaluateWaitForbidden()`，3.1.0 硬禁用、无开关）、五条工作纪律（`lib/discipline.js`
  *   单一真源）、异步派工与「【项目经理·派工完成】」唤醒语义。
- * - **继承「Agent 预设定义」**（`@deepseek-ai/dsh-agent-preset`）：preset 的声明方式与
- *   生命周期都由它管——本行只往 `preset-project-manager` 里加自己的子行；该声明器被禁用
- *   或缺失时，指挥者模式与项目经理模式会一起从模式菜单消失。
- * - **本行新增**：六段流水线协议（`lib/project-manager.js`）与门禁接线；不含工单账本、
+ * - **各自声明**：两个模式各由本包自带的声明器注册（`preset-commander.js` /
+ *   `preset-project-manager.js`，实现见 `lib/preset-declaration.js`），**不经过**随附的
+ *   「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）——那一行被禁用 / 缺失
+ *   **不会**影响本包的两个模式。
+ * - **本行新增**：六段流水线协议（`lib/project-manager.js`）与门禁接线、项目开发工作流组件
+ *   （`dsh-commander-mode/workflow`）、本包 `skills/` 目录的加载；不含工单账本、
  *   不含 Mandate/dispatch-gate（那是指挥者模式的派活记账，PM 的进度权威是共享任务板 +
  *   每段落盘证据）。
  *
@@ -53,7 +56,8 @@
  *
  * ## 与指挥者模式共用专家名册的坑（重要）
  *
- * 两个 preset 都会被 `@deepseek-ai/dsh-agent-preset` **急切挂载**，而
+ * 两个 preset 都会被各自的声明器（`preset-commander` / `preset-project-manager`，见
+ * `lib/preset-declaration.js`）**急切挂载**，而
  * `agentPresets.register()` 对 preset id 是**全局唯一**的：两行都用同一份名册，会算出
  * 同一批 `commander-specialist-<id>-<hash>` id，后挂载的一行必然收到
  * `Duplicate agent preset`。这里不能因此丢掉整条专家通道 —— 检测到"重复"时说明 preset
