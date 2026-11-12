@@ -187,11 +187,11 @@ test('配置行不注册任何工具（能力泄漏会污染别的模式）', ()
   // 若配置行试图 provide 未知服务或调 tools，我们只能从代码结构上保证：这里断言
   // 它没有 require tools 服务（inject 列表为空）。
   assert.doesNotThrow(() => apply(ctx, configWith()));
-  // 1.0.0：workerSessions 默认开启，配置行还会提供 commanderWorkers（仍然是服务，不是工具）。
-  assert.deepEqual(Object.keys(record.services), ['commanderSettings', 'commanderLedger', 'commanderWorkers']);
+  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」），
+  // 配置行不再提供 commanderWorkers 服务（workerSessions 恒 false）。
+  assert.deepEqual(Object.keys(record.services), ['commanderSettings', 'commanderLedger']);
   assert.equal(typeof record.services.commanderLedger.createTicket, 'function');
   assert.equal(typeof record.services.commanderSettings.options, 'function');
-  assert.equal(typeof record.services.commanderWorkers.spawn, 'function');
   // CAPABILITY_ROWS 是模式行（specialist preset）用的，配置行不该引用它注册任何东西。
   assert.ok(CAPABILITY_ROWS.length > 0);
 });
@@ -213,10 +213,13 @@ test('0.6.0 ledger:false 时不提供账本服务（降级到 0.5.0）', () => {
   assert.deepEqual(Object.keys(record.services), ['commanderSettings']);
 });
 
-test('0.8.1 workerSessions:true 时在同一 apply 里提供 commanderWorkers（不能靠同 tick ctx.get 回读账本）', () => {
+test('7.0.0：workerSessions:true 也不再提供 commanderWorkers（Worker 通道已下线）', () => {
+  // 用户硬要求「不能另辟蹊径开子智能体」、口径明确「连 Worker Session 一起禁」：
+  // `resolveConfig()` 把 workerSessions 恒读成 false，所以即使旧 profile 里写着 true，
+  // 配置行也不会创建 Worker 执行器 —— 这是"通道下线"的接线级证明。
   const { ctx, record } = makeCtx();
   assert.doesNotThrow(() => apply(ctx, configWith([], { workerSessions: true })));
-  assert.ok(record.services.commanderWorkers, '必须提供 commanderWorkers 服务');
+  assert.equal(record.services.commanderWorkers, undefined, '7.0.0：不应再提供 commanderWorkers 服务');
   assert.ok(record.services.commanderLedger, '账本仍要提供');
 });
 
@@ -253,16 +256,12 @@ test('1.1.0 eventInbox:false 时不提供 commanderEvents（也不起轮询）',
   assert.equal(record.services.commanderEvents, undefined);
 });
 
-test('0.8.1 Worker spawn 缺宿主服务时精确点名（headless 场景）', async () => {
+test('7.0.0：Worker spawn 通道不可用（服务不发布，工具也不注册）', () => {
+  // 6.0.0 的「缺宿主服务时精确点名」用例随通道下线一起退役：现在不是"缺服务报错"，
+  // 而是**根本没有这个通道**。`lib/worker-tools.js` / `lib/worker-sessions.js` 保留
+  // 只为兼容旧账本数据，不再被任何运行路径启用（详见 README「Worker Session」一节）。
   const { ctx, record } = makeCtx();
   apply(ctx, configWith([], { workerSessions: true }));
-  const ledger = record.services.commanderLedger;
-  const workers = record.services.commanderWorkers;
-  ledger.recordMandate({ sessionId: 's-1', planHash: 'h', planSummary: 'p' });
-  const ticket = ledger.createTicket({ sessionId: 's-1', title: 'x' });
-  const parent = { session: { id: 's-1', header: {} } };
-  await assert.rejects(
-    async () => workers.spawn({ parentAgent: parent, ticketId: ticket.id, task: 'x' }),
-    /缺少宿主服务：sessionController、workspaceRegistry/u,
-  );
+  assert.equal(record.services.commanderWorkers, undefined);
+  assert.ok(record.services.commanderLedger, '账本仍要提供（旧 worker execution 记录要能读）');
 });

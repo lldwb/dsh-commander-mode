@@ -18,8 +18,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ASYNC_RULES,
   COMMANDER_PROTOCOL,
+  DISPATCH_CHANNEL_RULES,
   ESCALATION_TRIGGERS,
   FLOW_STEPS,
   SKILL_NAME,
@@ -28,7 +28,6 @@ import {
   TICKET_RULES_OPTIONAL,
   TEAM_BOARD_RULES,
   VERIFICATION_RULES,
-  WORKER_RULES,
   renderCommanderSection,
   renderModeOpening,
   renderSpecialistRoster,
@@ -172,9 +171,15 @@ test('长文覆盖 Team 工具的语义细节', () => {
   }
 });
 
-test('长文给出降级路径，而不是假定工具一定在', () => {
-  assert.ok(COMMANDER_PROTOCOL.includes('如果这个部署里没有这些工具'));
-  assert.ok(COMMANDER_PROTOCOL.includes('workflow'));
+test('7.0.0：长文不再给"没有 Team 就改用 workflow"的降级路径（Team 常驻 + 硬通道门禁）', () => {
+  // 6.0.0 起 Team 是 base 自带、本模式强制开启，旧 3.4.0 的降级段（"如果这个部署里没有
+  // 这些工具…改用 workflow"）已删除；7.0.0 又把 workflow 列为指挥官**硬禁用**通道，
+  // 所以长文里不能出现"用 workflow 扇出"这类指引。
+  assert.ok(!COMMANDER_PROTOCOL.includes('如果这个部署里没有这些工具'), '旧的降级段已删除');
+  assert.ok(!COMMANDER_PROTOCOL.includes('改用 `workflow`'), '不得再教指挥官用 workflow');
+  // workflow 只能以"小组长的通道 / 不是你的通道"的身份出现。
+  assert.ok(COMMANDER_PROTOCOL.includes('workflow'), 'workflow 仍应作为小组长的通道被说明');
+  assert.ok(COMMANDER_PROTOCOL.includes('不是你的通道'), '必须说明 workflow 不是指挥官的通道');
 });
 
 test('开场文本在紧凑版之上加了"现在做什么"', () => {
@@ -216,9 +221,13 @@ test('名册为空时，紧凑版绝不提到专职子代理通道', () => {
   for (const text of variants) {
     assert.deepEqual(rosterToolNames(text), [], '空名册不应出现名册生成的 subagent_<id> 工具名');
     assert.ok(!/specialist/i.test(text), '空名册不应出现 specialist');
-    // 泛指的 `subagent_<id>` 只允许出现在"由小组长使用 / 你不要调用"的否定语境里。
+    // 泛指的 `subagent_<id>` 只允许出现在否定语境里：6.0.0 是"由小组长使用 / 你不要调用"，
+    // 7.0.0 起是"不是指挥官的通道 / 硬门禁拒绝"（语义等价，措辞升级）。
     for (const line of text.split('\n').filter((item) => item.includes('subagent_<id>'))) {
-      assert.ok(line.includes('不调用'), `泛指的一次性专家工具只应出现在"别调用"的语境：${line}`);
+      assert.ok(
+        line.includes('不调用') || line.includes('不是') || line.includes('拒绝'),
+        `泛指的一次性专家工具只应出现在否定语境：${line}`,
+      );
     }
   }
   // 仍然完整地走 Team 通道（6.0.0：`subagent` / `subagent_fork` 建小组长 + `send_message` 续做）。
@@ -400,7 +409,10 @@ test('开场在名册启用时补一句选通道，默认开场不提专职通�
   // 名册生成的具体工具名一个都不能出现。
   assert.deepEqual(rosterToolNames(OPENING), [], OPENING.slice(-400));
   for (const line of OPENING.split('\n').filter((item) => item.includes('subagent_<id>'))) {
-    assert.ok(line.includes('不调用'), `泛指的一次性专家工具只应出现在"别调用"的语境：${line}`);
+    assert.ok(
+      line.includes('不调用') || line.includes('不是') || line.includes('拒绝'),
+      `泛指的一次性专家工具只应出现在否定语境：${line}`,
+    );
   }
   assert.ok(!/specialist/i.test(OPENING));
 });
@@ -898,39 +910,47 @@ test('5.0.0：六位专家与六段工作流仍然在场（可选，但名册要
   }
 });
 
-test('0.7.0：默认 section 带异步派工契约（完成通知唤醒、不要轮询）', () => {
-  assert.ok(SECTION.includes('### 异步派工（0.7.0：完成通知会唤醒你）'), SECTION);
-  // 3.1.0：原来的「不要 `wait_agent`」措辞升级成「不要等（wait_agent 硬禁用、无开关）」——
-  // 等待从"不推荐"变成"确定性拒绝"。
-  for (const phrase of ['派活即返回', '完成通知会自己回来', '【指挥者·派工完成】', '不要等**（`wait_agent` 硬禁用、无开关）', '在飞任务不重派']) {
+test('7.0.0：默认 section 带「派发通道硬规则」与恢复阶梯（替代旧的异步/Worker 小节）', () => {
+  assert.ok(SECTION.includes('### 派发通道硬规则（7.0.0，不可配置、没有开关）'), SECTION);
+  // 6.0.0 的「异步派工」小节描述的是**指挥官**调用一次性专家工具；7.0.0 起那类调用
+  // 被硬门禁拒绝，所以小节整体删除（异步语义仍存在于小组长侧的工具描述里）。
+  assert.ok(!SECTION.includes('### 异步派工'), '7.0.0：指挥官不再有异步一次性派发小节');
+  // 硬规则与恢复阶梯逐条在场。
+  for (const phrase of [
+    '指挥官只有一条派发通道：建小组长',
+    '不是你的通道',
+    '`workflow`',
+    '`commander_worker_*`',
+    '恢复阶梯',
+    '需要小组长',
+    '小组长已存在但 inactive',
+    '小组长停滞 / 失败',
+    'subagent` 本身报错',
+    '任何一步都不许换通道',
+  ]) {
     assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
   }
-});
-
-test('0.7.0：asyncDelegation:false 时不出现异步契约', () => {
-  const text = renderCommanderSection({ asyncDelegation: false });
-  assert.ok(!text.includes('异步派工'));
-  assert.ok(!text.includes('【指挥者·派工完成】'));
-  // 同步语义仍在（specialist 是前台阻塞）。
-  assert.ok(text.includes('绝对边界'));
-});
-
-test('0.7.0：异步规则不提到具体 specialist 工具名（空名册也安全）', () => {
-  const joined = ASYNC_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
-  assert.ok(!/subagent_/u.test(joined), '异步规则不应出现 subagent_ 工具名');
-  assert.ok(!/specialist/iu.test(joined), '异步规则不应出现 specialist（配置键也不行）');
-});
-
-test('0.8.0：Worker Session 规则不传 options 时不出现，workerSessions:true 才出现', () => {
-  assert.ok(!SECTION.includes('Worker Session（0.8.0'), '未传 options 时不应出现 Worker 契约');
-  const text = renderCommanderSection({ workerSessions: true });
-  assert.ok(text.includes('### Worker Session（0.8.0：每工单独立 Session + 目录）'), text);
-  for (const phrase of ['长任务用 Worker Session', '一工单一 Worker', 'Worker 汇报仍要验收', 'commander_worker_spawn']) {
-    assert.ok(text.includes(phrase), `Worker 契约缺少：${phrase}`);
+  for (const rule of DISPATCH_CHANNEL_RULES) {
+    assert.ok(SECTION.includes(rule.title), `section 缺少硬规则标题：${rule.id}`);
   }
-  for (const rule of WORKER_RULES) assert.ok(text.includes(rule.title), rule.title);
-  const joined = WORKER_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
-  assert.ok(!/specialist/iu.test(joined), 'Worker 规则不应出现 specialist');
+});
+
+test('7.0.0：asyncDelegation / workerSessions 旧选项不再改变 section（两个小节已删除）', () => {
+  // 指挥官已不能调用一次性专家 / Worker Session，所以这两个配置项不再渲染任何小节。
+  for (const options of [{ asyncDelegation: false }, { workerSessions: true }, { asyncDelegation: false, workerSessions: true }]) {
+    const text = renderCommanderSection(options);
+    assert.ok(!text.includes('异步派工'), JSON.stringify(options));
+    assert.ok(!text.includes('Worker Session（0.8.0'), JSON.stringify(options));
+    assert.ok(!text.includes('commander_worker_spawn'), JSON.stringify(options));
+    // 硬规则小节不受这些旧选项影响，始终在场。
+    assert.ok(text.includes('### 派发通道硬规则'), JSON.stringify(options));
+  }
+});
+
+test('7.0.0：派发通道硬规则不点名具体 specialist 工具名（空名册也安全）', () => {
+  const joined = DISPATCH_CHANNEL_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
+  assert.deepEqual(rosterToolNames(joined), [], '硬规则不得点名具体的 subagent_<id>');
+  assert.ok(!/specialist/iu.test(joined), '硬规则不应出现 specialist（配置键也不行）');
 });
 
 // ------------------------------------------------ 共享任务板投影（1.2.0） ---

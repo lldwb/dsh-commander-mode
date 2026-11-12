@@ -341,20 +341,24 @@ test('3.4.0 hasUsableDispatchChannel：默认（有 Team + specialist + workflow
   assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: new Set(['read']) }), true);
 });
 
-test('3.4.0 hasUsableDispatchChannel：Team 工具全被 block 但 workflow 在 → true（不误判死锁）', () => {
+test('7.0.0 hasUsableDispatchChannel：Team 工具全被 block 且只有 workflow → false（workflow 不再是通道）', () => {
+  // 6.0.0 曾把 workflow 算成"Team 被禁时仍可派活"的通道；7.0.0 起 workflow 对指挥官是
+  // 硬门禁拒绝，若还算通道，执行边界会继续拦 write 而实际无路可派 → 死锁。
   const tools = ['read', 'subagent', 'send_message', 'workflow'];
   assert.equal(
     hasUsableDispatchChannel({ availableTools: tools, blocked: ['subagent', 'send_message'] }),
-    true,
-    'workflow 仍是可用派活通道',
+    false,
+    'workflow 不再是可用派活通道',
   );
+  // 反过来：Team 工具未被 block 时仍算可用。
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: ['workflow'] }), true);
 });
 
 test('6.0.0 hasUsableDispatchChannel：只有 subagent_*（无 Team 工具）→ false（降级放行已移除）', () => {
   const tools = ['read', 'write', 'subagent_architect', 'subagent_reviewer'];
   // 6.0.0：一次性专家只在 delegationHierarchy === false 时才归指挥官；默认（层级开启）不算通道。
-  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: true }), false);
-  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [] }), false, '默认同样不算');
+  // 7.0.0：**任何配置下都不算**（硬门禁不可配置），所以 delegationHierarchy 已从签名删除。
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [] }), false);
   // `subagent` / `subagent_fork` 是 Team 通道，单独出现就算可用。
   assert.equal(hasUsableDispatchChannel({ availableTools: ['read', 'subagent'], blocked: [] }), true);
   assert.equal(hasUsableDispatchChannel({ availableTools: ['read', 'subagent_fork'], blocked: [] }), true);
@@ -397,13 +401,12 @@ test('3.4.0 hasUsableDispatchChannel：availableTools 读不到（undefined / �
   );
 });
 
-test('3.4.0 hasUsableDispatchChannel：层级门禁关闭 + 只有 specialist → true；开启 → false（6.0.0）', () => {
-  // 关掉层级门禁（2.x 行为）时一次性子智能体对指挥官是开放的。
+test('7.0.0 hasUsableDispatchChannel：无论层级门禁配置，只有 specialist 都不算通道', () => {
+  // 7.0.0：一次性专家对指挥官是**不可配置**的硬门禁拒绝，所以"关掉 delegationHierarchy
+  // 就把它算成通道"的旧语义已删除 —— 传这个参数也不再影响判定（签名里已经没有它）。
   const tools = ['read', 'write', 'subagent_architect'];
-  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: false }), true);
-  // 6.0.0：层级门禁开启时一次性专家归小组长、不算指挥官的派活通道；3.4.0 的
-  // 「没有 Team 工具就降级算作可用通道」已随 Team 常驻一起移除 → false。
-  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: true }), false);
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [] }), false);
+  assert.equal(hasUsableDispatchChannel({ availableTools: tools, blocked: [], delegationHierarchy: false }), false);
 });
 
 test('3.4.0 hasUsableDispatchChannel：层级门禁开启 + 有 Team + 只有 specialist（被 block）→ true（Team 仍在）', () => {

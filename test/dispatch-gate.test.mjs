@@ -350,14 +350,16 @@ test('D-1：自愈失败（返回 undefined / 抛错 / 未提供）→ 拒绝，
     // 核心回归：**不再**让模型用 status（progress）去触发投影 —— 那会被层级门禁拒绝。
     assert.ok(!reason.includes('例如 progress'), `${label}：理由不得出现 progress 指令：${reason}`);
     assert.match(reason, /只改描述字段/u, `${label}：应给出"只改描述字段"这条路`);
-    assert.match(reason, /commander_worker_spawn/u, `${label}：应给出 Worker Session 兜底`);
+    // 7.0.0：Worker Session 通道已下线，兜底改为"标 blocked + 上报用户 + 不要换通道"。
+    assert.match(reason, /不要换通道/u, `${label}：应说明不要换通道`);
+    assert.match(reason, /blocked/u, `${label}：应给出标 blocked 上报这条路`);
     assert.match(reason, /层级门禁/u, `${label}：应说明为什么不能用 status`);
     assert.match(reason, /没有共享任务板投影/u, `${label}：要点明缺投影`);
     assert.match(reason, /不要重复派同一任务/u, `${label}：要明确不要重试`);
   }
 });
 
-test('D-1：投影任务不存在 → 拒绝，理由给"只改描述字段"与 worker 兜底', async () => {
+test('D-1：投影任务不存在 → 拒绝，理由给"只改描述字段"与不要换通道', async () => {
   const missing = await gate({
     name: 'subagent',
     args: SPAWN_ARGS,
@@ -368,7 +370,7 @@ test('D-1：投影任务不存在 → 拒绝，理由给"只改描述字段"与 
   assert.equal(missing.kind, 'deny');
   assert.match(missing.reason, /不存在/u);
   assert.match(missing.reason, /只改描述字段/u);
-  assert.match(missing.reason, /commander_worker_spawn/u);
+  assert.match(missing.reason, /不要换通道/u);
 });
 
 test('D-1：投影任务已结束 → 拒绝（要求新建工单）', async () => {

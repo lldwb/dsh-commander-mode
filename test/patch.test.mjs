@@ -246,15 +246,19 @@ test('3.1.0：patch 不含 maxWaitMs 配置键（禁止等待、不设开关）'
   assert.ok(!/maxWaitMs: 120000/u.test(PATCH), '旧默认值 120000 不应残留');
 });
 
-test('1.0.0：patch 写全 Worker Session 配置（默认开启）', () => {
-  assert.match(PATCH, /\n {8}workerSessions: true/u);
+test('7.0.0：patch 保留 Worker 配置键（兼容旧 profile），但注释写明已废弃/恒 false', () => {
+  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）。
+  // 字段**保留在 patch 里**（按 id 定向的 patch 会整块替换 config，删键会让已有配置
+  // 变成未知键而报错），但 `resolveConfig()` 把 workerSessions 恒读成 false。
+  assert.match(PATCH, /\n {8}workerSessions: true/u, '旧键保留（值为历史默认；实际被强制读成 false）');
   assert.match(PATCH, /\n {8}workRoot: ''/u);
   assert.match(PATCH, /\n {8}maxWorkers: 6/u);
   assert.match(PATCH, /\n {8}prepareCommand: ''/u);
   assert.match(PATCH, /\n {8}workerPermission: danger-full-access/u);
-  // 默认开启的依据与"怎么关"要写在注释里（1.0.0 的行为变化）。
-  assert.match(PATCH, /1\.0\.0 起默认开启/u);
-  assert.match(PATCH, /显式写 false/u);
+  // 注释必须写清"7.0.0 起废弃、恒为 false、不再注册工具"，否则用户会以为还能开。
+  assert.match(PATCH, /7\.0\.0 起 Worker Session 通道下线/u);
+  assert.match(PATCH, /恒读成 false|恒为 false/u);
+  assert.match(PATCH, /不再注册 commander_worker_\*|不注册 commander_worker_/u);
 });
 
 test('1.1.0：patch 写全外部事件配置（默认开启 + 轮询间隔）', () => {

@@ -329,7 +329,10 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       requireTeamTaskMarker: false,
       asyncDelegation: true,
       maxAsyncTasks: 16,
-      workerSessions: true,
+      // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）——
+      // `workerSessions` 恒为 false（即使 profile patch 里写着 true），
+      // workRoot / maxWorkers / prepareCommand / workerPermission 字段保留但已废弃。
+      workerSessions: false,
       workRoot: '',
       maxWorkers: 6,
       prepareCommand: '',
@@ -403,7 +406,8 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     requireTeamTaskMarker: false,
     asyncDelegation: true,
     maxAsyncTasks: 16,
-    workerSessions: true,
+    // 7.0.0：Worker 通道下线 —— workerSessions 恒 false（连 volatile 引用也不会改变它）。
+    workerSessions: false,
     workRoot: '',
     maxWorkers: 6,
     prepareCommand: '',
@@ -610,9 +614,12 @@ test('3.0.0：delegationHierarchy 默认 true，可显式关掉（回退 2.x 行
   assert.ok(KNOWN_CONFIG_KEYS.includes('delegationHierarchy'), 'KNOWN_CONFIG_KEYS 缺少 delegationHierarchy');
 });
 
-test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限读取', () => {
+test('7.0.0 Worker 配置：字段保留（兼容旧 profile）、但 workerSessions 恒为 false', () => {
+  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）。
+  // 字段**保留在 schema**（按 id 定向的 patch 会整块替换 config，删键会让已有配置报未知键），
+  // 但 `resolveConfig()` 把 workerSessions 强制读成 false —— 即使配置里写着 true。
   const config = Config();
-  assert.equal(config.workerSessions, true, '1.0.0 起默认开启（真实 E2E 已验）');
+  assert.equal(config.workerSessions, false, '7.0.0 起默认/恒为 false');
   assert.equal(config.workRoot, '');
   assert.equal(config.maxWorkers, 6);
   assert.equal(config.prepareCommand, '');
@@ -624,8 +631,8 @@ test('1.0.0 Worker 配置：默认开启、可显式关、目录/上限/权限�
     prepareCommand: ' git init ',
     workerPermission: 'workspace-write',
   }).options;
-  assert.equal(options.workerSessions, true);
-  assert.equal(options.workRoot, 'my-work');
+  assert.equal(options.workerSessions, false, '显式 true 也不生效（通道已下线）');
+  assert.equal(options.workRoot, 'my-work', '废弃字段仍按旧读取器解析（只为兼容）');
   assert.equal(options.maxWorkers, 6, '非正数回退默认');
   assert.equal(options.prepareCommand, 'git init');
   assert.equal(options.workerPermission, 'workspace-write');

@@ -655,13 +655,15 @@ test('specialist 已不在名册时拒绝执行，且不启动子代理', () => 
 
 test('没有 subagents 服务的部署里给出替代路径', () => {
   // 精简部署（用户关掉相关行）里既不能执行也没法派活。错误信息必须指出
-  // 替代通道（Team / workflow），否则模型只会反复重试这个工具。
+  // 替代通道（智能体团队），否则模型只会反复重试这个工具。
+  // 7.0.0：不再提 workflow —— 它对指挥官是硬门禁拒绝的通道，指引它只会自相矛盾。
   const tool = buildSpecialistToolDefinition({ specialist: specialist(), presetId: 'preset-x', getSubagents: () => undefined });
   return assert.rejects(
     () => tool.execute({ task: 't' }, { agent: { id: 'lead' } }),
     (error) => {
       assert.ok(error.message.includes('subagents 服务'));
-      assert.ok(error.message.includes('workflow'), '要给出替代通道');
+      assert.ok(error.message.includes('智能体团队'), '要给出替代通道');
+      assert.ok(!error.message.includes('workflow'), '7.0.0：不得再指引 workflow');
       return true;
     },
   );
@@ -678,12 +680,17 @@ test('exec.agent 缺失时拒绝执行并点名工具', async () => {
   assert.equal(calls.activations.length, 0);
 });
 
-test('execute 的 activation 契约完整且正确', () => {
+test('execute 的 activation 契约完整且正确（rc.2：任务字段在顶层）', () => {
   // 这些字段是照着随附 `dsh-tool-subagent` 的 execute 抄的契约。错任何一个的后果：
   // - `delivery` 不是 'caller' → 结果变成后台 completion notice，前台工具永远等不到；
   // - `agentPreset` 错 → 子代理跑在错误的 preset 上（可能挂上指挥者协议）；
   // - `agentOptions` 错 → 用户配置的模型根本没生效；
   // - `maxDepth` 错 → 递归预算泄漏或子代理直接无法启动。
+  //
+  // ⚠️ 7.0.0 修复：DSH 0.2.2-rc.2 的 `SubagentActivationSpec` 要求 `prompt` / `parent` /
+  // `agentPreset` / `agentOptions` / `maxDepth` 在**顶层**。旧代码把它们包在
+  // `request: {…}` 里，运行时读 `spec.parent.id` 会抛
+  // `Cannot read properties of undefined (reading 'id')`（真实会话 session-fb21d6a0）。
   const { calls, service } = fakeSubagents({ resolvedMaxDepth: 2 });
   const specialistEntry = specialist({ reasoningEffort: 'high', maxTokens: 4096 });
   const presetId = specialistPresetId(specialistEntry);
@@ -697,16 +704,18 @@ test('execute 的 activation 契约完整且正确', () => {
     assert.equal(activation.provider, 'spawn');
     assert.equal(activation.delivery, 'caller');
     assert.equal(activation.signal, signal, '取消信号必须透传，否则 interrupt 打不断子代理');
-    assert.equal(activation.request.parent, agent);
-    assert.equal(activation.request.agentPreset, presetId);
-    assert.deepEqual(activation.request.prompt, [{ type: 'text', text: '拆一下这个需求' }]);
-    assert.deepEqual(activation.request.agentOptions, {
+    assert.equal(activation.parent, agent, 'parent 必须在顶层（rc.2 契约）');
+    assert.equal(activation.agentPreset, presetId);
+    assert.deepEqual(activation.prompt, [{ type: 'text', text: '拆一下这个需求' }]);
+    assert.deepEqual(activation.agentOptions, {
       provider: 'deepseek',
       model: 'deepseek-reasoner',
       reasoningEffort: 'high',
       maxTokens: 4096,
     });
-    assert.equal(activation.request.maxDepth, 2);
+    assert.equal(activation.maxDepth, 2);
+    // 7.0.0 回归：绝不能再用旧版的 `request: {…}` 包装（rc.2 运行时会读 spec.parent.id）。
+    assert.equal('request' in activation, false, '不得再有 request 包装（rc.2 契约）');
     // 3.0.0（规则 2）：插件不再自己把递归预算压成 1，而是**无参**问运行时
     // （`subagents.resolveMaxDepth()` → 取 profile 的 `subagent.maxDepth`，默认 2）。
     // 传参数（旧的 `resolveMaxDepth(1)`）会让小组长派不出下级子智能体。
@@ -758,7 +767,7 @@ test('resolveMaxDepth 返回 undefined 时不带 maxDepth 键', () => {
   const { calls, service } = fakeSubagents({ resolvedMaxDepth: undefined });
   const tool = buildSpecialistToolDefinition({ specialist: specialist(), presetId: 'preset-x', getSubagents: () => service });
   return tool.execute({ task: 't' }, { agent: { id: 'lead' } }).then(() => {
-    assert.equal('maxDepth' in calls.activations[0].request, false);
+    assert.equal('maxDepth' in calls.activations[0], false);
   });
 });
 
@@ -795,7 +804,7 @@ test('installSpecialist 先注册 preset、再注册工具，且工具绑定刚�
   assert.equal(record.tools.length, 1);
 
   await record.tools[0].execute({ task: 't' }, { agent: { id: 'lead' } });
-  assert.equal(calls.activations[0].request.agentPreset, presetId, '工具必须把活派到自己的 preset 里');
+  assert.equal(calls.activations[0].agentPreset, presetId, '工具必须把活派到自己的 preset 里');
   await dispose();
 });
 

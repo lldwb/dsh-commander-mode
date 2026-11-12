@@ -447,23 +447,21 @@ test('agent 自己的 scope 里有 subagent 时照常拦截', async () => {
   assert.equal(decision.kind, 'deny');
 });
 
-test('6.0.0：只有 specialist 工具时不再算有派发通道（层级门禁开启 → 放行避免死锁）', async () => {
-  // 6.0.0 收窄（lib/guard.js `hasUsableDispatchChannel`）：名册生成的一次性专家工具归小组长，
-  // **只在 `delegationHierarchy: false` 时**才算指挥官的可用派发通道。默认开启时，视图里只有
-  // `subagent_<id>` 等于没有可用通道 → `canDelegate === false` → 放行 write（宁可漏拦，不可拦死）。
+test('7.0.0：只有 specialist 工具时不算有派发通道（任何配置下都放行 write 避免死锁）', async () => {
+  // `hasUsableDispatchChannel()`：7.0.0 起一次性专家对指挥官是**不可配置**的硬门禁拒绝，
+  // 所以视图里只有 `subagent_<id>` 等于没有可用通道 → `canDelegate === false` → 放行 write
+  // （宁可漏拦，不可拦死）。传旧的 `delegationHierarchy: false` 也不再改变判定。
   const specialistLead = leadWithTools(['subagent_reviewer', 'read', 'write']);
   const listener = preExecute(boot({ specialists: ROSTER }).record);
   const { next, calls } = spyNext();
   const allowed = await listener({ name: 'write', agent: specialistLead }, next);
-  assert.deepEqual(allowed, { kind: 'allow' }, '层级门禁开启时一次性专家工具不算通道 → 放行（逃生门）');
+  assert.deepEqual(allowed, { kind: 'allow' }, '一次性专家工具不算通道 → 放行（逃生门）');
   assert.equal(calls.count, 1, '放行必须走 next');
 
-  // 显式关掉层级门禁（2.x 语义）后，同一份视图重新算"有通道" → 仍拦 write。
   const relaxedSettings = makeSettings({ specialists: ROSTER, options: { delegationHierarchy: false } });
   const relaxed = preExecute(boot({ settings: relaxedSettings }).record);
-  const denied = await relaxed({ name: 'write', agent: specialistLead }, spyNext().next);
-  assert.equal(denied?.kind, 'deny', '关闭层级门禁后一次性专家工具是可用通道 → 仍拦 write');
-  assert.equal(denied.reason.includes('write'), true, denied.reason);
+  const stillAllowed = await relaxed({ name: 'write', agent: specialistLead }, spyNext().next);
+  assert.deepEqual(stillAllowed, { kind: 'allow' }, '7.0.0：delegationHierarchy 不再把 specialist 算成通道');
 });
 
 // ------------------------------------- 6.0.0：Team 常驻，降级分支已删除 ---
@@ -523,31 +521,27 @@ test('6.0.0 接线：section 文本不再按工具视图改口（hasTeamTools �
   assert.equal(withTeam, noTeam, 'section 不再随工具视图变化（旧降级改口已删除）');
 });
 
-test('6.0.0 接线：blockedTools 禁掉 Team 通道不再造成死锁（workflow 仍算通道 → 拦；全禁 → 放行）', async () => {
+test('7.0.0 接线：blockedTools 禁掉 Team 通道不再造成死锁（workflow 不算通道 → 直接放行）', async () => {
   // 死锁场景：`canDelegate` 若只看工具视图，用户把 Team 工具写进 blockedTools 后仍会得到
   // "能派活"的假结论 → 执行边界继续拦 write → 而真正能调用的派发工具全被禁。
-  // 6.0.0：Team 通道 = `subagent` / `subagent_fork` / `send_message`；`workflow` 也算；
-  // 名册生成的一次性专家工具只在 `delegationHierarchy: false` 时才算通道。
+  // 7.0.0：workflow / 名册专家 / Worker 都**不是**指挥官的通道，所以"Team 被禁"就等于
+  // "没有任何可用派活通道" → 必须放行 write（逃生门）。
   const lead = leadWithTools(['read', 'write', 'subagent_architect', 'workflow']);
 
-  // ① Team 工具被 block，但 `workflow` 还在 → 仍有可用派活通道 → 仍应拦 write。
+  // ① Team 工具被 block（workflow 还在也不算通道）→ 无可用通道 → 放行 write。
   const withWorkflow = makeSettings({
     options: { blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'subagent', 'subagent_fork', 'send_message'] },
   });
-  const denied = await preExecute(boot({ settings: withWorkflow }).record)({ name: 'write', agent: lead }, spyNext().next);
-  assert.equal(denied?.kind, 'deny', 'workflow 仍是可用通道时，执行边界应拦 write');
-  assert.equal(denied.reason.includes('write'), true, denied.reason);
-
-  // ② 连 workflow 也 block → 没有任何可用派活通道 → 必须放行（逃生门，否则模式死锁）。
-  const allBlocked = makeSettings({
-    options: {
-      blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'subagent', 'subagent_fork', 'send_message', 'workflow', 'subagent_architect'],
-    },
-  });
   const { next, calls } = spyNext();
-  const allowed = await preExecute(boot({ settings: allBlocked }).record)({ name: 'write', agent: lead }, next);
-  assert.deepEqual(allowed, { kind: 'allow' }, '没有任何可用派活通道时必须放行（宁可漏拦，不可拦死）');
+  const allowed = await preExecute(boot({ settings: withWorkflow }).record)({ name: 'write', agent: lead }, next);
+  assert.deepEqual(allowed, { kind: 'allow' }, '7.0.0：workflow 不算通道 → 没有可用派活通道时必须放行');
   assert.equal(calls.count, 1, '放行必须走 next');
+
+  // ② Team 通道可用时照常拦 write（证明上面的放行确实是"没有通道"导致的，不是门禁坏了）。
+  const teamLead = leadWithTools(['read', 'write', 'subagent', 'send_message']);
+  const denied = await preExecute(boot().record)({ name: 'write', agent: teamLead }, spyNext().next);
+  assert.equal(denied?.kind, 'deny', '有 Team 通道时执行边界应拦 write');
+  assert.equal(denied.reason.includes('write'), true, denied.reason);
 });
 
 test('监听器自己出错时放行，而不是让工具调用失败', async () => {
@@ -769,14 +763,12 @@ test('syncGuard: false 时看板与兜底一起关掉（协议仍要求同步）
   assert.ok(record.sections[0].text({ agent: LEAD }).includes('结算同步'));
 });
 
-test('派发通道观测：连续三次一次性 specialist 后，看板报"团队闲置"', () => {
-  // 0.5.0 的依据：session-7064696b 里重启后 15 次派活全走一次性 specialist，Team 通道归零，
-  // 任务板留着 6 项没收尾。这里验证"派活时记通道 → 看板据此提示 Team 优先"的接线。
-  //
-  // 本用例测的是 **0.5.0 的通道观测**，与 3.0.0 层级门禁无关：层级门禁默认开启时，Lead 的
-  // `subagent_*` 会被确定性拒绝、也就不会进入统计（见下一条 P3 回归用例）。所以这里显式
-  // 关掉层级门禁，让三次派活真的走完 observeDelegation —— 断言本身没有放宽。
+test('7.0.0：一次性 specialist 派发对指挥官被拒 → 看板不会误报"团队闲置"', () => {
+  // 0.5.0 的依据：session-7064696b 里重启后 15 次派活全走一次性 specialist，Team 通道归零。
+  // 7.0.0 起指挥官**根本不能**走一次性 specialist（硬通道门禁），所以"团队闲置"这条
+  // 告警对指挥官不再可能被真实派发触发 —— 这里钉住"被拒的尝试不计入配比、也不误报"。
   const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-14', status: 'pending', subject: '核验', ready: true }] });
+  // 即使显式关掉层级门禁，通道硬门禁仍然生效（不可配置）。
   const settings = makeSettings({ options: { delegationHierarchy: false } });
   const { record } = boot({ agentTeams, settings });
   const context = syncContext(record);
@@ -787,11 +779,8 @@ test('派发通道观测：连续三次一次性 specialist 后，看板报"团�
     preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next);
   }
   const text = context.text({ agent: LEAD });
-  assert.ok(text.includes('派发通道：Team 0 次 / 一次性 specialist 3 次'), text);
-  assert.ok(text.includes('一次性 specialist'), text);
-  // 提示要给出 Team 通道的出路，而且不能把内部 issue code 泄漏到模型看得到的地方。
-  assert.ok(text.includes('subagent'), text);
-  assert.ok(!text.includes('channel-drift'), text);
+  assert.ok(!text.includes('派发通道'), `被拒的一次性派发不应计入配比：${text}`);
+  assert.ok(!text.includes('团队闲置'), `不应误报团队闲置：${text}`);
 });
 
 test('3.0.0 P3 回归：被层级门禁拒绝的 subagent_* 尝试不计入派发通道统计', async () => {
@@ -845,13 +834,12 @@ test('Team 通道派活会记进配比；等待/读状态/子级派发都不记'
 
 test('syncGuard: false 时完全不记派发通道', () => {
   const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'pending', subject: 'x', ready: true }] });
-  // 同样显式关掉层级门禁：否则三次调用会先被层级门禁拒掉，根本到不了 observeDelegation，
-  // 这条用例就退化成"门禁拦住了"而不是"syncGuard 关掉了统计"。
-  const settings = makeSettings({ options: { syncGuard: false, delegationHierarchy: false } });
+  // 7.0.0：用合法的 Team 建人工具 `subagent` 制造派活动作（一次性专家已被硬门禁拒绝）。
+  const settings = makeSettings({ options: { syncGuard: false } });
   const { record } = boot({ agentTeams, settings });
   const preExecuteListener = preExecute(record);
   for (let index = 0; index < 3; index += 1) {
-    preExecuteListener({ name: 'subagent_implementer', agent: LEAD }, spyNext({ kind: 'allow' }).next);
+    preExecuteListener({ name: 'subagent', agent: LEAD }, spyNext({ kind: 'allow' }).next);
   }
   // 看板整体关闭，自然也不该有派发统计。
   assert.equal(syncContext(record).text({ agent: LEAD }), '');
@@ -886,14 +874,14 @@ test('空名册不注册任何 specialist preset 或工具', async () => {
   assert.equal(record.presets.length, 0);
   assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('subagent_')), []);
   // 0.6.0：工单工具与名册无关，空名册也应注册（它们是模式自身的能力）。
-  // 1.0.0：workerSessions 默认开启，默认还会多出四个 commander_worker_* 工具。
   assert.deepEqual(
     record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_ticket')).sort(),
     ['commander_ticket_create', 'commander_ticket_update', 'commander_tickets'],
   );
+  // 7.0.0：Worker Session 通道下线 —— 即使夹具默认 workerSessions:true，也不再注册 Worker 工具。
   assert.deepEqual(
-    record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')).sort(),
-    ['commander_worker_send', 'commander_worker_spawn', 'commander_worker_status', 'commander_worker_stop'],
+    record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')),
+    [],
   );
 });
 
@@ -935,13 +923,18 @@ test('工具执行会带 agentPreset 与模型覆盖，并返回子代理结算�
   const value = await tool.execute({ task: '审一下这个改动' }, { agent: LEAD, signal: new AbortController().signal });
   assert.equal(record.activations.length, 1);
   const activation = record.activations[0];
+  // 7.0.0 修复：DSH 0.2.2-rc.2 的 `SubagentActivationSpec` 要求 `prompt` / `parent` /
+  // `agentPreset` / `agentOptions` / `maxDepth` 在**顶层**（旧代码包在 `request: {…}` 里，
+  // 运行时读 `spec.parent.id` 会抛 `Cannot read properties of undefined (reading 'id')`，
+  // 真实会话 session-fb21d6a0）。
   assert.equal(activation.provider, 'spawn');
   assert.equal(activation.delivery, 'caller');
-  assert.equal(activation.request.parent, LEAD);
-  assert.equal(activation.request.agentOptions.provider, 'sub2api');
-  assert.equal(activation.request.agentOptions.model, 'gpt-6.1-sol');
-  assert.ok(activation.request.agentPreset.startsWith('commander-specialist-reviewer-'));
-  assert.equal(activation.request.prompt[0].text, '审一下这个改动');
+  assert.equal(activation.parent, LEAD);
+  assert.equal(activation.request, undefined, '不得再有 request 包装（rc.2 契约）');
+  assert.equal(activation.agentOptions.provider, 'sub2api');
+  assert.equal(activation.agentOptions.model, 'gpt-6.1-sol');
+  assert.ok(activation.agentPreset.startsWith('commander-specialist-reviewer-'));
+  assert.equal(activation.prompt[0].text, '审一下这个改动');
 
   assert.equal(value.childId, 'child-1');
   assert.equal(value.stopReason, 'completed');
@@ -1054,13 +1047,14 @@ function dispatchGateSettings(initial = {}) {
 
 test('0.6.0 门禁：没有计划授权时拒绝派发，并给出固定确认格式', async () => {
   const ledger = memoryLedger();
-  // 用隔离夹具：本用例验证 Mandate 门禁，层级门禁默认开启会先拒（见 dispatchGateSettings）。
+  // 7.0.0：派发通道硬门禁**不可配置**，所以这里用合法的 Team 建人工具 `subagent`
+  // 来隔离被测对象（Mandate 门禁）；一次性专家/Worker 的拒绝由通道门禁用例覆盖。
   const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   const listener = preExecute(record);
 
   const denied = await listener(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: 't-1' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: '实现 X [ticket:t-1]' } },
     spyNext({ kind: 'allow' }).next,
   );
   assert.equal(denied.kind, 'deny');
@@ -1075,13 +1069,13 @@ test('0.6.0 门禁：有授权 + 工单时放行，并记录 Assignment', async 
   const listener = preExecute(record);
 
   const decision = await listener(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
   assert.equal(decision?.kind, 'allow', '合法派发不应被拦');
   const stored = ledger.getTicket(ticket.id, 'session-lead');
   assert.equal(stored.assignments.length, 1);
-  assert.equal(stored.assignments[0].channel, 'specialist');
+  assert.equal(stored.assignments[0].channel, 'team');
 });
 
 test('0.6.0 门禁：有授权但不带工单 → 拒绝并提示 commander_ticket_create', async () => {
@@ -1089,7 +1083,7 @@ test('0.6.0 门禁：有授权但不带工单 → 拒绝并提示 commander_tick
   const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   const decision = await preExecute(record)(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: '实现 X' } },
     spyNext({ kind: 'allow' }).next,
   );
   assert.equal(decision.kind, 'deny');
@@ -1129,11 +1123,13 @@ test('0.6.0 授权：计划确认 post-execute 记录 Mandate；未确认或跳�
 
 test('0.6.0 回报：specialist 的 STATUS 行更新工单并补写 childId', async () => {
   const { ledger, ticket } = ledgerWithWork();
-  // 隔离夹具：需要 Lead 的 pre-execute 真的记下 Assignment（层级门禁默认开启会先拒）。
+  // 7.0.0：pre-execute 用合法的 `subagent` 记 Assignment（通道门禁不可配置）；
+  // post-execute 仍按 specialist 工具结算——这正是 7.0.0 保留 `observeWorkerReport`
+  // 的理由（兼容升级前已在飞的派发 / 旧账本数据）。
   const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   await preExecute(record)(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
   await postExecute(record)(
@@ -1153,7 +1149,7 @@ test('0.6.0 回报：没有 STATUS 行按 progress 记录并点名格式缺失',
   const { record } = boot({ ledger });
   await flush();
   await preExecute(record)(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
   await postExecute(record)(
@@ -1183,14 +1179,14 @@ test('0.6.0 看板：每轮上下文给出工单与授权；无工单时安静',
 
 test('ledger:false 时没有工单工具，也不拦截派发（0.5.0 行为）', async () => {
   const ledger = memoryLedger();
-  // 本用例验证的是"没有账本就没有派发门禁"；层级门禁是另一条（默认开启的）门禁，
-  // 这里显式关掉以隔离被测对象（见 dispatchGateSettings）。
+  // 本用例验证的是"没有账本就没有派发门禁"。7.0.0：通道门禁不可配置，所以用合法的
+  // Team 建人工具 `subagent` 来验证"没有账本时不被 Mandate/工单门禁拦"。
   const settings = dispatchGateSettings({ options: { ledger: false, requireMandate: false } });
   const { record } = boot({ settings, ledger });
   await flush();
   assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_')), []);
   const decision = await preExecute(record)(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: '实现 X' } },
     spyNext({ kind: 'allow' }).next,
   );
   assert.equal(decision?.kind, 'allow');
@@ -1230,8 +1226,11 @@ test('0.7.0 异步：工具立即返回 started；完成后写账本并 steer �
   const agent = steeringAgent(steers);
 
   // 真实顺序：pre-execute 先记 Assignment，工具再异步启动。
+  // 7.0.0：pre-execute 用合法的 Team 建人工具 `subagent`（通道门禁不可配置），
+  // 而 specialist 工具仍被**直接调用**（模拟小组长侧的 L1→L2 / 升级前已在飞的派发），
+  // 验证异步结算与账本写入这条逻辑本身没有变化。
   await preExecute(record)(
-    { name: tool.name, agent, arguments: { task: '实现 X', ticket: ticket.id } },
+    { name: 'subagent', agent, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
   const started = await tool.execute(
@@ -1305,11 +1304,12 @@ test('0.7.0 异步：容量上限在启动前拒绝（不会先启动 child）',
 
 test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment', async () => {
   const { ledger, ticket } = ledgerWithWork();
-  // 隔离夹具：pre-execute 必须真的记下 Assignment（层级门禁默认开启会先拒）。
+  // 7.0.0：pre-execute 用合法的 `subagent` 记 Assignment；post-execute 仍按 specialist
+  // 工具的异步受理形状验证"受理不等于结算"。
   const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   await preExecute(record)(
-    { name: 'subagent_implementer', agent: LEAD, arguments: { task: '实现 X', ticket: ticket.id } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
   const before = ledger.getTicket(ticket.id, 'session-lead');
@@ -1326,49 +1326,36 @@ test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment'
   assert.equal(after.lastReport, null, '异步受理不应记录回报');
 });
 
-// ---------------------------------------------------------------- 0.8.0 Worker ---
+// ---------------------------------------------------------------- 0.8.0 Worker（7.0.0 下线） ---
 
-test('1.0.0：显式 workerSessions:false 不注册 Worker 工具', async () => {
+test('7.0.0：workerSessions:false 不注册 Worker 工具（旧语义保留）', async () => {
   const settings = makeSettings({ options: { workerSessions: false } });
   const { record } = boot({ settings, ledger: memoryLedger() });
   await flush();
   assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')), []);
 });
 
-test('0.8.0：workerSessions:true 时注册四个 Worker 工具，spawn 委托给服务', async () => {
-  const calls = [];
-  const workers = {
-    spawn: async (args) => { calls.push(['spawn', args]); return { sessionId: 'worker-t-1' }; },
-    send: async (args) => { calls.push(['send', args]); return { ok: true }; },
-    status: async (args) => { calls.push(['status', args]); return { ticket: {} }; },
-    stop: async (args) => { calls.push(['stop', args]); return { ok: true }; },
-  };
-  const settings = makeSettings({ options: { workerSessions: true } });
-  const { record } = boot({ settings, ledger: memoryLedger(), workers });
-  await flush();
-  const names = record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_'));
-  assert.deepEqual(names.sort(), [
-    'commander_worker_send',
-    'commander_worker_spawn',
-    'commander_worker_status',
-    'commander_worker_stop',
-  ]);
-  const spawn = record.tools.find((tool) => tool.name === 'commander_worker_spawn');
-  const value = await spawn.execute({ ticket: 't-1', task: '实现 X' }, { agent: LEAD, signal: new AbortController().signal });
-  assert.equal(value.sessionId, 'worker-t-1');
-  assert.equal(calls[0][0], 'spawn');
-  assert.equal(calls[0][1].ticketId, 't-1');
-});
-
-test('0.8.0：worker 工具在服务缺失时给可执行错误（而不是假装成功）', async () => {
+test('7.0.0：workerSessions:true 也不再注册 Worker 工具（通道下线，硬要求）', async () => {
+  // 用户 2026-11-12 硬要求「不能另辟蹊径开子智能体」，口径明确「连 Worker Session 一起禁」。
+  // 即使配置里写着 true（`resolveConfig` 会强制读成 false），也不再注册四个工具。
   const settings = makeSettings({ options: { workerSessions: true } });
   const { record } = boot({ settings, ledger: memoryLedger() });
   await flush();
-  const spawn = record.tools.find((tool) => tool.name === 'commander_worker_spawn');
-  await assert.rejects(
-    async () => spawn.execute({ ticket: 't-1', task: '实现 X' }, { agent: LEAD, signal: new AbortController().signal }),
-    /Worker Session 服务不可用/u,
+  const names = record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_'));
+  assert.deepEqual(names, [], '7.0.0：Worker 工具不再注册');
+});
+
+test('7.0.0：Worker 工具不存在 → 即使 Lead 调用也只会撞上通道硬门禁', async () => {
+  const settings = makeSettings({ options: { workerSessions: true } });
+  const { record } = boot({ settings, ledger: memoryLedger() });
+  await flush();
+  const decision = await preExecute(record)(
+    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: 't-1', task: '实现 X' } },
+    spyNext({ kind: 'allow' }).next,
   );
+  assert.equal(decision?.kind, 'deny');
+  assert.ok(decision.reason.includes('建小组长'), decision.reason);
+  assert.ok(decision.reason.includes('不要换通道'), decision.reason);
 });
 
 // ---------------------------------------------------------------- 0.8.1 派发失败记账 ---
@@ -1377,14 +1364,15 @@ test('0.8.1 派发报错：结算未完成的 Assignment 并记 failed（不留 
   const { ledger, ticket } = ledgerWithWork();
   const { record } = boot({ ledger });
   await flush();
+  // 7.0.0：用合法的 `subagent` 记 Assignment（Worker 工具已不再注册）。
   await preExecute(record)(
-    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
   assert.equal(ledger.getTicket(ticket.id, 'session-lead').assignments[0].endedAt, null);
 
   await postExecute(record)(
-    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     { isError: true, content: [{ type: 'text', text: 'Error: 缺少宿主服务：sessionController、workspaceRegistry' }] },
     spyNext().next,
   );
@@ -1393,7 +1381,7 @@ test('0.8.1 派发报错：结算未完成的 Assignment 并记 failed（不留 
   assert.match(stored.lastReport.summary, /派发失败/u);
   assert.match(stored.lastReport.summary, /sessionController/u);
   assert.notEqual(stored.assignments[0].endedAt, null, '失败的 Assignment 必须结算');
-  assert.match(stored.lastReport.question, /重试|换通道/u);
+  assert.match(stored.lastReport.question, /重试|换一个小组长/u);
 });
 
 test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
@@ -1401,19 +1389,19 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   const { record } = boot({ ledger });
   await flush();
   await preExecute(record)(
-    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     spyNext({ kind: 'allow' }).next,
   );
-  // 模拟已有一次更新的回报（例如 worker 已汇报）。
+  // 模拟已有一次更新的回报（例如小组长已汇报）。
   await postExecute(record)(
-    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
-    { isError: false, value: { sessionId: 'worker-t-1' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
+    { isError: false, value: { kind: 'activation', name: 'implementer-lead' } },
     spyNext().next,
   );
   await new Promise((resolve) => setTimeout(resolve, 2));
   ledger.recordReport(ticket.id, 'session-lead', { status: 'ready', summary: '已就绪' });
   await postExecute(record)(
-    { name: 'commander_worker_spawn', agent: LEAD, arguments: { ticket: ticket.id, task: 'x' } },
+    { name: 'subagent', agent: LEAD, arguments: { prompt: `实现 X [ticket:${ticket.id}]` } },
     { isError: true, content: [{ type: 'text', text: 'Error: late failure' }] },
     spyNext().next,
   );

@@ -107,7 +107,7 @@ test('指挥者模式：Lead 改工单推进状态被拒、done/cancelled 放行
   );
 });
 
-test('指挥者模式：Lead 直接派一次性专家被拒，workflow / Team 通道放行', async () => {
+test('指挥者模式：Lead 直接派一次性专家被拒，workflow 也被拒（7.0.0 硬通道门禁）', async () => {
   const { listener } = boot(applyCommander);
 
   // 6.0.0：被拦的只剩**名册生成的一次性专家工具**（`subagent_<id>`）。`subagent` /
@@ -124,16 +124,19 @@ test('指挥者模式：Lead 直接派一次性专家被拒，workflow / Team �
     assert.ok(!reason.includes(`2) 用 \`${name}\``), `${name} 的拒因不应教直调：${reason}`);
   }
 
-  // workflow 是编排通道；Team 通道（建小组长 / 续做 / 建板 / 读板）本来就是指挥官该用的。
-  for (const name of ['workflow', 'subagent', 'send_message', 'team_task_create', 'team_task_list']) {
-    assertAllowed(await decide(listener, name, LEAD, {}), `Lead 调 ${name}`);
+  // 7.0.0：`workflow` 也不再是指挥官的通道（用户硬要求「不能另辟蹊径开子智能体」）。
+  // 拒因必须给出恢复阶梯（建小组长 + 不要换通道）。
+  for (const name of ['workflow', 'commander_worker_spawn', 'commander_worker_send', 'commander_worker_status', 'commander_worker_stop']) {
+    const reason = assertDenied(await decide(listener, name, LEAD, {}), `Lead 调 ${name}`);
+    assert.ok(reason.includes('建小组长'), `${name} 的拒因应给出「建小组长」：${reason}`);
+    assert.ok(reason.includes('不要换通道'), `${name} 的拒因应说明不要换通道：${reason}`);
+    assert.ok(reason.includes(name), `${name} 的拒因应点名被拦工具：${reason}`);
   }
 
-  // `subagent_fork` 也是 Team 建人工具，6.0.0 语义下必须放行。
-  // （lib/guard.js 的 `isSpecialistDispatchTool()` 曾用 /^subagent_[a-z0-9_-]+$/ 只按前缀判定，
-  // 会把 `subagent_fork` 误当成名册生成的一次性专家工具；已在 lib 侧修正为先排除两个标准
-  // Team 工具名。这里钉住修复后的语义：指挥官可以用 `subagent_fork` 建小组长。）
-  assertAllowed(await decide(listener, 'subagent_fork', LEAD, {}), 'Lead 调 subagent_fork（Team 建人通道）');
+  // Team 通道（建小组长 / 续做 / 建板 / 读板 / 纠偏）本来就是指挥官该用的。
+  for (const name of ['subagent', 'subagent_fork', 'send_message', 'team_task_create', 'team_task_list', 'list_agents', 'interrupt_agent']) {
+    assertAllowed(await decide(listener, name, LEAD, {}), `Lead 调 ${name}`);
+  }
 });
 
 test('指挥者模式：teammate（小组长）三条门禁全部放行（否则没人能干活）', async () => {
@@ -147,34 +150,44 @@ test('指挥者模式：teammate（小组长）三条门禁全部放行（否则
     ['commander_ticket_update', { ticket: 't-1', status: 'failed' }],
     ['subagent_architect', { task: '子任务' }],
     ['subagent', { task: '子任务' }],
+    ['subagent_fork', { task: '子任务' }],
     ['workflow', {}],
+    ['commander_worker_spawn', {}],
   ]) {
     assertAllowed(await decide(listener, name, TEAMMATE, args), `teammate 的 ${name}`);
   }
 });
 
-test('指挥者模式：delegationHierarchy:false 时三条门禁全部放行（回退 2.x 只靠协议）', async () => {
+test('指挥者模式：delegationHierarchy:false 只关掉任务板/工单门禁，**不放开**派发通道硬规则', async () => {
   const { listener } = boot(applyCommander, { options: { delegationHierarchy: false } });
 
+  // 两条「谁来做」门禁（任务板写入 / 工单推进状态）确实被关掉了（回退 2.x 的只靠协议）。
   for (const [name, args] of [
     ['team_task_update', { action: 'claim' }],
     ['team_task_update', { action: 'complete' }],
     ['commander_ticket_update', { ticket: 't-1', status: 'progress' }],
-    ['subagent_architect', { task: 'x' }],
-    ['subagent_fork', { task: 'x' }],
   ]) {
     assertAllowed(await decide(listener, name, LEAD, args), `关闭层级门禁后 Lead 的 ${name}`);
+  }
+  // 7.0.0：派发通道硬门禁**不可配置** —— workflow / 一次性专家 / Worker Session 仍然被拒。
+  for (const name of ['workflow', 'subagent_architect', 'commander_worker_spawn']) {
+    const reason = assertDenied(await decide(listener, name, LEAD, {}), `关闭层级门禁后 Lead 的 ${name}`);
+    assert.ok(reason.includes('建小组长'), `${name}：拒因应给出「建小组长」：${reason}`);
+    assert.ok(reason.includes('不要换通道'), `${name}：拒因应说明不要换通道：${reason}`);
+  }
+  // 建小组长的通道照常放行。
+  for (const name of ['subagent', 'subagent_fork', 'send_message']) {
+    assertAllowed(await decide(listener, name, LEAD, {}), `Lead 的 ${name}`);
   }
   // 但执行边界不受影响：Lead 仍然不能自己写文件。
   assertDenied(await decide(listener, 'write', LEAD, {}), '关闭层级门禁后 Lead 的 write');
 });
 
-test('指挥者模式：层级门禁排在 Mandate 派发门禁之前（Lead 拿到的是层级理由）', async () => {
-  // 这是接线顺序的回归测试：3.0.0 把三条层级门禁插在 0.6.0 的派发门禁**之前**
-  // （agent.js：层级门禁 → 执行边界 → 禁止等待 → 异步容量 → 派发门禁）。
-  // 有账本、没授权时，Lead 调 subagent_implementer 必须拿到**层级**理由
-  // （"团队活交给小组长"），而不是 Mandate 理由（"先 ask_user_question 确认计划"）。
-  // 5.0.0：requireMandate 默认关，所以这里显式打开它，才能验证"层级门禁排在派发门禁之前"。
+test('指挥者模式：派发通道硬门禁排在 Mandate 派发门禁之前（Lead 拿到的是通道理由）', async () => {
+  // 接线顺序的回归测试：7.0.0 的 `evaluateCommanderChannels` 是 `tools/pre-execute` 里的
+  // **第一道**判定（在层级门禁、执行边界、禁止等待、异步容量、派发门禁之前）。
+  // 有账本、没授权时，Lead 调 subagent_implementer 必须拿到**通道**理由
+  // （"只建小组长 / 不要换通道"），而不是 Mandate 理由（"先 ask_user_question 确认计划"）。
   const emptyLedger = { activeMandate: () => null, listTickets: () => [] };
   const { listener } = boot(applyCommander, { ledger: emptyLedger, options: { requireMandate: true } });
 
@@ -182,46 +195,44 @@ test('指挥者模式：层级门禁排在 Mandate 派发门禁之前（Lead 拿
     await decide(listener, 'subagent_implementer', LEAD, { task: '实现 X' }),
     'Lead 调 subagent_implementer（无授权）',
   );
-  assert.ok(denied.includes('小组长'), `应先命中层级门禁：${denied}`);
+  assert.ok(denied.includes('建小组长'), `应先命中通道门禁：${denied}`);
   assert.ok(!denied.includes('计划授权'), `不应先命中 Mandate 门禁：${denied}`);
 
-  // 关掉层级门禁后，同一个调用才会落到 Mandate 门禁上（证明顺序与开关都真的生效）。
+  // 关掉层级门禁也一样：通道门禁不受它影响（这就是"不可配置"的接线级证明）。
   const relaxed = boot(applyCommander, {
     ledger: emptyLedger,
     options: { delegationHierarchy: false, requireMandate: true },
   });
-  const mandateReason = assertDenied(
+  const channelReason = assertDenied(
     await decide(relaxed.listener, 'subagent_implementer', LEAD, { task: '实现 X' }),
     '关闭层级门禁后 Lead 调 subagent_implementer（无授权）',
   );
-  assert.ok(mandateReason.includes('计划授权'), `应命中 Mandate 门禁：${mandateReason}`);
+  assert.ok(channelReason.includes('建小组长'), `仍应命中通道门禁：${channelReason}`);
+  assert.ok(!channelReason.includes('计划授权'), `仍不应命中 Mandate 门禁：${channelReason}`);
 });
 
-test('指挥者模式：执行边界拒因随 delegationHierarchy 切换（默认不教指挥官直调 subagent_*）', async () => {
-  // W3 修复的 P2 的**接线**回归：`agent.js` 必须把 `delegationHierarchy` 传给
-  // `evaluatePreExecute()`，否则 `buildDenialReason` 会按默认（开启）生成理由——虽然默认值
-  // 恰好一致，但一旦配置显式关掉，接线漏传就会让拒因继续教模型直调 `subagent_*`（与 2.x
-  // 语义相反）。这里用一份"视图里真有 subagent_*"的 Lead 同时验证两个方向。
+test('指挥者模式：执行边界拒因不再随 delegationHierarchy 切换（7.0.0 只有 Team 指引）', async () => {
+  // 6.0.0 曾按 `delegationHierarchy` 在"Team 指引"与"2.x 的 specialist 指引"之间切换。
+  // 7.0.0 起这是不可配置的硬规则：无论配置如何，拒因只给「建小组长」+「不要换通道」，
+  // 且不得出现具体的一次性专家工具名（否则模型照做会撞上通道门禁，白烧一轮）。
   const toolView = ['read', 'write', 'pwsh', 'ask_user_question', 'subagent', 'send_message', 'subagent_architect'];
   const leadWithTools = {
     ...LEAD,
     ctx: { tools: { schemas: () => toolView.map((name) => ({ name })) } },
   };
 
-  // 默认（层级门禁开启）：拒因只给 Team 通道 + 小组长，且明确"一次性专家工具归小组长、
-  // 你不要调用"。6.0.0：拒因里会出现**泛指**的 `subagent_<id>`（否定语境），所以旧断言
-  // `!includes('subagent_')` 改成"不得出现直调指令 + 必须出现否定语境"。
-  const on = boot(applyCommander);
-  const deniedOn = assertDenied(await decide(on.listener, 'write', leadWithTools, {}), 'write（层级门禁开启）');
-  assert.ok(!deniedOn.includes('2) 用 `subagent_architect`'), `不得教指挥官直调 subagent_*：${deniedOn}`);
-  assert.ok(deniedOn.includes('subagent_<id>') && deniedOn.includes('你不要调用'), `应说明一次性专家工具归小组长：${deniedOn}`);
-  assert.ok(deniedOn.includes('subagent'), `必须给 Team 通道：${deniedOn}`);
-  assert.ok(deniedOn.includes('小组长'), `必须落到小组长：${deniedOn}`);
-
-  // 显式关掉层级门禁（2.x 行为）：同一份视图恢复点名它真有的 specialist 工具。
-  const off = boot(applyCommander, { options: { delegationHierarchy: false } });
-  const deniedOff = assertDenied(await decide(off.listener, 'write', leadWithTools, {}), 'write（层级门禁关闭）');
-  assert.ok(deniedOff.includes('subagent_architect'), `2.x 语义应点名 specialist 工具：${deniedOff}`);
+  for (const [label, initial] of [
+    ['默认配置', {}],
+    ['delegationHierarchy:false', { options: { delegationHierarchy: false } }],
+  ]) {
+    const { listener } = boot(applyCommander, initial);
+    const denied = assertDenied(await decide(listener, 'write', leadWithTools, {}), `write（${label}）`);
+    assert.ok(!denied.includes('2) 用 `subagent_architect`'), `${label}：不得教指挥官直调 subagent_*：${denied}`);
+    assert.ok(denied.includes('一次性专家'), `${label}：应说明一次性专家不是通道：${denied}`);
+    assert.ok(denied.includes('不要换通道'), `${label}：应说明不要换通道：${denied}`);
+    assert.ok(denied.includes('subagent'), `${label}：必须给 Team 通道：${denied}`);
+    assert.ok(denied.includes('小组长'), `${label}：必须落到小组长：${denied}`);
+  }
 });
 
 test('指挥者模式：不相关的工具不受门禁影响（wait_agent 例外，见下一条）', async () => {

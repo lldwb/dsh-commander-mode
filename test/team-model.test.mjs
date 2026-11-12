@@ -27,10 +27,11 @@ import {
 
 // ---------------------------------------------------------------- 七条规则 ---
 
-test('TEAM_MODEL_RULES 恰好七条，id 固定且顺序稳定', () => {
-  // id 是契约：`lib/protocol.js` / `lib/project-manager.js` / 测试都按 id 引用。
+test('TEAM_MODEL_RULES 恰好八条，id 固定且顺序稳定', () => {
+  // id 是契约：`lib/protocol.js` / 测试都按 id 引用。
   // 顺序不是契约的一部分（正文渲染会编号），但固定顺序能让 diff 可读。
-  assert.equal(TEAM_MODEL_RULES.length, 7);
+  // 7.0.0 新增第 8 条 `dispatch-channel-hard`（指挥官只有一条派发通道 + 恢复阶梯）。
+  assert.equal(TEAM_MODEL_RULES.length, 8);
   assert.deepEqual(
     TEAM_MODEL_RULES.map((rule) => rule.id),
     [
@@ -41,6 +42,7 @@ test('TEAM_MODEL_RULES 恰好七条，id 固定且顺序稳定', () => {
       'ambiguity-chain',
       'leader-owns-board',
       'leader-may-execute',
+      'dispatch-channel-hard',
     ],
   );
 });
@@ -107,8 +109,39 @@ test('七条规则各自覆盖用户 2026-11-11 的一条要求', () => {
   assert.match(byId.get('leader-may-execute').why, /新 child|上下文/u);
 });
 
-// ---------------------------------------------------------------- 三层 ---
+// ---------------------------------------------------------------- 7.0.0 派发通道硬规则 ---
 
+test('7.0.0：第 8 条规则钉死「只有一条通道」与「需要小组长 / 失败」的恢复阶梯', () => {
+  // 用户 2026-11-12 硬要求：「不能出现这种另辟蹊径开子智能体的方法，需要把这种
+  // 指挥官->小组长->小组长的手下 这种分发没问题」；口径明确「连 Worker Session 一起禁」。
+  // 并追问过「如果遇到需要小组长怎么办，比如 session-fb21d6a0 这种会话」。
+  const rule = TEAM_MODEL_RULES.find((entry) => entry.id === 'dispatch-channel-hard');
+  assert.ok(rule, '缺少第 8 条 dispatch-channel-hard');
+  for (const phrase of [
+    '只有一条',
+    'subagent',
+    'subagent_fork',
+    'send_message',
+    'workflow',
+    '一次性专家',
+    'Worker Session',
+    '恢复阶梯',
+    '需要小组长',
+    'inactive',
+    '停滞',
+    '接管同一张工单',
+    'blocked',
+    '内部错误',
+    '任何一步都不许换通道',
+    '不要换通道',
+  ]) {
+    assert.ok(rule.detail.includes(phrase), `dispatch-channel-hard 缺：${phrase}`);
+  }
+  // 为什么里要写清现场（两次真实会话都是"另辟蹊径"）。
+  assert.match(rule.why, /session-2cd6ae3c|session-fb21d6a0/u);
+});
+
+// ---------------------------------------------------------------- 三层 ---
 test('HIERARCHY_LEVELS 三层，level 0/1/2 各自职责清晰', () => {
   assert.equal(HIERARCHY_LEVELS.length, 3);
   assert.deepEqual(HIERARCHY_LEVELS.map((entry) => entry.level), [0, 1, 2]);
@@ -159,14 +192,14 @@ test('TEAM_MODEL 含三层标题、关键数字与「小组长」口径', () => 
   }
 });
 
-test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：七条规则的标题与「为什么」都在正文里', () => {
+test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：八条规则的标题与「为什么」都在正文里', () => {
   // 渲染而不是手抄，是为了避免"规则改了、正文没改"这种漂移。
   for (const rule of TEAM_MODEL_RULES) {
     assert.ok(TEAM_MODEL.includes(rule.title), `TEAM_MODEL 缺规则标题：${rule.title}`);
     assert.ok(TEAM_MODEL.includes(rule.why), `TEAM_MODEL 缺规则依据（why）：${rule.id}`);
   }
-  // 七条规则按顺序编号成 `### 1. …` … `### 7. …`。
-  for (let index = 1; index <= 7; index += 1) {
+  // 八条规则按顺序编号成 `### 1. …` … `### 8. …`。
+  for (let index = 1; index <= 8; index += 1) {
     assert.ok(TEAM_MODEL.includes(`### ${index}. `), `TEAM_MODEL 缺第 ${index} 条规则编号`);
   }
   // 无 Markdown 表格（与其它 section 的排版约定一致）。
