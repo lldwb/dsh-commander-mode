@@ -12,7 +12,7 @@
  * 1. **多模型 specialist 名册**：用户在「设置 → 插件 → 指挥者模式」里配置任意多个
  *    specialist，每个绑定自己的 provider / model / 职责 / 人设。每个 specialist 暴露成
  *    一个前台工具 `subagent_<id>`。见 `lib/specialists.js`。
- * 2. **智能体团队**（Agent Teams）：`spawn_teammate` / `send_message` / `wait_agent` /
+ * 2. **智能体团队**（Agent Teams）：`subagent` / `send_message` / `wait_agent` /
  *    `team_task_*`，适合需要长期存在、可对话、可共享任务板的具名队友。
  *
  * ## 本行不持有配置
@@ -320,10 +320,64 @@ export function apply(ctx) {
   const nudgedTurns = new Set();
 
   /**
-   * 读团队视图（任务板 + 成员）。
+   * 团队成员的**缓存快照**（6.0.0）。
    *
-   * 读不到一律返回 `undefined`（"未知"），让同步判定跳过而不是误报：
-   * 这个部署可能根本没装「智能体团队」，或者当前 agent 还不是 Team 成员。
+   * DSH 0.2.2-rc.2 移除了同步的 `agentTeams.listMembers()` 名册 API：成员现在就是
+   * subagent 树里的可续做子代理，唯一的读取入口是**异步**的
+   * `ctx.subagents.listDescendants(rootSessionId)`。而同步看板是 `systemPrompt.context`
+   * 的**同步**文本渲染，所以这里用「异步刷新 + 同步读缓存」：
+   *
+   * - `refreshTeamMembers()` 在异步位置（`tools/post-execute`）刷新快照；
+   * - `readTeam()` 只读最近一份快照（没有就是空数组），并顺手触发一次后台刷新。
+   *
+   * 快照过期最多让看板少报一次"主人已停手"，不会给出错误结论（判定只会在证据充分时报）。
+   */
+  const teamMembers = new WeakMap();
+  const TEAM_MEMBERS_MAX_AGE_MS = 15000;
+
+  /** 触发一次后台刷新（同一 agent 不并发刷新）。 */
+  const refreshingTeams = new WeakSet();
+
+  /**
+   * 异步刷新某个指挥者的团队成员快照。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {Promise<void>} 刷新完成（失败静默，按"未知"处理）。
+   */
+  const refreshTeamMembers = async (agent) => {
+    const subagents = getService('subagents');
+    if (subagents === undefined || typeof subagents.listDescendants !== 'function') return;
+    if (refreshingTeams.has(agent)) return;
+    const sessionId = sessionIdOf(agent);
+    if (sessionId === undefined) return;
+    refreshingTeams.add(agent);
+    try {
+      const rows = await subagents.listDescendants(sessionId);
+      const members = (Array.isArray(rows) ? rows : [])
+        .filter((row) => row !== null && typeof row === 'object' && row.kind === 'child')
+        .map((row) => ({
+          // `list_agents` 的名字就是相对根的完整路径（`reviewer/checker`）；无名历史用 Session id。
+          name: typeof row.path === 'string' && row.path !== '' ? row.path : String(row.id ?? ''),
+          status: row.activity === 'running' ? 'running' : 'inactive',
+          role: 'member',
+          depth: typeof row.depth === 'number' ? row.depth : 1,
+        }));
+      teamMembers.set(agent, { members, at: Date.now() });
+    } catch (error) {
+      // 读不到名册按"未知"处理：同步判定只会在证据充分时报警，绝不因为读不到就拦人。
+      ctx.logger?.debug?.('commander-mode: 读取 subagent 成员快照失败（按未知处理）：%o', error);
+    } finally {
+      refreshingTeams.delete(agent);
+    }
+  };
+
+  /**
+   * 读团队视图（任务板 + 成员快照）。
+   *
+   * 读不到一律返回 `undefined`（"未知"），让同步判定跳过而不是误报。
+   *
+   * 6.0.0：`agentTeams` 的成员/名册 API 已被 rc.2 移除，成员改读 subagent 树快照；
+   * Team 模式由本插件强制开启，所以这里用 `isEnabled(agent)` 判断任务板是否可用。
    *
    * @param {object} agent - 指挥者 agent。
    * @returns {{ tasks: object[], members: object[] } | undefined} 团队视图。
@@ -332,18 +386,21 @@ export function apply(ctx) {
     const service = getService('agentTeams');
     if (service === undefined) return undefined;
     try {
-      // `tryMembership` 对"不是 Team 成员"返回 undefined；`listTasks` 在非成员上会抛。
-      if (typeof service.tryMembership === 'function' && service.tryMembership(agent) === undefined) return undefined;
+      // 任务板只在 Team 模式开启时可用（本模式下恒为开启；读不到按"未开启"处理）。
+      if (typeof service.isEnabled === 'function' && service.isEnabled(agent) !== true) return undefined;
       const tasks = typeof service.listTasks === 'function' ? service.listTasks(agent) : [];
-      const members = typeof service.listMembers === 'function' ? service.listMembers(agent) : [];
       const allTasks = Array.isArray(tasks) ? tasks : [];
+      // 成员快照：读缓存 + 触发后台刷新（同步文本渲染不能 await）。
+      const cached = teamMembers.get(agent);
+      if (cached === undefined || Date.now() - cached.at > TEAM_MEMBERS_MAX_AGE_MS) {
+        void refreshTeamMembers(agent);
+      }
       return {
         tasks: allTasks,
         // 1.2.0：投影任务（`[commander:ticket=...]`）由工单看板负责，同步看板只看"真正的团队任务"，
         // 否则投影的 specialist 工单会被误判成孤儿任务 / 团队闲置。
         nativeTasks: allTasks.filter((task) => !isProjectedTask(task)),
-        // Lead 自己也会出现在成员列表里；看板只关心执行者的状态。
-        members: Array.isArray(members) ? members.filter((member) => member?.role !== 'lead') : [],
+        members: Array.isArray(cached?.members) ? cached.members : [],
       };
     } catch (error) {
       ctx.logger?.debug?.('commander-mode: 读取团队状态失败（按未知处理）：%o', error);
@@ -381,11 +438,12 @@ export function apply(ctx) {
   /**
    * Team 通道的**派活**动作（`wait_agent` / `list_agents` 不算派活，它们是等待与读状态）。
    *
-   * 0.5.0 用这两个集合统计"派发通道配比"，发现"任务板还开着、派活却全走一次性 specialist"。
+   * 6.0.0：Team 成员就是标准 subagent —— 建小组长是 `subagent` / `subagent_fork`，
+   * 续做是 `send_message`（旧 Team 的 `spawn_teammate` 已随 DSH 0.2.2-rc.2 移除）。
    */
-  const TEAM_DISPATCH_TOOLS = new Set(['spawn_teammate', 'send_message']);
-  /** 一次性前台的派活动作：`subagent_<id>` 由前缀识别。 */
-  const ONE_SHOT_DISPATCH_TOOLS = new Set(['subagent', 'subagent_fork', 'workflow']);
+  const TEAM_DISPATCH_TOOLS = new Set(['subagent', 'subagent_fork', 'send_message']);
+  /** 一次性派活动作：`workflow`（`subagent_<id>` 由前缀识别）。 */
+  const ONE_SHOT_DISPATCH_TOOLS = new Set(['workflow']);
 
   /**
    * 判断一次工具调用是哪条派发通道。
@@ -458,7 +516,7 @@ export function apply(ctx) {
       if (asyncCount(sessionId) < max) return undefined;
       return [
         `指挥者模式：在飞的一次性派发已达上限（${max} 个）。`,
-        '不要重复派同一任务；等完成通知，或把多阶段/长任务改用 Team 通道（spawn_teammate）——它是常驻队友，不受这个上限限制。',
+        '不要重复派同一任务；等完成通知，或把多阶段/长任务改用 Team 通道（subagent）——它是常驻队友，不受这个上限限制。',
       ].join('\n');
     } catch {
       return undefined;
@@ -685,9 +743,14 @@ export function apply(ctx) {
       // 异步受理结果不是"结算"：真正的回报在 asyncCompleted 里记录（带 childId/ticket）。
       if (result?.value?.async === true) return;
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
-      const isSpecialist = toolName.startsWith('subagent_');
-      const isManagedSubagent = toolName === 'subagent' || toolName === 'subagent_fork' || toolName === 'workflow';
-      if (!isSpecialist && !isManagedSubagent) return;
+      // 6.0.0：`subagent` / `subagent_fork` 是**后台 activation**——工具立即返回
+      // `{ kind:'activation', name }`，小组长的结算结果由运行时完成通知送达，不是工具返回值。
+      // 所以"从工具结果里解析 STATUS 回报"只适用于同步结算的通道：名册一次性专家与 workflow。
+      // ⚠️ 用 isSpecialistDispatchTool() 而不是 startsWith('subagent_')：`subagent_fork`
+      // 也以该前缀开头，但它是 Team 通道的建人工具（后台 activation），不是一次性专家。
+      const isSpecialist = isSpecialistDispatchTool(toolName);
+      const isWorkflow = toolName === 'workflow';
+      if (!isSpecialist && !isWorkflow) return;
       if (result?.isError === true) return;
       const ticketId = ticketFromDispatchArgs(exec.arguments);
       if (ticketId === undefined) return;
@@ -732,22 +795,20 @@ export function apply(ctx) {
       const ledger = getLedger();
       if (sessionId === undefined || ledger === undefined) return;
       const value = result?.value;
-      // `spawn_teammate` 的返回值是 `{ member: { target, ... } }`（随附包 tool-agent-team 的 schema）。
-      const memberName = typeof value?.member?.target === 'string'
-        ? value.member.target
-        : typeof value?.member?.name === 'string'
-          ? value.member.name
-          : undefined;
+      // 6.0.0：`subagent` / `subagent_fork` 的返回值是 `{ kind: 'activation', name }`
+      // （rc.2 的 `tool-subagent` schema）——`name` 就是 `list_agents` 里那个可寻址名字，
+      // 也是 `send_message({ agent })` 的目标。旧 Team 的 `{ member: { target } }` 已移除。
+      const memberName = typeof value?.name === 'string' && value.name !== '' ? value.name : undefined;
       const ref = typeof value?.childId === 'string'
         ? value.childId
         : typeof value?.sessionId === 'string'
           ? value.sessionId
           : typeof value?.name === 'string'
             ? value.name
-            : memberName;
+            : undefined;
       ledger.markAssignmentSettled(ticketId, sessionId, ref);
-      // 1.2.0 D：Team 通道派发后把投影任务的 owner 自动绑到这个队友（"建板必有主"）。
-      if (toolName === 'spawn_teammate' && memberName !== undefined && projectionEnabled()) {
+      // 1.2.0 D：Team 通道建人后把投影任务的 owner 自动绑到这个小组长（"建板必有主"）。
+      if ((toolName === 'subagent' || toolName === 'subagent_fork') && memberName !== undefined && projectionEnabled()) {
         const record = ledger.getTicket(ticketId, sessionId, { allowMissing: true });
         if (record !== null) {
           void teamBridge.bindOwner(exec.agent, record, memberName).then((bound) => {
@@ -860,7 +921,7 @@ export function apply(ctx) {
       const sessionId = sessionIdOf(agent);
       const ledger = getLedger();
       if (sessionId === undefined || ledger === undefined) return;
-      const channel = toolName.startsWith('subagent_')
+      const channel = isSpecialistDispatchTool(toolName)
         ? 'specialist'
         : toolName === 'commander_worker_spawn'
           ? 'worker'
@@ -914,14 +975,9 @@ export function apply(ctx) {
           syncBoard: syncBoardEnabled(),
           // 1.2.0：Agent Teams 可用时，协议里补一段"共享任务板是工单投影"的说明。
           teamBoard: teamBridge.available(agent) !== undefined,
-          // 3.4.0：Team 工具是否真的挂在这个 agent 上。没有时协议必须改口——
-          // 否则它会去调 `spawn_teammate` 这种不存在的工具（0.1.x 踩过这个坑）。
-          // 读不到工具视图时按"有"处理（与 guard 的降级判据一致）。
-          hasTeamTools: (() => {
-            const names = agentToolNames(agent);
-            if (!Array.isArray(names)) return true;
-            return names.includes('spawn_teammate') || names.includes('send_message');
-          })(),
+          // 6.0.0：Team 是 base 自带、且本模式强制开启 —— 不再有"这个部署没有 Team"的
+          // 降级形态（旧的 hasTeamTools 探测已删除；rc.2 里 `subagent` / `send_message` /
+          // `team_task_*` 恒在）。
         });
       } catch (error) {
         // prompt section 抛错会让该会话的每一步都失败，所以渲染失败就退化成
@@ -974,6 +1030,11 @@ export function apply(ctx) {
         observeWorkerReport(exec, _result);
         settleObservedDispatch(exec, _result);
         reportDispatchFailure(exec, _result);
+      }
+      // 6.0.0：成员名册只能异步读（`ctx.subagents.listDescendants`），这里在异步位置刷新
+      // 同步看板用的快照 —— 工具调用之后正是团队状态最容易变化的时候。
+      if (agent !== undefined && !isDelegatedAgent(agent) && syncBoardEnabled()) {
+        void refreshTeamMembers(agent);
       }
       if (exec?.name === 'todo_write') {
         const agent = exec.agent;
@@ -1159,7 +1220,8 @@ export function apply(ctx) {
 
       // 0.7.0 异步容量：一次性 specialist 在飞数量达上限时**在启动前**拒绝，
       // 避免"先启动 child、再发现超限"或"先记 Assignment 再失败"。
-      if (toolName.startsWith('subagent_') && readOptions().asyncDelegation !== false) {
+      // 异步容量只约束**名册生成的一次性专家**（`subagent_<id>`）；`subagent_fork` 是 Team 通道。
+      if (isSpecialistDispatchTool(toolName) && readOptions().asyncDelegation !== false) {
         const capacityReason = asyncCapacityReason(exec?.agent);
         if (typeof capacityReason === 'string' && capacityReason !== '') {
           ctx.logger?.info?.('commander-mode: 异步派发达到上限，拒绝 %s', toolName);

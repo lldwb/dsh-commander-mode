@@ -42,6 +42,7 @@ import { resolveLedgerFile } from './lib/ledger.js';
 import { CommanderLedger, LEDGER_SERVICE_NAME } from './lib/ledger-service.js';
 import { hidePresetsFromCatalog, isSpecialistPresetId } from './lib/preset-catalog.js';
 import { provideSettings } from './lib/settings-service.js';
+import { installForcedTeamMode } from './lib/team-mode.js';
 import { CommanderWorkers, WORKERS_SERVICE_NAME } from './lib/worker-sessions.js';
 
 /** Cordis 插件名。**必须与 Loader 行 id、设置命名空间、客户端 `SETTINGS_NS` 一致**。 */
@@ -56,7 +57,9 @@ export const name = 'commander-mode';
 export { Config };
 
 /**
- * 本行**不硬性依赖**任何服务：设置页策略是可选的。
+ * 本行**不硬性依赖**任何服务来加载：设置页策略是可选的，`agentTeams` 也由下面的
+ * `installForcedTeamMode()` 在运行时探测（缺失时记显式错误日志，而不是让整行不激活 ——
+ * 那样用户连设置页都看不到，更难诊断）。
  */
 export const inject = [];
 
@@ -188,6 +191,20 @@ export function apply(ctx, config) {
       }
     });
   }
+
+  // ④ 智能体团队：指挥官会话**默认启用且不可关闭**（用户 2026-11-12 硬要求）。
+  //
+  //    DSH 0.2.2-rc.2 把 Agent Teams 改成**按根会话选择**（`team/mode` 事件），新会话默认
+  //    关闭；Team 的四个任务工具在关闭时连 schema 都不出现。而「指挥者模式」的三层指挥链
+  //    （指挥官 → 小组长 → 子智能体）完全建立在 Team 上 —— 关掉 Team 等于模式失效。
+  //
+  //    所以这一行（profile 顶层、进程级常驻）做两件事：
+  //
+  //    1. `agent/created`：根 agent 且会话 preset 是 `commander` → `setEnabled(agent, true)`；
+  //    2. `session/event`：指挥官会话出现 `team/mode { enabled: false }` → 立刻重开并记日志。
+  //
+  //    没有"关闭团队"的配置项：这是硬约束，不是可调选项。
+  installForcedTeamMode(ctx);
 
   ctx.logger?.info?.('commander-mode: 配置行就绪（设置命名空间 commander-mode）');
 }

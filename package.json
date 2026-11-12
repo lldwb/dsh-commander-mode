@@ -1,7 +1,7 @@
 {
   "name": "dsh-commander-mode",
-  "version": "5.0.0",
-  "description": "一个 DSH 模式 + 一个可选工作流组件：三层指挥链（指挥官 → 小组长 → 子智能体），指挥者接单、按任务形状拆分、派给小组长（它自己执行或再交子智能体）并逐项验收；自己不执行操作。六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）与六段工作流都是按需的（工作流用 skill 加载），不需要第二个模式。另含「禁止等待子智能体」硬门禁（wait_agent 整条链禁用，无开关）。（能力行清单只有 lib/capabilities.js 一份，preset 的 plugins 由 JS 拼装；2.1.0 起自带 preset 声明器，不依赖随附「Agent 预设定义」。）",
+  "version": "6.0.0",
+  "description": "一个 DSH 模式 + 一个可选工作流组件：三层指挥链（指挥官 → 小组长 → 子智能体），指挥者接单、按任务形状拆分、派给小组长（它自己执行或再交子智能体）并逐项验收；自己不执行操作。适配 DSH 0.2.2-rc.2 的新 Team 模型：Team 成员就是可续做的标准 subagent（`subagent` / `subagent_fork` 建小组长 + `send_message` 续做），Team 的四个任务工具常驻。使用本模式时**智能体团队默认启用且不可关闭**。六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）与六段工作流都是按需的（工作流用 skill 加载）。另含「禁止等待子智能体」硬门禁（wait_agent 整条链禁用，无开关）。（能力行清单只有 lib/capabilities.js 一份，preset 的 plugins 由 JS 拼装；2.1.0 起自带 preset 声明器，不依赖随附「Agent 预设定义」。）",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -76,7 +76,7 @@
   ],
   "meta": {
     "title": "指挥者模式",
-    "description": "一个 DSH 模式 + 一个可选工作流组件：三层指挥链（指挥官 → 小组长 → 子智能体），指挥者接单、按任务形状拆分、派给小组长（它自己执行或再交子智能体）并逐项验收；自己不执行操作。六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）与六段工作流都是按需的（工作流用 skill 加载），不需要第二个模式。另含「禁止等待子智能体」硬门禁（wait_agent 整条链禁用，无开关）。（能力行清单只有 lib/capabilities.js 一份，preset 的 plugins 由 JS 拼装；2.1.0 起自带 preset 声明器，不依赖随附「Agent 预设定义」。）",
+    "description": "一个 DSH 模式 + 一个可选工作流组件：三层指挥链（指挥官 → 小组长 → 子智能体），指挥者接单、按任务形状拆分、派给小组长（它自己执行或再交子智能体）并逐项验收；自己不执行操作。适配 DSH 0.2.2-rc.2 的新 Team 模型：Team 成员就是可续做的标准 subagent（`subagent` / `subagent_fork` 建小组长 + `send_message` 续做），Team 的四个任务工具常驻。使用本模式时**智能体团队默认启用且不可关闭**。六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）与六段工作流都是按需的（工作流用 skill 加载）。另含「禁止等待子智能体」硬门禁（wait_agent 整条链禁用，无开关）。（能力行清单只有 lib/capabilities.js 一份，preset 的 plugins 由 JS 拼装；2.1.0 起自带 preset 声明器，不依赖随附「Agent 预设定义」。）",
     "note": "DSH 的插件卡片标题/描述只读 package.json 的 name/description 与 locale/*.json 的 {\"meta\":{...}}，不读这里的字段；保留它只是给人看的。"
   },
   "dsh": {

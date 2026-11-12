@@ -23,11 +23,12 @@
 # 里注入。所以下面的 preset 行只有 `id / name / description / order`。这样能力行只有
 # 一份，不会因为"改了一边没改另一边"而静默漂移（此前这里有两份 ~84 行的逐字副本，
 # 靠测试比对防漂移）。清单镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式
-# 的表现等于「标准模式 + 本插件 + 指挥者门禁」。已核对到 **DSH 0.2.2-rc.1**（对照
-# `packages/bundle/web-app/presets/standard.patch.yml`）：随附 `standard` 顶层声明 22 行，
-# 本包声明其中 18 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
-# 组的内部构成（见 `lib/capabilities.js`）。0.2.1-alpha.1 起 standard 新增 `time-context` 与 `tool-schedule`
-# （0.2.1-rc.1 起再新增 `tool-plugin-market`），本次把前两者补进能力块、第三者列入排除。
+# 的表现等于「标准模式 + 本插件 + 指挥者门禁」。已核对到 **DSH 0.2.2-rc.2**（对照
+# `packages/bundle/web-app/presets/standard.patch.yml`）：随附 `standard` 顶层声明 23 行，
+# 本包声明其中 19 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
+# 组的内部构成（见 `lib/capabilities.js`）。0.2.1-alpha.1 起 standard 新增 `time-context` 与
+# `tool-schedule`；0.2.1-rc.1 起新增 `tool-plugin-market`；0.2.2-rc.1 起新增 `tool-office`
+# —— 前两者与 `tool-office` 已补进能力块，`tool-plugin-market` 列入排除。
 #
 # 故意**不**从 preset-standard 镜像的东西：
 #
@@ -38,32 +39,36 @@
 #   - `tool-plugin-manager` —— 随附时是禁用的（`disabled: !!js "!ctx.get('profileContext')"`，
 #     它是给 创造模式 用的），而且装插件属于"执行操作"，本模式下应当派给子代理；
 #   - `tool-plugin-market` —— 随附时也是 `disabled: true`；装插件市场里的东西同样属于
-#     "执行操作"，本模式下应当派给子代理；
-#   - **`tool-subagent` / `tool-subagent-fork` / `tool-subagent-control` /
-#     `tool-subagent-control` 的 `list-agents` 子行** —— 见下。（0.2.2 已从该包移除
-#     `list-agents` 子路径导出，list_agents 并进主入口；本块本来就不声明它。）
+#     "执行操作"，本模式下应当派给子代理。
 #
-# ## 派发通道：交给「智能体团队」，不要旧的 subagent 控件
+# ## 派发通道：Team 成员就是标准 subagent（0.2.2-rc.2 口径）
 #
-# 本模式的委派**依赖 `@deepseek-ai/dsh-experimental-agent-team-profile`**（插件页里的
-# 「智能体团队」）。那个组合包做两件事：插入 `agent-team` 服务与 `tool-agent-team`
-# （九个 Team 工具），并**禁用**旧的 `tool-subagent-control`、`tool-subagent` 与
-# `tool-subagent-fork` 三行（0.2.2 起 `list-agents` 子路径导出已移除、list_agents 并进
-# 主入口，所以不再有第四行可禁）。
+# 0.2.2-rc.2 把 Agent Teams 重写成「Team 成员 = 可续做的标准 subagent」：
 #
-# 所以这里**不**镜像 standard 的 delegation 组里的那三个 subagent 行：在 preset 里重新
-# 声明它们，会把那个组合包刚刚关掉的旧控件又装回来，于是指挥者同时拿到两套
-# `send_message` / `list_agents` / `interrupt_agent`，行为变得不确定。Team 工具本身
-# **不需要在这里声明** —— `tool-agent-team` 的九个工具注册在每个 Team 成员 agent
-# **自己的 ctx** 上（Lead 是隐式 Team 的 Lead，因此也是成员），与 preset 无关。
+#   - 旧的 `spawn_teammate` 与 Team 作用域的 `send_message` / `list_agents` /
+#     `interrupt_agent` **已移除**；建人改用标准 `subagent` / `subagent_fork`，续做/纠偏用
+#     标准 `send_message` / `interrupt_agent`（参数是 `agent`，值是 `list_agents` 里的名字）；
+#   - `agent-team` / `tool-agent-team` **并入 base bundle**（`@deepseek-ai/dsh-agent-team`
+#     / `@deepseek-ai/dsh-tool-agent-team`），Team 只提供四个 `team_task_*` 任务工具；
+#     Web 的 base 层**没有禁用**这两行，所以任务工具不需要在 preset 里声明；
+#   - `agent-team` 只接受 `maxTasks` / `defaultEnabled` 两个键（旧键会抛
+#     `TEAM_INVALID_CONFIG`）；`tool-agent-team` 不接受配置。
 #
-# 只保留 `workflow-ptc` + `tool-workflow`：它是与 Team 工具互补的编排通道（一次性扇出
-# 多个 fresh 子代理），而 `agent-team-profile` 明确保留了 workflow 的 spawn 提供方。
+# 所以本模式的 `delegation` 组**镜像** standard 的五行（见 `lib/capabilities.js`）：
+# `tool-subagent-control`（**不写 config** → 插件默认 `interrupt: true`，指挥官需要
+# `interrupt_agent` 作为纠偏通道）、`tool-subagent`（spawn，`maxDepth: 2`）、
+# `tool-subagent-fork`（fork，`maxDepth: 2`）、`workflow-ptc`、`tool-workflow`。
 #
-# ⚠️ 代价（README 的「已知边界」也写明了）：如果用户在插件页关掉「智能体团队」，本模式
-# 就没有 `spawn_teammate` / `send_message` / `wait_agent` / `team_task_*` 了。那时门禁会
-# 自动放行（`lib/guard.js` 的 `canDelegate` 检查），模式退化成"只会做协议的普通 agent"，
-# 而不是把会话卡死。
+# ## 团队默认开、不可关（用户 2026-11-12 硬要求）
+#
+# rc.2 的 Team 模式是**按根会话选择**（`team/mode` 事件），新会话默认关闭。本模式的三层
+# 指挥链完全建立在 Team 上，所以 profile 顶层的 `commander-mode` 行会强制开启：
+#   - `agent/created`：根 agent 且当前 preset 是 `commander` → `setEnabled(agent, true)`；
+#   - `session/event` 的 `agent-preset/selected`：在输入框里切模式（rc.2 走
+#     `agentPresets.select(liveAgent, …)`，**不会**产生新的 agent/created）→ 对活 agent 开启；
+#   - `session/event` 的 `team/mode {enabled:false}`：被关掉立刻重开。
+# **没有"关闭团队"的配置项** —— 这是硬约束，不是可调选项。
+# 细节见 `lib/team-mode.js`（含一个实测坑：写操作必须推迟到 append 发布之后）。
 #
 # ## 门禁
 #
@@ -129,8 +134,8 @@
         # 子代理之间有分歧时交回用户。
         escalateOnConflict: true
         # 写进协议的并行上限（3.0.0：8 → 16，与运行时「子智能体」设置对齐）。
-        # 用户 2026-11-11 规则 2：并行上限取运行时的 subagent.maxActiveSubagents=16 与
-        # agent-team.maxMembers=16，插件不再自己压低。想再往上要同时调 profile patch。
+        # 用户 2026-11-11 规则 2：并行上限取运行时的 subagent.maxActiveSubagents=8 与
+        # subagent.maxActiveSubagents=8，插件不再自己压低。想再往上要同时调 profile patch。
         maxTeammates: 16
         # 3.0.0 三层指挥链的确定性门禁（只有小组长能改进度/排期、指挥官不直调子智能体）。
         # 关掉退化为只靠协议约束（2.x 行为），文本仍在、但没有硬拦截。
@@ -208,7 +213,7 @@
         stateDir: ''
         # 派发新工作前必须有用户确认的计划授权（Mandate）。
         # 没有 ask_user_question（id=commander-plan，选项「确认，开始执行」）的确认，
-        # 派发 specialist / subagent / workflow / spawn_teammate 会被确定性拒绝。
+        # 派发 specialist / subagent / workflow / subagent 会被确定性拒绝。
         requireMandate: true
         # 是否要求每次派发都带工单 id（specialist 的 ticket 参数 / Team 的 [ticket:t-N]）。
         requireTicket: true
