@@ -213,13 +213,14 @@ test('0.6.0 ledger:false 时不提供账本服务（降级到 0.5.0）', () => {
   assert.deepEqual(Object.keys(record.services), ['commanderSettings']);
 });
 
-test('7.0.0：workerSessions:true 也不再提供 commanderWorkers（Worker 通道已下线）', () => {
+test('7.0.1：workerSessions:true 不再提供 commanderWorkers（实现已删除）', () => {
   // 用户硬要求「不能另辟蹊径开子智能体」、口径明确「连 Worker Session 一起禁」：
-  // `resolveConfig()` 把 workerSessions 恒读成 false，所以即使旧 profile 里写着 true，
-  // 配置行也不会创建 Worker 执行器 —— 这是"通道下线"的接线级证明。
+  // 7.0.0 通道下线、7.0.1 把 `lib/worker-sessions.js` 整个删除，所以配置行不会创建
+  // Worker 执行器（`commanderWorkers` 服务不存在）。旧 profile 里写着 true 也只被 schema
+  // 接受、不产生任何行为 —— 这是"实现已删除"的接线级证明。
   const { ctx, record } = makeCtx();
   assert.doesNotThrow(() => apply(ctx, configWith([], { workerSessions: true })));
-  assert.equal(record.services.commanderWorkers, undefined, '7.0.0：不应再提供 commanderWorkers 服务');
+  assert.equal(record.services.commanderWorkers, undefined, '7.0.1：不应再提供 commanderWorkers 服务');
   assert.ok(record.services.commanderLedger, '账本仍要提供');
 });
 
@@ -256,10 +257,11 @@ test('1.1.0 eventInbox:false 时不提供 commanderEvents（也不起轮询）',
   assert.equal(record.services.commanderEvents, undefined);
 });
 
-test('7.0.0：Worker spawn 通道不可用（服务不发布，工具也不注册）', () => {
+test('7.0.1：Worker spawn 通道不存在（实现已删除）', () => {
   // 6.0.0 的「缺宿主服务时精确点名」用例随通道下线一起退役：现在不是"缺服务报错"，
-  // 而是**根本没有这个通道**。`lib/worker-tools.js` / `lib/worker-sessions.js` 保留
-  // 只为兼容旧账本数据，不再被任何运行路径启用（详见 README「Worker Session」一节）。
+  // 而是**根本没有这个通道** —— `lib/worker-tools.js` / `lib/worker-sessions.js` 已在
+  // 7.0.1 从仓库删除，没有工具、没有服务。旧账本里的历史 `execution` 字段仍能读出
+  // （`lib/ledger.js` 的 `sanitizeExecution` 保留），这是唯一的兼容点。
   const { ctx, record } = makeCtx();
   apply(ctx, configWith([], { workerSessions: true }));
   assert.equal(record.services.commanderWorkers, undefined);

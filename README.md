@@ -45,13 +45,15 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
   在飞数量有上限（`maxAsyncTasks`，3.0.0 起默认 16），`asyncDelegation: false` 可回退前台阻塞行为。
   **7.0.0 起这条通道归小组长**：指挥官调 `subagent_<id>` 会被硬门禁拒绝，唤醒的是调用它的那一级
   （通常是小组长）。
-- **Worker Session（0.8.0；7.0.0 起通道下线）**：0.8.0 曾提供第三条执行通道——`commander_worker_spawn`
-  可给一张工单开**独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），
-  worker 只拿工作工具、结束时用 `commander_report` 汇报并用通知唤醒调用者；有槽位上限
-  （`maxWorkers`）与重启恢复提示。**7.0.0 起这条通道已下线**（用户硬要求「连 Worker Session
-  一起禁」）：四个 `commander_worker_*` 工具不再注册，`workerSessions` 恒读成 `false`，
-  `workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission` 四个配置项废弃；
-  `lib/worker-tools.js` / `lib/worker-sessions.js` 保留仅为兼容旧账本数据。派发只走小组长。
+- **Worker Session（0.8.0–6.0.0；7.0.0 下线，7.0.1 实现已删除）**：0.8.0 曾提供第三条执行通道——
+  `commander_worker_spawn` 可给一张工单开**独立 DSH Session + 独立目录**（`workRoot/<ticket>`，
+  可选 prepare 命令），worker 只拿工作工具、结束时用 `commander_report` 汇报并用通知唤醒调用者；
+  有槽位上限（`maxWorkers`）与重启恢复提示。**7.0.0 起通道下线**（用户硬要求「连 Worker Session
+  一起禁」），**7.0.1 起实现代码已从仓库删除**（`lib/worker-tools.js` / `lib/worker-sessions.js`）：
+  没有工具、没有服务、没有运行路径。`workerSessions` / `workRoot` / `maxWorkers` /
+  `prepareCommand` / `workerPermission` 五个字段仍留在 schema 里（只为让旧 profile patch 不报
+  未知键），但 `resolveConfig()` 不再输出它们。账本里的历史 `execution` 字段仍能按旧数据读出。
+  派发只走小组长。
 - **外部事件接入（1.1.0）**：CI / 告警 / 定时巡检可以用
   `bin/commander-event.mjs` 往 `events/inbox/` 写事件，插件轮询取走并 `steer` 对应指挥者
   会话——**空闲的指挥者会被外部事件唤醒**（不需要人先说话）。事件不建工单、不派活，
@@ -243,10 +245,10 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 - **安静默认**：没有工单且没有授权时不产生任何文本；
 - **停滞**是代理指标：派发后超过 `ticketStallMs`（默认 10 分钟）且没有新回报 → 提示"先只读核对，
   再决定问用户 / 补派 / 标记受阻"，**不自动重派或结束**（Super-agent 也承认任务层巡检最难）。
-  **3.3.0 起对 Worker Session 另有一条停滞看门狗**：每 60 秒扫描带 `execution` 的未结束工单，
+  **3.3.0 起对 Worker Session 曾另有一条停滞看门狗**：每 60 秒扫描带 `execution` 的未结束工单，
   超过 `ticketStallMs` 且**开工后从未回报**就 `steer` 指挥者（同工单 10 分钟节流），提示它
   可能卡在回合中途——只提醒、不自动改状态（见「Worker Session」与「3.3.0」）。
-  **7.0.0 起 Worker 通道下线**，这条看门狗随 `lib/worker-sessions.js` 一起不再启用。
+  **7.0.0 起 Worker 通道下线、7.0.1 起实现（`lib/worker-sessions.js`）已删除**，这条看门狗不存在。
 
 **账本**：
 
@@ -282,55 +284,46 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 为什么不用 runtime 的 `delivery:'parent'` 完成通知：它的通知内容与工单映射不可控，而且会多一条
 模型可见消息；`delivery:'caller'` + 后台 await + `steer` 让我们完全控制通知格式、去重与账本写入。
 
-### Worker Session（0.8.0；7.0.0 起通道下线）
+### Worker Session（0.8.0–6.0.0；7.0.0 下线，7.0.1 实现已删除）
 
-> **7.0.0：这条通道已下线**（用户硬要求「不能出现这种另辟蹊径开子智能体的方法…连 Worker
-> Session 一起禁」）。四个 `commander_worker_*` 工具**不再注册**；`lib/config.js` 的
-> `resolveConfig()` 把 `workerSessions` **恒读成 `false`**（profile patch 里写 `true` 也不生效），
-> 配置行不再提供 `commanderWorkers` 服务；`workRoot` / `maxWorkers` / `prepareCommand` /
-> `workerPermission` 四个配置项**废弃**（字段保留只为兼容旧配置，不删键）。
-> `lib/worker-tools.js` / `lib/worker-sessions.js` **保留仅为兼容旧账本数据**，不再被任何运行
-> 路径启用。下面 0.8.0–3.3.0 的描述是**历史记录**，不是当前行为；当前派发通道见
-> 「派发通道怎么选」。
+> **当前状态：已删除。** 用户 2026-11-12 的硬要求是「不能出现这种另辟蹊径开子智能体的方法…
+> 连 Worker Session 一起禁」。
+>
+> - **7.0.0**：通道下线 —— 四个 `commander_worker_*` 工具不再注册，配置行不再提供
+>   `commanderWorkers` 服务。
+> - **7.0.1**：**实现代码删除** —— `lib/worker-tools.js` / `lib/worker-sessions.js` 已从仓库
+>   移除（约 900 行），`test/worker-sessions.test.mjs` 一并删除；没有任何运行路径、没有工具、
+>   没有服务。
+> - **配置字段仍在 schema**（`workerSessions` / `workRoot` / `maxWorkers` / `prepareCommand` /
+>   `workerPermission`）：只为让旧 profile patch 不报未知键；`resolveConfig()` 不再输出它们，
+>   写 `workerSessions: true` 也不会启用任何东西。
+> - **唯一的兼容点**：账本里的历史 `execution` 字段仍能按旧数据读出（`lib/ledger.js` 的
+>   `sanitizeExecution`、`tickets.js` 的 `ticketView`、`bin/commander-status.mjs` 的只读展示），
+>   但 7.0.1 起**没有任何写入方**。
+>
+> 下面 0.8.0–3.3.0 的描述是**历史记录**（当时的行为），不是当前行为；当前派发通道见
+> 「派发通道怎么选（7.0.0：指挥官只能建小组长）」。
 
 0.6/0.7 让派活有状态、有通知，但所有执行者仍**共享 cwd**——长任务并行会互相踩文件。
 0.8.0 提供第三种执行通道：**每张工单一个独立 DSH Session + 独立目录**。0.8.0 曾默认关闭
 （改变执行模型）；0.9.1 在真实 Web profile + 真实模型里跑通全链路后，**1.0.0 起默认开启**。
 
-- **关闭（历史：0.8.0–6.0.0 的开关方式）**：在 profile patch 的 `commander-mode` 配置里显式写
-  `workerSessions: false`（需重载）。关闭后不注册四个 `commander_worker_*` 工具、不会出现 worker
-  会话，派工语义回到 0.7（specialist / Team 两条通道）。想改 `workRoot` / `maxWorkers` /
-  `prepareCommand` / `workerPermission` 同理。**7.0.0 起这个开关已无意义**（恒 false，见上）。
-- **四个工具**：
-  - `commander_worker_spawn`：给已有工单开 worker。建目录（`workRoot/<ticket>`，可跑一次
-    `prepareCommand`，可用 `DSH_COMMANDER_*` 环境变量）→ `workspaceRegistry.create` →
-    `sessionController.create({ sessionId: 'worker-<ticket>', workspaceId })` → 设置权限 →
-    重命名 → 账本记录 `execution` → 投递派工消息。
-  - `commander_worker_send`：追加指令；`commander_worker_stop`：停止当前回合（记 blocked）；
-    `commander_worker_status`：看 session/目录/是否可解析。
-- **worker 侧（0.9.1 修正时序）**：spawn 在账本记下 `execution` 之后**显式**装饰 worker
-  （不能只靠 `agent/created`：该事件在 `sessionController.create()` 期间就可能触发，那时账本
-  还没有 execution 记录，装饰会被静默跳过）。装饰内容：注入「你只负责这张工单」人设 +
-  目录/验收判据、静态 `tools.restrict({allow: WORKER_TOOLS})`（模型少看到无关工具）、
-  `tools.guard` 白名单兜底（restrict 在 agent 组装早期可能抛"unknown global tool"）、
-  注册 `commander_report`，并加"工单已结束"guard。结束前必须 `commander_report`
-  （status + summary；blocked/failed 用 question）；汇报会写账本并 `steer` 唤醒指挥者。
-  **两种兜底分工（3.3.0 补齐）**：**idle 兜底**只在 `agent/status = idle`（回合已结束却没汇报）
-  时每 10 分钟提醒一次；**停滞看门狗**（每 60 秒扫一次）覆盖"回合中途卡住、永远不 idle"的情况
-  ——带 `execution` 的未结束工单，若 `now - startedAt >= ticketStallMs`（默认 10 分钟）且
-  开工后**从未回报**，就 `steer` 指挥者（同工单 10 分钟节流），提示它可能卡在回合中途，
-  给出三步处置（追问 / `commander_worker_stop` 后补派 / 标记 blocked）。看门狗**只提醒、
-  不自动改状态**。
-- **槽位与恢复**：`maxWorkers`（默认 3）在启动前检查；DSH 重启后，指挥者会话创建时会为
-  open 工单的 worker 投递恢复提示（先检查目录/产物再继续）并标记 `resumedAt`。
-- **边界**：worker 目录与工具收敛**不是安全边界**（worker 仍以操作员身份执行，默认
-  `danger-full-access`，可用 `workerPermission` 改）；没有 worktree/文件锁；prepare 命令来自
-  用户配置、按用户 shell 执行。
-- **端到端已验证（0.9.1）**：真实 Web profile + 真实模型走完
-  `commander_ticket_create → commander_worker_spawn → worker 在自己目录直接写文件 →
+- **历史开关（0.8.0–6.0.0）**：在 profile patch 的 `commander-mode` 配置里显式写
+  `workerSessions: false` 可关闭四个 `commander_worker_*` 工具与 worker 会话。
+  **7.0.0 起该开关失效（通道下线）、7.0.1 起实现删除** —— 现在写什么值都不会启用它。
+- **历史工具（7.0.1 已删除）**：`commander_worker_spawn`（开独立 Session + 目录，记录
+  `execution`）、`commander_worker_send`（追加指令）、`commander_worker_status`（查状态）、
+  `commander_worker_stop`（停当前回合）。
+- **历史 worker 侧（0.9.1 修正时序）**：spawn 后在账本记下 `execution` 再显式装饰 worker
+  （人设 section + `tools.restrict` 收紧 + `tools.guard` 白名单 + `commander_report`），
+  结束时 `commander_report` 写账本并 `steer` 唤醒调用者。
+- **历史兜底（3.3.0）**：idle 兜底（回合已结束却没汇报）每 10 分钟提醒一次；停滞看门狗
+  （每 60 秒扫一次）覆盖"回合中途卡住、永远不 idle"。两者都随实现删除。
+- **历史边界**：worker 目录与工具收敛**不是安全边界**（操作员身份执行，默认
+  `danger-full-access`）；没有 worktree/文件锁；prepare 命令来自用户配置、按用户 shell 执行。
+- **端到端验证（0.9.1，历史）**：真实 Web profile + 真实模型走完
+  `commander_ticket_create → commander_worker_spawn → worker 在自己目录写文件 →
   commander_report → steer 唤醒 → commander_ticket_update(done)`，见「验证过什么」。
-  默认仍关闭：是否默认开启（1.0.0）是**产品决定**，需要先决定 worker 会话在会话列表里
-  如何呈现（目前会直接出现 `执行 <ticket>：<标题>`）。
 
 **两次"必须问用户"**是这个模式的核心要求，都写进了协议：
 
@@ -1094,11 +1087,11 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `requireTeamTaskMarker` | `false` | 1.2.0：Team 通道派发要求 prompt 带 `[task:task-N]` 且与投影一致（D-2） |
 | `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒调用者；关掉回退前台阻塞。**7.0.0**：这条通道归小组长（指挥官调 `subagent_<id>` 会被硬门禁拒绝） |
 | `maxAsyncTasks` | `16` | 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16，与运行时并行上限对齐。**7.0.0**：由小组长发起的那一层生效 |
-| `workerSessions` | `true`（**读取恒为 `false`**） | **7.0.0 废弃**：Worker Session 通道下线。字段保留只为兼容旧配置——`resolveConfig()` 恒读成 `false`，profile patch 里写 `true` 也不生效（四个 `commander_worker_*` 工具不再注册） |
-| `workRoot` | `''` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
-| `maxWorkers` | `6` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
-| `prepareCommand` | `''` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
-| `workerPermission` | `danger-full-access` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
+| `workerSessions` | `false`（**no-op，`resolveConfig()` 不输出**） | **7.0.0 通道下线 / 7.0.1 实现删除**：字段仍在 schema 里只为让旧 profile patch 不报未知键；写 `true` 不会启用任何东西（没有 `commander_worker_*` 工具、没有 `commanderWorkers` 服务） |
+| `workRoot` | `''` | **7.0.0 废弃 / 7.0.1 实现删除**：仅兼容旧配置，no-op |
+| `maxWorkers` | `6` | **7.0.0 废弃 / 7.0.1 实现删除**：仅兼容旧配置，no-op |
+| `prepareCommand` | `''` | **7.0.0 废弃 / 7.0.1 实现删除**：仅兼容旧配置，no-op |
+| `workerPermission` | `danger-full-access` | **7.0.0 废弃 / 7.0.1 实现删除**：仅兼容旧配置，no-op |
 | `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `eventInbox` | `true` | 外部事件投递（1.1.0）：轮询 `events/inbox/` 并 `steer` 对应指挥者会话；关掉不轮询 |
@@ -1182,25 +1175,24 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   只是写进协议的建议值（6.0.0 起默认 8）。
 - **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
   判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
-- **Worker 会话不会再出现（7.0.0）。** 0.8.0–6.0.0 里它会出现在会话列表（名字是
-  `执行 <ticket>：<标题>`，落在 `workRoot/<ticket>` 对应的 workspace）。**7.0.0 起通道下线**：
-  四个 `commander_worker_*` 工具不再注册、`workerSessions` 恒读成 `false`，不会再有这类会话。
-- **Worker 相关代码保留但不再启用（7.0.0）。** `lib/worker-tools.js` / `lib/worker-sessions.js`
-  与账本里的 `execution` 字段都还在（旧账本的 `execution` 记录仍能读出，schema 未删字段），
-  但没有任何运行路径会启用它们：不注册工具、不提供 `commanderWorkers` 服务、
-  `resolveConfig()` 恒把 `workerSessions` 读成 `false`。旧账本里的 `execution` 记录属于历史
-  数据，不是当前通道。
-- **Worker 工具收敛不是安全边界（0.9.1，历史）。** 静态 `tools.restrict({allow})` 让模型少看到
-  无关工具；但装饰发生在 agent 组装早期，restrict 可能因"未知全局工具"抛错，所以再加
-  `tools.guard` 白名单——非工作工具的调用会被确定性拒绝。0.9.1 的真机 E2E 曾经把这条做错：
-  按 `tools.get()` 过滤 allow，组装未完成时得到空数组，worker 连 `write` 都没有（只能开子
-  代理代写文件）。7.0.0 起 Worker 通道下线，这段实现只保留在仓库里。
-- **Worker 恢复是"提示"，不是队列（0.8.0，历史）。** 重启后只有指挥者会话再次创建时才会为 open
-  工单的 worker 投递恢复提示；进程内没人触发就不会自动恢复。`worker-<ticket>` Session 依赖
-  DSH 自己的会话持久化，会话被删就只剩账本记录（看板按停滞提示）。7.0.0 起随 Worker 通道
-  下线，不再触发。
-- **`prepareCommand` 按用户 shell 执行（0.8.0，历史）。** 它在 `workRoot` 的父目录下跑，超时 10
-  分钟；失败会让 spawn 抛错（带 stderr 摘要），不会反复重试同一条命令。7.0.0 起该配置废弃。
+- **Worker 会话不会再出现（7.0.0 下线，7.0.1 实现删除）。** 0.8.0–6.0.0 里它会出现在会话列表
+  （名字是 `执行 <ticket>：<标题>`，落在 `workRoot/<ticket>` 对应的 workspace）。**7.0.1 起
+  `lib/worker-tools.js` / `lib/worker-sessions.js` 已从仓库删除**，没有工具、没有服务，
+  不会再有这类会话。
+- **Worker 实现已删除，只留只读兼容（7.0.1）。** 账本里的历史 `execution` 字段仍能按旧数据
+  读出（`lib/ledger.js` 的 `sanitizeExecution`、`tickets.js` 的 `ticketView`、
+  `bin/commander-status.mjs` 的只读展示），但**没有任何写入方**；schema 里的五个
+  `workerSessions` / `workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission` 字段
+  只为让旧 profile patch 不报未知键，`resolveConfig()` 不再输出它们。
+- **Worker 工具收敛不是安全边界（0.9.1，历史；实现已删除）。** 静态 `tools.restrict({allow})`
+  让模型少看到无关工具；但装饰发生在 agent 组装早期，restrict 可能因"未知全局工具"抛错，
+  所以再加 `tools.guard` 白名单——非工作工具的调用会被确定性拒绝。0.9.1 的真机 E2E 曾经把
+  这条做错：按 `tools.get()` 过滤 allow，组装未完成时得到空数组，worker 连 `write` 都没有。
+  **7.0.1 起这段实现已删除**，仅作历史记录。
+- **Worker 恢复是"提示"，不是队列（0.8.0，历史；实现已删除）。** 重启后只有指挥者会话再次创建时
+  才会为 open 工单的 worker 投递恢复提示；进程内没人触发就不会自动恢复。**7.0.1 起随实现删除。**
+- **`prepareCommand` 按用户 shell 执行（0.8.0，历史；实现已删除）。** 它在 `workRoot` 的父目录下跑，
+  超时 10 分钟；失败会让 spawn 抛错（带 stderr 摘要）。**7.0.1 起随实现删除。**
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -1445,9 +1437,9 @@ node --test "test/**/*.test.mjs"
 | `lib/dispatch-gate.js` | 派发门禁：没有计划授权 / 不带工单 → 确定性拒绝；子代理/缺服务/身份不明一律放行 |
 | `lib/ticket-tools.js` | 三个工单工具（create / update / list）的 schema、执行与错误文案 |
 | `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、**派发通道硬门禁**（`evaluateCommanderChannels` + `COMMANDER_FORBIDDEN_DISPATCH` / `COMMANDER_WORKER_TOOL_PREFIX` / `buildCommanderChannelReason`，7.0.0 无条件、不可配置）、`DELEGATION_TOOLS` / `hasUsableDispatchChannel`（7.0.0 去掉 `workflow`）、拒绝理由 |
-| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除；**7.0.0：`workerSessions` 恒读成 `false`**，`workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission` 废弃） |
+| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除；**7.0.1：五个 Worker 字段仅保留在 schema 兼容旧 patch，`resolveConfig()` 不再输出**） |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现（**7.0.0：`startActivation` 的 `prompt` / `parent` / `agentPreset` / `agentOptions` / `maxDepth` 改为顶层字段，修 `spec.parent.id` 崩溃**） |
-| `lib/worker-tools.js` / `lib/worker-sessions.js` | Worker Session 的四个工具与独立 Session 管理（`commanderWorkers` 服务）；**7.0.0 起不启用**：不再注册工具、不提供服务，保留仅为兼容旧账本数据 |
+| ~~`lib/worker-tools.js` / `lib/worker-sessions.js`~~ | **7.0.1 已删除**（Worker Session 实现约 900 行）：7.0.0 通道下线，7.0.1 移除代码；账本历史 `execution` 字段的只读兼容留在 `lib/ledger.js` / `lib/tickets.js` |
 | `lib/capabilities.js` | **能力行唯一真源**（`CAPABILITY_ROWS` + `capabilityEntries()`）：模式的 preset 与每个 specialist preset 都从这里展开 |
 | `lib/preset-plugins.js` | 模式的**完整 plugins 组合**（能力行 + 模式行 + 可选工作流行），由 `preset-commander.js` 在 `apply()` 里注入 |
 | `specialist.js` | specialist preset 里的人设行（`dsh-commander-mode/specialist`） |
@@ -1488,6 +1480,28 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **7.0.1 第二十八轮（删除 Worker Session 死代码）**：
+  - **删除范围**：`lib/worker-tools.js`（181 行）、`lib/worker-sessions.js`（727 行）、
+    `test/worker-sessions.test.mjs`（约 490 行）整体删除；`index.js` 的 `CommanderWorkers`
+    import 与服务注册段、`agent.js` 的 `worker` channel 分支与 `observeWorkerReport` 旧名
+    （改为 `observeOneShotSettlement`，它与 Worker 无关）、`lib/ledger-service.js` 的
+    `setExecution` / `markExecutionResumed` / `findByWorkerSession` / `executionTickets` /
+    `activeExecutions` 五个方法、`lib/dispatch-gate.js` 的 `commander_worker_spawn` 新工作
+    判定、`cordis.patch.yml` 的五个 Worker 配置键全部清理。
+  - **保留的兼容点（仅只读）**：账本历史 `execution` 字段的清洗与视图
+    （`lib/ledger.js` `sanitizeExecution`、`lib/tickets.js` `ticketView`、
+    `bin/commander-status.mjs` 只读展示）、`lib/team-board-bridge.js` 的 `worker` channel
+    渲染分支（旧投影任务）、`lib/config.js` schema 里的五个字段（旧 profile patch 不报未知键）、
+    `lib/guard.js` 的 `commander_worker_` 前缀判定（防御旧 loader 树残留行）。
+  - **`node --test "test/**/*.test.mjs"`** → **648 / 648 通过、0 失败**（7.0.0 基线 671，
+    净减 23 条：删掉的都是 Worker 专属用例；混合用例里的 Worker 断言改成"实现已删除/不再注册"，
+    非 Worker 断言一条没删）。
+  - **轻量加载检查**：`node --check` 全部改动文件通过；`node -e "import('./index.js')"` /
+    `import('./agent.js')` 成功（没有对已删除模块的 import）；全仓 grep
+    `worker-tools|worker-sessions|buildWorkerTools|CommanderWorkers` 只剩注释与"已删除"说明。
+  - **`resolveConfig({})`** → 21 个键（去掉 5 个 Worker 键）；旧配置
+    `{ workerSessions: true, workRoot, maxWorkers, prepareCommand, workerPermission }`
+    **零告警**（字段仍在 schema 里）。
 - **7.0.0 第二十七轮（派发通道硬门禁 + Worker Session 通道下线）**：
   - **硬门禁单测覆盖**（`lib/guard.js` 真实模块、非 mock）：指挥官调 `workflow` / 名册专家
     `subagent_<id>` / `commander_worker_*` → **deny**；小组长 / 子智能体调同样工具 →
@@ -2076,6 +2090,27 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.0.1** —— **删除 Worker Session 死代码**（用户 2026-11-12 决策：Worker Session 彻底删除；
+  patch 版本，无行为变化）。
+  ① **背景**：7.0.0 已把 Worker Session 通道下线（用户硬要求「不能另辟蹊径开子智能体」，
+  口径明确「连 Worker Session 一起禁」），但实现代码还留在仓库里当死代码。用户确认要彻底删除。
+  ② **删除**：`lib/worker-tools.js`（181 行）、`lib/worker-sessions.js`（727 行）、
+  `test/worker-sessions.test.mjs`（约 490 行）整体移除；`index.js` 的 `CommanderWorkers`
+  import 与服务注册段、`agent.js` 的 `worker` channel 分支、`lib/ledger-service.js` 的五个
+  Worker 专用方法、`lib/dispatch-gate.js` 的 `commander_worker_spawn` 新工作判定、
+  `cordis.patch.yml` 的五个 Worker 配置键一并清理。`observeWorkerReport` 改名为
+  `observeOneShotSettlement`（它解析的是 specialist/workflow 的同步结算，与 Worker 无关）。
+  ③ **保留的兼容点（只读，均已注释）**：账本历史 `execution` 字段的清洗 / 视图 / `commander-status`
+  只读展示；`team-board-bridge` 的 `worker` channel 渲染分支（旧投影任务）；
+  `lib/config.js` schema 里的五个字段（旧 profile patch 不报未知键，`resolveConfig()` 不再输出）；
+  `lib/guard.js` 的 `commander_worker_` 前缀判定（防御旧 loader 树残留行）。
+  ④ **用户要做什么**：重新安装 / 重启 DSH 即可。**不需要改任何配置** —— 旧 profile 里若还写着
+  `workerSessions` / `workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission`，
+  schema 仍接受（不报未知键）但完全不生效；想干净一点可以把这五行删掉。旧账本里的
+  `execution` 记录仍能在 `commander_tickets` / `commander-status` 里看到，但只是历史数据。
+  ⑤ **测试**：**648 / 648 通过、0 失败**（7.0.0 基线 671，净减 23 条 Worker 专属用例；
+  混合用例改成"实现已删除/不再注册"，非 Worker 断言未删）。
 
 - **7.0.0** —— **派发通道收窄成唯一一条：指挥官只建小组长；Worker Session 通道下线**
   （用户硬要求：「不能出现这种另辟蹊径开子智能体的方法，需要把这种指挥官->小组长->小组长的

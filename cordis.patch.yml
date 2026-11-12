@@ -91,7 +91,7 @@
 #
 #   - `workflow`（一次性扇出）；
 #   - 名册生成的一次性专家工具 `subagent_<id>`；
-#   - 所有 `commander_worker_*`（Worker Session，且这些工具**不再注册**）。
+#   - 所有 `commander_worker_*`（Worker Session；7.0.1 起实现已删除，前缀判定保留作防御）。
 #
 # 唯一允许的通道：`subagent` / `subagent_fork` 建小组长 + `send_message` 派活
 # + `team_task_*` 管板 + `list_agents` 读状态；`interrupt_agent` 纠偏。
@@ -238,22 +238,16 @@
         asyncDelegation: true
         # 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16（规则 2）。
         maxAsyncTasks: 16
-        # ---- 0.8.0 / 1.0.0 Worker Session（7.0.0 起废弃） ----------------
-        # ⚠️ 7.0.0 起 Worker Session 通道下线：用户硬要求「不能另辟蹊径开子智能体」，
-        # 口径明确「连 Worker Session 一起禁」。`lib/config.js` 的 `resolveConfig()` 把它
-        # **恒读成 false** —— 即使这里写着 true 也不生效（不注册 commander_worker_* 工具、
-        # 不提供 commanderWorkers 服务）。字段保留只为兼容旧 profile 配置（按 id 定向的
-        # patch 会整块替换 config，删键会让已有配置报未知键）。下面四个 workRoot / maxWorkers /
-        # prepareCommand / workerPermission 同样废弃（保留字段，读取值不再被使用）。
-        workerSessions: true
-        # Worker 工作目录根；空 = <DSH_HOME>/commander/work。（7.0.0 废弃）
-        workRoot: ''
-        # 每个指挥者会话同时最多几个 Worker Session（1–12）。（7.0.0 废弃）
-        maxWorkers: 6
-        # 建 worker 目录后执行一次的 prepare 命令。（7.0.0 废弃）
-        prepareCommand: ''
-        # Worker Session 的权限预设。（7.0.0 废弃）
-        workerPermission: danger-full-access
+        # ---- Worker Session（0.8.0；7.0.0 下线，7.0.1 实现已删除） ----------------
+        # ⚠️ 这里**故意不再写** `workerSessions` / `workRoot` / `maxWorkers` /
+        # `prepareCommand` / `workerPermission` 五个键：
+        #   - 7.0.0 起 Worker Session 通道下线（用户硬要求「不能另辟蹊径开子智能体」，
+        #     口径明确「连 Worker Session 一起禁」）；
+        #   - 7.0.1 起 `lib/worker-tools.js` / `lib/worker-sessions.js` 已删除，没有工具、
+        #     没有服务、没有运行路径。
+        # 五个字段**仍保留在 `lib/config.js` 的 schema 里**（按 id 定向的 patch 会整块替换
+        # config，删键会让已有 profile patch 报未知键），但 `resolveConfig()` 不再输出它们。
+        # 新装用户不需要写这五个键；老用户 profile 里已有的值会被 schema 接受并忽略。
         # 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理）。
         ticketStallMs: 600000
         # 账本最多保留多少张工单（超出后裁剪最老的已结束工单）。

@@ -329,14 +329,8 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       requireTeamTaskMarker: false,
       asyncDelegation: true,
       maxAsyncTasks: 16,
-      // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）——
-      // `workerSessions` 恒为 false（即使 profile patch 里写着 true），
-      // workRoot / maxWorkers / prepareCommand / workerPermission 字段保留但已废弃。
-      workerSessions: false,
-      workRoot: '',
-      maxWorkers: 6,
-      prepareCommand: '',
-      workerPermission: 'danger-full-access',
+      // 7.0.1：Worker Session 实现已删除，`resolveConfig()` **不再输出**这五个键
+      // （schema 里仍保留，仅为兼容旧 profile patch）。
       ticketStallMs: 600000,
       maxTickets: 100,
       eventInbox: true,
@@ -406,12 +400,8 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     requireTeamTaskMarker: false,
     asyncDelegation: true,
     maxAsyncTasks: 16,
-    // 7.0.0：Worker 通道下线 —— workerSessions 恒 false（连 volatile 引用也不会改变它）。
-    workerSessions: false,
-    workRoot: '',
-    maxWorkers: 6,
-    prepareCommand: '',
-    workerPermission: 'danger-full-access',
+    // 7.0.1：Worker 实现已删除，resolveConfig 不再输出这五个键
+    // （schema 仍保留它们，只为兼容旧 profile patch；连 volatile 引用也不读）。
     ticketStallMs: 600000,
     maxTickets: 100,
     eventInbox: true,
@@ -614,31 +604,31 @@ test('3.0.0：delegationHierarchy 默认 true，可显式关掉（回退 2.x 行
   assert.ok(KNOWN_CONFIG_KEYS.includes('delegationHierarchy'), 'KNOWN_CONFIG_KEYS 缺少 delegationHierarchy');
 });
 
-test('7.0.0 Worker 配置：字段保留（兼容旧 profile）、但 workerSessions 恒为 false', () => {
-  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）。
-  // 字段**保留在 schema**（按 id 定向的 patch 会整块替换 config，删键会让已有配置报未知键），
-  // 但 `resolveConfig()` 把 workerSessions 强制读成 false —— 即使配置里写着 true。
+test('7.0.1 Worker 配置：schema 保留五个字段（兼容旧 profile），resolveConfig 不再输出', () => {
+  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）；
+  // 7.0.1：实现（lib/worker-tools.js / lib/worker-sessions.js）已删除。
+  // 字段**必须保留在 schema**（按 id 定向的 patch 会整块替换 config，删键会让已有配置报
+  // 未知键），但 `resolveConfig()` 不再输出它们 —— 调用方读不到，就不会误以为通道还在。
   const config = Config();
-  assert.equal(config.workerSessions, false, '7.0.0 起默认/恒为 false');
+  assert.equal(config.workerSessions, false, 'schema 默认值（no-op）');
   assert.equal(config.workRoot, '');
   assert.equal(config.maxWorkers, 6);
   assert.equal(config.prepareCommand, '');
   assert.equal(config.workerPermission, 'danger-full-access');
-  const options = resolveConfig({
+  for (const key of ['workerSessions', 'workRoot', 'maxWorkers', 'prepareCommand', 'workerPermission']) {
+    assert.ok(KNOWN_CONFIG_KEYS.includes(key), `KNOWN_CONFIG_KEYS 应保留 ${key}（兼容旧 patch）`);
+    assert.equal(key in resolveConfig({}).options, false, `resolveConfig 不应再输出 ${key}`);
+  }
+  // 旧 profile 里写着这些键也**不能**被报成未知键（否则用户升级后会被无谓告警）。
+  const legacy = resolveConfig({
     workerSessions: true,
     workRoot: '  my-work  ',
     maxWorkers: 0,
     prepareCommand: ' git init ',
     workerPermission: 'workspace-write',
-  }).options;
-  assert.equal(options.workerSessions, false, '显式 true 也不生效（通道已下线）');
-  assert.equal(options.workRoot, 'my-work', '废弃字段仍按旧读取器解析（只为兼容）');
-  assert.equal(options.maxWorkers, 6, '非正数回退默认');
-  assert.equal(options.prepareCommand, 'git init');
-  assert.equal(options.workerPermission, 'workspace-write');
-  for (const key of ['workerSessions', 'workRoot', 'maxWorkers', 'prepareCommand', 'workerPermission']) {
-    assert.ok(KNOWN_CONFIG_KEYS.includes(key), `KNOWN_CONFIG_KEYS 缺少 ${key}`);
-  }
+  });
+  assert.deepEqual(legacy.warnings, [], `旧 Worker 键不应产生告警：${JSON.stringify(legacy.warnings)}`);
+  assert.equal('workerSessions' in legacy.options, false);
 });
 
 test('1.1.0 外部事件配置：默认开启、15 秒轮询、可关、低于下限回退默认', () => {
@@ -672,11 +662,13 @@ test('3.1.0 禁止等待：配置里不存在 maxWaitMs（不设开关）', () =
   assert.ok(warnings.some((line) => line.includes('maxWaitMs')), '旧配置键应被报成未知键');
 });
 
-test('3.1.0：resolveConfig 恰好输出 26 个键，且等待读取器/常量已删除', () => {
-  // 26 = 3.0.0 的 27 个加载期键去掉 maxWaitMs（specialists 本来就不进 options）。
+test('3.1.0 / 7.0.1：resolveConfig 恰好输出 21 个键，且等待/Worker 读取器已删除', () => {
+  // 21 = 3.0.0 的 27 个加载期键去掉 maxWaitMs（specialists 本来就不进 options），
+  // 7.0.1 再去掉 5 个 Worker 键（workerSessions / workRoot / maxWorkers /
+  // prepareCommand / workerPermission —— 实现已删除，schema 保留仅为兼容旧配置）。
   // 这个数字是"键集合没被悄悄改"的廉价护栏；键名逐项由上面的 deepEqual 钉住。
   const { options } = resolveConfig({});
-  assert.equal(Object.keys(options).length, 26);
+  assert.equal(Object.keys(options).length, 21);
   // 等待门禁的旧读取器与常量必须彻底删除，而不是留着当"隐藏开关"。
   assert.equal('readWaitCap' in configModule, false, 'readWaitCap 应已删除');
   assert.equal('MIN_MAX_WAIT_MS' in configModule, false, 'MIN_MAX_WAIT_MS 应已删除');

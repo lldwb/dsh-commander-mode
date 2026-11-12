@@ -43,7 +43,6 @@ import { CommanderLedger, LEDGER_SERVICE_NAME } from './lib/ledger-service.js';
 import { hidePresetsFromCatalog, isSpecialistPresetId } from './lib/preset-catalog.js';
 import { provideSettings } from './lib/settings-service.js';
 import { installForcedTeamMode } from './lib/team-mode.js';
-import { CommanderWorkers, WORKERS_SERVICE_NAME } from './lib/worker-sessions.js';
 
 /** Cordis 插件名。**必须与 Loader 行 id、设置命名空间、客户端 `SETTINGS_NS` 一致**。 */
 export const name = 'commander-mode';
@@ -81,8 +80,8 @@ export function apply(ctx, config) {
   const options = resolveConfig(config).options;
 
   // ①.5 工单账本（0.6.0）：模式行/工单工具靠它读写，账本是唯一写者。
-  //     用本地变量把实例传给下面的 worker 块 —— **不要**在同一 apply 里用 ctx.get() 回读：
-  //     实测（0.8.0 E2E）provide 后同 tick 读不到，会误判"没有账本"而静默跳过 worker。
+  //     用本地变量把实例传给下面的外部事件块 —— **不要**在同一 apply 里用 ctx.get() 回读：
+  //     实测（0.8.0 E2E）provide 后同 tick 读不到，会误判"没有账本"而静默跳过后续服务。
   let ledgerService = null;
   if (options.ledger !== false) {
     try {
@@ -103,41 +102,18 @@ export function apply(ctx, config) {
     }
   }
 
-  // ①.6 发布 Worker Session 执行器（0.8.0+，opt-in）：每工单独立 Session + 目录。
+  // ①.6 Worker Session 执行器（0.8.0–6.0.0）—— **7.0.0 起通道下线，7.0.1 起实现已删除**。
   //
-  //     ⚠️ 7.0.0 起**Worker Session 通道下线**（用户硬要求「不能另辟蹊径开子智能体」，
-  //     口径明确「连 Worker Session 一起禁」）。`lib/config.js` 的 `resolveConfig()` 把
-  //     `workerSessions` **恒读成 false**，所以下面这段**永远不会执行** —— 保留它只为
-  //     兼容旧账本数据（升级前已存在的 worker `execution` 记录仍需能被读出来）与将来复用，
-  //     不再有任何运行路径会提供 `commanderWorkers` 服务或注册 `commander_worker_*` 工具。
-  //
-  //     依赖宿主的 sessionController / workspaceRegistry / agents，但**不用 ctx.inject**：
-  //     这些服务可能在 apply 之后才就绪，而服务内部每次都按需 ctx.get。这样：
-  //     - 桌面/Web profile 里正常可用；
-  //     - headless 等缺服务的部署里，spawn 会精确报告缺哪个服务，而不是整个服务不发布。
-  if (options.workerSessions === true && ledgerService !== null) {
-    try {
-      const workers = new CommanderWorkers({
-        ctx,
-        ledger: ledgerService,
-        getOptions: () => resolveConfig(config).options,
-        logger: ctx.logger,
-      });
-      if (typeof ctx.effect === 'function') {
-        ctx.effect(() => workers.install(), 'commander-mode: worker sessions');
-      } else {
-        workers.install();
-      }
-      ctx.provide(WORKERS_SERVICE_NAME, workers);
-      ctx.logger?.info?.('commander-mode: Worker Session 执行器就绪（opt-in）');
-    } catch (error) {
-      ctx.logger?.warn?.('commander-mode: Worker Session 初始化失败（模式其余部分不受影响）：%o', error);
-    }
-  }
+  //     用户 2026-11-12 的硬要求：「不能出现这种另辟蹊径开子智能体的方法，需要把这种
+  //     指挥官->小组长->小组长的手下 这种分发没问题」，口径明确「连 Worker Session 一起禁」。
+  //     7.0.0 先停止注册工具与提供服务；7.0.1 把 `lib/worker-tools.js` /
+  //     `lib/worker-sessions.js` 整个删掉（不再有 `commanderWorkers` 服务、不再有
+  //     `commander_worker_*` 工具）。账本里的历史 `execution` 字段仍按旧数据读出
+  //     （`lib/ledger.js` 的 `sanitizeExecution`），但不再有任何写入方。
 
   // ①.7 外部事件投递器（1.1.0，默认开）：轮询 `<stateDir>/events/inbox/`，把外部系统
   //     （CI / 告警 / 定时巡检）写来的事件 `steer` 给对应的指挥者会话，空闲会话会被唤醒。
-  //     与 worker 不同，这里**不需要**宿主额外服务就能起来（steer 时才去 ctx.get）；
+  //     这里**不需要**宿主额外服务就能起来（steer 时才去 ctx.get）；
   //     agents/sessions 缺失时事件留在 inbox，等环境恢复或用户手工处理。
   if (options.eventInbox !== false && ledgerService !== null) {
     try {

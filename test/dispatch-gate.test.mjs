@@ -67,10 +67,11 @@ function gate(overrides = {}) {
 // ---------------------------------------------------------------- 识别 ---
 
 test('isNewWorkTool 只认开启新工作的工具', () => {
-  for (const name of ['subagent_implementer', 'subagent', 'subagent_fork', 'workflow', 'subagent', 'commander_worker_spawn']) {
+  // 7.0.1：`commander_worker_spawn` 已从清单删除（Worker Session 实现已删除）。
+  for (const name of ['subagent_implementer', 'subagent', 'subagent_fork', 'workflow']) {
     assert.equal(isNewWorkTool(name), true, name);
   }
-  for (const name of ['send_message', 'wait_agent', 'list_agents', 'team_task_create', 'commander_worker_send', 'read', '']) {
+  for (const name of ['send_message', 'wait_agent', 'list_agents', 'team_task_create', 'commander_worker_spawn', 'commander_worker_send', 'read', '']) {
     assert.equal(isNewWorkTool(name), false, name);
   }
   assert.equal(isNewWorkTool(null), false);
@@ -254,15 +255,9 @@ test('合法派发 → 放行（specialist 参数或 Team 标记都算）', asyn
   );
 });
 
-test('Worker spawn 走同一道门禁：没授权/没工单都拒绝，带工单放行', async () => {
-  assert.equal((await gate({ name: 'commander_worker_spawn', args: { ticket: 't-1', task: 'x' }, ledger: makeLedger() })).kind, 'deny');
-  assert.equal(await gate({ name: 'commander_worker_spawn', args: { ticket: 't-1', task: 'x' } }), undefined);
-  assert.equal(
-    (await gate({ name: 'commander_worker_spawn', args: { task: 'x' } })).kind,
-    'deny',
-    '没有 ticket 参数应拒绝（requireTicket）',
-  );
-});
+// 7.0.1：`commander_worker_spawn` 的用例随 Worker Session 实现一起删除。
+// 同一道门禁对 `workflow`（仍在 NEW_WORK_TOOLS 里、对指挥官已被硬门禁关闭）继续生效，
+// 但正常部署里走不到 —— 这里保留对 Team 建人工具的覆盖即可。
 
 // ------------------------------------------------------- 共享任务板（1.2.0 D） ---
 

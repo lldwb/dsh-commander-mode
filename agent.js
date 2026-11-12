@@ -56,7 +56,9 @@
  * - `workflow`、名册生成的一次性专家（`subagent_<id>`）、`commander_worker_*` 对指挥官
  *   **一律拒绝**（`evaluateCommanderChannels`，在层级门禁**之前无条件**执行，
  *   `delegationHierarchy: false` 也拦）；
- * - **不再注册**四个 `commander_worker_*` 工具（Worker Session 通道下线，见文末注释）；
+ * - **不再注册**四个 `commander_worker_*` 工具（Worker Session 通道下线）；**7.0.1 起
+ *   Worker Session 的实现代码已从仓库删除**（`lib/worker-tools.js` /
+ *   `lib/worker-sessions.js`），账本里的历史 `execution` 字段仅按旧数据读出；
  * - 小组长 / 子智能体不受限：它们派自己的手下（含 `workflow` / 名册专家）是 L1→L2。
  *
  * 拒绝理由带「需要小组长 / 小组长失败」的恢复阶梯（建人 → 冷恢复 → 纠偏或换人接管 →
@@ -752,11 +754,15 @@ export function apply(ctx) {
   /**
    * 执行者结算 → 解析 `STATUS:` 行并更新工单（0.6.0 的结构化回报）。
    *
+   * 7.0.1 起从 `observeWorkerReport` 改名：它从来不是 Worker Session 的逻辑，而是解析
+   * **同步结算通道**（名册一次性专家 / workflow）工具返回值里的 `STATUS:` 行。旧名字容易
+   * 让人以为与 Worker Session 有关（Worker 实现已在 7.0.1 删除）。
+   *
    * @param {object} exec - `tools/post-execute` 的执行上下文。
    * @param {object} result - 工具结果。
    * @returns {void}
    */
-  const observeWorkerReport = (exec, result) => {
+  const observeOneShotSettlement = (exec, result) => {
     try {
       // 异步受理结果不是"结算"：真正的回报在 asyncCompleted 里记录（带 childId/ticket）。
       if (result?.value?.async === true) return;
@@ -767,10 +773,9 @@ export function apply(ctx) {
       // ⚠️ 用 isSpecialistDispatchTool() 而不是 startsWith('subagent_')：`subagent_fork`
       // 也以该前缀开头，但它是 Team 通道的建人工具（后台 activation），不是一次性专家。
       //
-      // 7.0.0：Worker Session 通道下线；名册一次性专家与 workflow 对**指挥官**也已被硬门禁
-      // 关闭（`evaluateCommanderChannels`），所以本观察器对新会话不再触发。保留它是为了
-      // **兼容旧账本数据**：升级前已在飞的派发 / 旧会话的回报仍需能被记账，且小组长侧
-      // 的同步结算路径在语义上没有变化。
+      // 7.0.0：名册一次性专家与 workflow 对**指挥官**已被硬门禁关闭
+      // （`evaluateCommanderChannels`），所以本观察器对新会话不再触发。保留它是为了
+      // **兼容旧账本数据**：升级前已在飞的派发 / 旧会话的回报仍需能被记账。
       const isSpecialist = isSpecialistDispatchTool(toolName);
       const isWorkflow = toolName === 'workflow';
       if (!isSpecialist && !isWorkflow) return;
@@ -850,8 +855,9 @@ export function apply(ctx) {
   /**
    * 派发工具**报错** → 把工单从"working 幽灵"里拉回来：结算 Assignment 并记 failed。
    *
-   * 0.8.0 E2E 抓到的真实问题：`commander_worker_spawn` 已记录 Assignment 后因缺宿主服务报错，
-   * 工单看板一直显示 `working`，但根本没有执行者。这里在 post-execute 兜住：
+   * 0.8.0 E2E 抓到的真实问题：一个派发工具已记录 Assignment 后报错（当时的现场是
+   * Worker Session 缺宿主服务；Worker 实现已在 7.0.1 删除），工单看板一直显示 `working`，
+   * 但根本没有执行者。这里在 post-execute 兜住：
    * 有未结算 Assignment、且没有比它更新的 Report 时，记 `failed` + 一个待用户决定的问题。
    *
    * @param {object} exec - `tools/post-execute` 的执行上下文。
@@ -944,11 +950,11 @@ export function apply(ctx) {
       const sessionId = sessionIdOf(agent);
       const ledger = getLedger();
       if (sessionId === undefined || ledger === undefined) return;
+      // 7.0.1：`worker` 通道随 Worker Session 实现一起删除（历史工单里可能还有该 channel，
+      // 读取侧由 `lib/ledger.js` / `lib/team-board-bridge.js` 的兼容分支处理）。
       const channel = isSpecialistDispatchTool(toolName)
         ? 'specialist'
-        : toolName === 'commander_worker_spawn'
-          ? 'worker'
-          : classifyDelegation(toolName) === DELEGATION_CHANNELS.TEAM ? 'team' : 'one-shot';
+        : classifyDelegation(toolName) === DELEGATION_CHANNELS.TEAM ? 'team' : 'one-shot';
       ledger.recordAssignment(ticketId, sessionId, { channel, toolName });
       // 1.2.0 B：工单进入"已派发"状态后同步投影（板上能看到它在跑）。
       syncTicketMirror(agent, ticketId);
@@ -1050,7 +1056,7 @@ export function apply(ctx) {
       const agent = exec?.agent;
       if (agent !== undefined && !isDelegatedAgent(agent) && ledgerEnabled()) {
         observePlanConfirmation(exec, _result);
-        observeWorkerReport(exec, _result);
+        observeOneShotSettlement(exec, _result);
         settleObservedDispatch(exec, _result);
         reportDispatchFailure(exec, _result);
       }
@@ -1450,11 +1456,10 @@ export function apply(ctx) {
   // 0.6.0：把工单账本暴露成三个模型可见工具。注册失败只损失工单通道，不影响模式本身。
   //
   // 7.0.0：**Worker Session 通道下线**（用户硬要求「不能另辟蹊径开子智能体」，
-  // 口径明确「连 Worker Session 一起禁」）。所以这里**不再注册**四个
-  // `commander_worker_*` 工具 —— 即使 profile patch 里仍写着 `workerSessions: true`
-  // （`lib/config.js` 的 `readOptions()` 会强制把它读成 false，只为兼容旧配置不报错）。
-  // `lib/worker-tools.js` / `lib/worker-sessions.js` 保留在仓库里，仅为兼容旧账本数据
-  // （旧工单的 `execution` 字段仍需能被读出来 / 归档），不再被任何运行路径注册。
+  // 口径明确「连 Worker Session 一起禁」）；**7.0.1 起实现已删除**
+  // （`lib/worker-tools.js` / `lib/worker-sessions.js` 已从仓库移除）。这里只剩工单工具；
+  // 账本里的历史 `execution` 字段仍按旧数据读出（`lib/ledger.js` 的 `sanitizeExecution`），
+  // 但不再有任何写入方。
   if (typeof ctx.inject === 'function' && readOptions().ledger !== false) {
     ctx.inject(['tools'], (toolCtx) => {
       try {

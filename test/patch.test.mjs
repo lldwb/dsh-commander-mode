@@ -210,11 +210,6 @@ test('配置行的 config 写全了加载期配置键（specialists 故意不写
     'requireTicket',
     'asyncDelegation',
     'maxAsyncTasks',
-    'workerSessions',
-    'workRoot',
-    'maxWorkers',
-    'prepareCommand',
-    'workerPermission',
     'ticketStallMs',
     'maxTickets',
     'eventInbox',
@@ -246,19 +241,18 @@ test('3.1.0：patch 不含 maxWaitMs 配置键（禁止等待、不设开关）'
   assert.ok(!/maxWaitMs: 120000/u.test(PATCH), '旧默认值 120000 不应残留');
 });
 
-test('7.0.0：patch 保留 Worker 配置键（兼容旧 profile），但注释写明已废弃/恒 false', () => {
-  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）。
-  // 字段**保留在 patch 里**（按 id 定向的 patch 会整块替换 config，删键会让已有配置
-  // 变成未知键而报错），但 `resolveConfig()` 把 workerSessions 恒读成 false。
-  assert.match(PATCH, /\n {8}workerSessions: true/u, '旧键保留（值为历史默认；实际被强制读成 false）');
-  assert.match(PATCH, /\n {8}workRoot: ''/u);
-  assert.match(PATCH, /\n {8}maxWorkers: 6/u);
-  assert.match(PATCH, /\n {8}prepareCommand: ''/u);
-  assert.match(PATCH, /\n {8}workerPermission: danger-full-access/u);
-  // 注释必须写清"7.0.0 起废弃、恒为 false、不再注册工具"，否则用户会以为还能开。
-  assert.match(PATCH, /7\.0\.0 起 Worker Session 通道下线/u);
-  assert.match(PATCH, /恒读成 false|恒为 false/u);
-  assert.match(PATCH, /不再注册 commander_worker_\*|不注册 commander_worker_/u);
+test('7.0.1：patch 不再写 Worker 配置键（实现已删除），注释说明字段仍留在 schema 兼容旧配置', () => {
+  // 7.0.0：Worker Session 通道下线（用户硬要求「连 Worker Session 一起禁」）；
+  // 7.0.1：`lib/worker-tools.js` / `lib/worker-sessions.js` 已删除，所以 bundle patch
+  // 也不再写这五个键 —— 新装用户根本不需要它们。
+  for (const key of ['workerSessions', 'workRoot', 'maxWorkers', 'prepareCommand', 'workerPermission']) {
+    assert.ok(!new RegExp(`\\n {8}${key}:`, 'u').test(PATCH), `patch 不应再写 ${key} 键`);
+  }
+  // 但字段**仍保留在 lib/config.js 的 schema**（旧 profile patch 里可能有值，删字段会报未知键），
+  // 注释必须写清这一点，否则用户会以为删 schema 了 / 还能开。
+  assert.match(PATCH, /Worker Session（0\.8\.0；7\.0\.0 下线，7\.0\.1 实现已删除）/u);
+  assert.match(PATCH, /仍保留在 `lib\/config\.js` 的 schema 里/u);
+  assert.match(PATCH, /`resolveConfig\(\)` 不再输出它们/u);
 });
 
 test('1.1.0：patch 写全外部事件配置（默认开启 + 轮询间隔）', () => {

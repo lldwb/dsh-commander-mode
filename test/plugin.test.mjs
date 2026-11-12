@@ -52,11 +52,7 @@ function makeSettings(initial = {}) {
     requireTicket: true,
     asyncDelegation: true,
     maxAsyncTasks: 4,
-    workerSessions: true,
-    workRoot: '',
-    maxWorkers: 3,
-    prepareCommand: '',
-    workerPermission: 'danger-full-access',
+    // 7.0.1：Worker 实现已删除，配置服务不再提供这五个键（schema 仍保留以兼容旧 patch）。
     ticketStallMs: 10 * 60 * 1000,
     maxTickets: 100,
     // 3.1.0：`maxWaitMs` 已随「禁止等待子智能体、不设开关」删除，夹具里不再提供。
@@ -105,7 +101,7 @@ function makeSubagents(record, settlement = { output: [{ type: 'text', text: '�
  * `inject` 回调收到的子上下文带着该依赖对应的桩服务；`effect()` 立即执行回调（与 Cordis
  * 的挂载语义一致），返回的 disposer 被记录下来。
  */
-function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, workers, descendants } = {}) {
+function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, descendants } = {}) {
   const record = {
     sections: [],
     contexts: [],
@@ -128,7 +124,6 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
   const services = {
     ...(agentTeams === undefined ? {} : { agentTeams }),
     ...(ledger === undefined ? {} : { commanderLedger: ledger }),
-    ...(workers === undefined ? {} : { commanderWorkers: workers }),
     ...(withSkills ? {
       skills: {
         register: (definition) => {
@@ -878,7 +873,7 @@ test('空名册不注册任何 specialist preset 或工具', async () => {
     record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_ticket')).sort(),
     ['commander_ticket_create', 'commander_ticket_update', 'commander_tickets'],
   );
-  // 7.0.0：Worker Session 通道下线 —— 即使夹具默认 workerSessions:true，也不再注册 Worker 工具。
+  // 7.0.1：Worker Session 实现已删除 —— 任何配置下都不会注册 Worker 工具。
   assert.deepEqual(
     record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')),
     [],
@@ -1124,8 +1119,9 @@ test('0.6.0 授权：计划确认 post-execute 记录 Mandate；未确认或跳�
 test('0.6.0 回报：specialist 的 STATUS 行更新工单并补写 childId', async () => {
   const { ledger, ticket } = ledgerWithWork();
   // 7.0.0：pre-execute 用合法的 `subagent` 记 Assignment（通道门禁不可配置）；
-  // post-execute 仍按 specialist 工具结算——这正是 7.0.0 保留 `observeWorkerReport`
-  // 的理由（兼容升级前已在飞的派发 / 旧账本数据）。
+  // post-execute 仍按 specialist 工具结算——这正是保留 `observeOneShotSettlement`
+  // （7.0.1 从 observeWorkerReport 改名，它与 Worker Session 无关）的理由：兼容升级前
+  // 已在飞的派发 / 旧账本数据。
   const { record } = boot({ ledger, settings: dispatchGateSettings() });
   await flush();
   await preExecute(record)(
@@ -1326,26 +1322,24 @@ test('0.7.0 异步：受理结果不会被 post-execute 提前结算 Assignment'
   assert.equal(after.lastReport, null, '异步受理不应记录回报');
 });
 
-// ---------------------------------------------------------------- 0.8.0 Worker（7.0.0 下线） ---
+// ------------------------------------------- 0.8.0 Worker（7.0.0 下线，7.0.1 实现删除） ---
 
-test('7.0.0：workerSessions:false 不注册 Worker 工具（旧语义保留）', async () => {
-  const settings = makeSettings({ options: { workerSessions: false } });
-  const { record } = boot({ settings, ledger: memoryLedger() });
-  await flush();
-  assert.deepEqual(record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_')), []);
+test('7.0.1：无论 workerSessions 配置如何，都不注册任何 Worker 工具（实现已删除）', async () => {
+  // 7.0.0：用户硬要求「不能另辟蹊径开子智能体」，口径明确「连 Worker Session 一起禁」；
+  // 7.0.1：`lib/worker-tools.js` 整个删除。旧 profile 里写 workerSessions:true 也只被
+  // schema 接受、不产生任何工具 —— 配置服务本身也不再输出这些键。
+  for (const options of [{ workerSessions: false }, { workerSessions: true }, {}]) {
+    const settings = makeSettings({ options });
+    const { record } = boot({ settings, ledger: memoryLedger() });
+    await flush();
+    const names = record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_'));
+    assert.deepEqual(names, [], `7.0.1：不应注册 Worker 工具（options=${JSON.stringify(options)}）`);
+  }
 });
 
-test('7.0.0：workerSessions:true 也不再注册 Worker 工具（通道下线，硬要求）', async () => {
-  // 用户 2026-11-12 硬要求「不能另辟蹊径开子智能体」，口径明确「连 Worker Session 一起禁」。
-  // 即使配置里写着 true（`resolveConfig` 会强制读成 false），也不再注册四个工具。
-  const settings = makeSettings({ options: { workerSessions: true } });
-  const { record } = boot({ settings, ledger: memoryLedger() });
-  await flush();
-  const names = record.tools.map((tool) => tool.name).filter((name) => name.startsWith('commander_worker_'));
-  assert.deepEqual(names, [], '7.0.0：Worker 工具不再注册');
-});
-
-test('7.0.0：Worker 工具不存在 → 即使 Lead 调用也只会撞上通道硬门禁', async () => {
+test('7.0.1：残留的 commander_worker_* 工具名仍会撞上通道硬门禁（防御）', async () => {
+  // 工具实现已删除，但旧 profile 的 loader 树 / 热更新窗口里仍可能挂着同名工具行。
+  // 门禁保留 `commander_worker_` 前缀判定，正是为了那种情况不放行（防御性）。
   const settings = makeSettings({ options: { workerSessions: true } });
   const { record } = boot({ settings, ledger: memoryLedger() });
   await flush();
