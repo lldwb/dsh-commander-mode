@@ -1,18 +1,19 @@
 /**
- * 能力行清单与 bundle patch 的一致性测试（`lib/capabilities.js` × `cordis.patch.yml`）。
+ * 能力行清单与两个 preset 组合的一致性测试。
  *
- * 为什么同一份能力行要写两遍：`cordis.patch.yml` 是声明式的（Loader 读它，声明
- * commander preset），而 specialist preset 是**运行时**按名册生成的（条数不定），
- * 只能由 JS 常量展开。两份一旦漂移，故障是静默的：
+ * ## 3.7.0 起：能力行只有一份
  *
- * - JS 侧漏一行 → 所有 specialist 都少一项能力（漏 `tool-fs` = 子代理没有文件系统，
- *   漏 `tool-shell` = 跑不了测试），而指挥官本身看起来完全正常；
- * - YAML 侧漏一行 → 指挥者少了那项能力。历史事故正是 `tool-fs` 缺席，用户反馈
- *   "读取不到下载目录的文件"；
- * - name 漂移（包改名）→ id 断言看不出来，但 Loader 找不到模块，整个 preset 不激活。
+ * 3.6.0 及以前，同一份能力行存在**三处**：`lib/capabilities.js`（给 specialist 用）+
+ * `cordis.patch.yml` 里两份逐字复制的 `CAPABILITIES` 块（给两个模式用），靠本文件逐行
+ * 比对防漂移。3.7.0 起 `plugins` 由 `lib/preset-plugins.js` 在 JS 里拼装，
+ * `cordis.patch.yml` 不再写 `plugins` —— 单一来源从"三份 + 测试"变成"一份"。
  *
- * 本包刻意零依赖，所以这里用逐行正则解析 YAML（与 `test/patch.test.mjs` 同一套写法），
- * 不引入 YAML 库。
+ * 所以本文件现在钉的是：
+ *
+ * 1. **YAML 里不再有第二份**（没有 `plugins:`、没有 CAPABILITIES 块、没有能力行 id）；
+ * 2. **两个 preset 共享同一份能力行**（逐字相同，唯一差异是 PM 的 `customSkillDirs`）；
+ * 3. 模式行不串味（指挥者不带项目经理协议，反之亦然）；
+ * 4. `toEntry` / `specialistPresetPlugins` 的既有契约不变（specialist 路径没被改坏）。
  */
 
 import assert from 'node:assert/strict';
@@ -22,63 +23,27 @@ import test from 'node:test';
 import {
   CAPABILITY_ROWS,
   allCapabilityRowIds,
+  capabilityEntries,
   capabilityRowIds,
   specialistPresetPlugins,
   toEntry,
 } from '../lib/capabilities.js';
-
-// ---------------------------------------------------------------- YAML 解析 ---
+import {
+  COMMANDER_MODE_ROWS,
+  PROJECT_MANAGER_MODE_ROWS,
+  capabilityPartOf,
+  commanderPresetPlugins,
+  projectManagerPresetPlugins,
+} from '../lib/preset-plugins.js';
 
 const PATCH = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
-const LINES = PATCH.split('\n');
 
-/** 定位 CAPABILITIES 块：起止注释之间的内容行。 */
-function capabilityBlock() {
-  const start = LINES.findIndex((line) => line.includes('# ---- CAPABILITIES'));
-  const end = LINES.findIndex((line) => line.includes('# ---- end CAPABILITIES'));
-  return { start, end, lines: start >= 0 && end > start ? LINES.slice(start + 1, end) : [] };
-}
-const { start: BLOCK_START, end: BLOCK_END, lines: BLOCK } = capabilityBlock();
-
-/** 块内给定缩进层级的 `- id:` 行（保序）。顶层 10 空格，group 子行 14 空格。 */
-function rowIds(indent) {
-  const pattern = new RegExp(`^ {${indent}}- id: (.+?)\\s*$`, 'u');
-  return BLOCK.map((line) => pattern.exec(line)?.[1]).filter((id) => id !== undefined);
-}
-
-/** 块内给定缩进层级的 `name:` 行（保序）。顶层 12 空格，group 子行 16 空格。 */
-function rowNames(indent) {
-  const pattern = new RegExp(`^ {${indent}}name: (.+?)\\s*$`, 'u');
-  return BLOCK.map((line) => pattern.exec(line)?.[1]).filter((name) => name !== undefined);
-}
-
-/** 去掉 YAML 的单引号（`'@deepseek-ai/x'` → `@deepseek-ai/x`）。 */
-function unquote(value) {
-  return value.replace(/^'(.*)'$/u, '$1');
-}
-
-/** 从一个顶层行 id 到下一个顶层行之间的 YAML 文本（含子行）。 */
-function rowBlock(id) {
-  const start = BLOCK.findIndex((line) => new RegExp(`^ {10}- id: ${id}\\s*$`, 'u').test(line));
-  assert.ok(start >= 0, `CAPABILITIES 块里找不到行 ${id}`);
-  let end = start + 1;
-  while (end < BLOCK.length && !/^ {10}- id: /u.test(BLOCK[end])) end += 1;
-  return BLOCK.slice(start, end).join('\n');
-}
-
-/** 一个 group 子行到下一个 `- id:`（任意层级）之间的 YAML 文本。 */
-function childRowBlock(id) {
-  const start = BLOCK.findIndex((line) => new RegExp(`^ {14}- id: ${id}\\s*$`, 'u').test(line));
-  assert.ok(start >= 0, `CAPABILITIES 块里找不到子行 ${id}`);
-  let end = start + 1;
-  while (end < BLOCK.length && !/^ {10,14}- id: /u.test(BLOCK[end])) end += 1;
-  return BLOCK.slice(start, end).join('\n');
-}
-
-/** 某一行的 `disabled:` 值原文（没有 disabled 行时返回 undefined）。 */
-function rowDisabled(id) {
-  const line = rowBlock(id).split('\n').find((entry) => /^ {12}disabled: /u.test(entry));
-  return line?.replace(/^ {12}disabled: /u, '').trim();
+/** 一个 preset 块（从 `    - id: <presetId>` 到下一个 4 空格缩进的顶层行）。 */
+function presetBlock(presetId) {
+  const start = PATCH.indexOf(`    - id: ${presetId}\n`);
+  assert.ok(start >= 0, `找不到 preset ${presetId}`);
+  const next = PATCH.slice(start + 1).search(/\n {4}- id: /u);
+  return PATCH.slice(start, next < 0 ? PATCH.length : start + 1 + next);
 }
 
 /** JS 侧 group 子行的扁平列表（保持 CAPABILITY_ROWS 的顺序）。 */
@@ -86,55 +51,133 @@ function jsChildRows() {
   return CAPABILITY_ROWS.flatMap((row) => (Array.isArray(row.config) ? row.config : []));
 }
 
-// ---------------------------------------------------------------- 逐行比对 ---
+// ------------------------------------------------ YAML 不再有第二份 ---
 
-test('CAPABILITIES 块存在，两端标记把能力行围起来', () => {
-  // 下面所有比对都靠这两个标记定位。标记被改名或删除时，不能静默通过 ——
-  // 否则"一致性测试"会在什么都没比对的情况下全绿。
-  assert.ok(BLOCK_START >= 0, 'patch 里找不到 CAPABILITIES 起点标记');
-  assert.ok(BLOCK_END > BLOCK_START, '找不到或找不到正确的 CAPABILITIES 终点标记');
-  assert.ok(BLOCK.length > 0);
-  assert.equal(rowIds(10)[0], 'agent-instructions');
-  assert.equal(rowIds(10).at(-1), 'present');
+test('3.7.0：cordis.patch.yml 不再写 plugins（单一来源在 lib/capabilities.js）', () => {
+  // 这是本次重构的核心断言：一旦有人把能力行块复制回 YAML，单一来源就又变成两份，
+  // 而漂移的故障是静默的（某个模式少一项能力，另一个看起来完全正常）。
+  assert.ok(!/^\s{6}plugins:/mu.test(PATCH), 'YAML 不应再声明 preset 的 plugins');
+  assert.ok(!PATCH.includes('# ---- CAPABILITIES'), 'YAML 不应再有 CAPABILITIES 块标记');
+  assert.ok(!PATCH.includes('mirrors @deepseek-ai/dsh-preset-standard'), 'YAML 不应再镜像能力行');
 });
 
-test('顶层行 id 与 capabilityRowIds() 逐行一致', () => {
-  // 两侧必须声明同一套能力行、同一顺序。任一方向增删或改名，对应 preset 的那个
-  // agent 就少一项能力：`dsh-web-app` 把能力行全局禁用了，preset 里没重新声明的
-  // 行**不存在**。
-  assert.deepEqual(rowIds(10), capabilityRowIds());
+test('3.7.0：YAML 里不再出现任何能力行 id（能力行只在 lib/capabilities.js）', () => {
+  const declared = PATCH.split('\n')
+    .map((line) => /^\s*- id: (.+?)\s*$/u.exec(line)?.[1])
+    .filter((id) => id !== undefined);
+  // patch 只插入三行：配置行 + 两个模式声明行。
+  assert.deepEqual(declared.sort(), ['commander-mode', 'preset-commander', 'preset-project-manager']);
+  for (const id of allCapabilityRowIds()) {
+    assert.ok(!declared.includes(id), `YAML 不应再声明能力行 ${id}`);
+  }
 });
 
-test('group 子行 id 与 JS 的 group 内配置逐行一致', () => {
-  // compaction / delegation 组的内部构成可以不同（有意为之），但两边必须一致：
-  // 一边多一个压缩插件，两个模式的上下文压缩行为就不一样了。
-  assert.deepEqual(rowIds(14), jsChildRows().map((child) => child.id));
+test('3.7.0：两个模式声明行只留声明元数据（id / name / description / order）', () => {
+  for (const [presetId, expected] of [
+    ['preset-commander', { id: 'commander', order: '7' }],
+    ['preset-project-manager', { id: 'project-manager', order: '8' }],
+  ]) {
+    const block = presetBlock(presetId);
+    assert.match(block, new RegExp(`\\n {8}id: ${expected.id}\\n`, 'u'), `${presetId} 缺 config.id`);
+    assert.match(block, new RegExp(`\\n {8}order: ${expected.order}\\n`, 'u'), `${presetId} 缺 order`);
+    assert.match(block, /\n {8}name: .+\n/u, `${presetId} 缺显示名`);
+    assert.match(block, /\n {8}description: .+\n/u, `${presetId} 缺描述`);
+  }
 });
 
-test('块内所有 id 的合并序列与 allCapabilityRowIds() 逐行一致', () => {
-  // 只比顶层会漏掉"YAML 多一个子行 / JS 少一个子行"这种漂移。
-  const merged = BLOCK.map((line) => /^ {10,14}- id: (.+?)\s*$/u.exec(line)?.[1]).filter((id) => id !== undefined);
-  assert.deepEqual(merged, allCapabilityRowIds());
+// ------------------------------------------------ 单一来源拼装 ---
+
+test('commanderPresetPlugins = 能力行 + 指挥者模式行', () => {
+  const plugins = commanderPresetPlugins();
+  assert.equal(plugins.length, CAPABILITY_ROWS.length + COMMANDER_MODE_ROWS.length);
+  assert.deepEqual(plugins.slice(0, CAPABILITY_ROWS.length), CAPABILITY_ROWS.map((row) => toEntry(row)));
+  assert.deepEqual(plugins.slice(CAPABILITY_ROWS.length), [{ id: 'commander-mode-agent', name: 'dsh-commander-mode/agent' }]);
+  for (const entry of plugins) {
+    assert.ok(typeof entry.id === 'string' && entry.id !== '', '每个 entry 都要有 id');
+    assert.ok(typeof entry.name === 'string' && entry.name !== '', '每个 entry 都要有 name');
+  }
 });
 
-test('顶层行的 name 与 JS 常量逐行一致', () => {
-  // id 相同但包名漂移（改名、加 scope、拼错）时，id 断言看不出来，Loader 却会
-  // 因为找不到模块而让整个 preset 不激活。
-  assert.deepEqual(rowNames(12).map(unquote), CAPABILITY_ROWS.map((row) => row.name));
+test('projectManagerPresetPlugins = 能力行 + 项目经理协议行 + 可选工作流行', () => {
+  const plugins = projectManagerPresetPlugins();
+  assert.equal(plugins.length, CAPABILITY_ROWS.length + PROJECT_MANAGER_MODE_ROWS.length);
+  assert.deepEqual(
+    plugins.slice(CAPABILITY_ROWS.length).map((entry) => entry.id),
+    ['project-manager-agent', 'project-dev-workflow'],
+  );
+  assert.deepEqual(
+    plugins.slice(CAPABILITY_ROWS.length).map((entry) => entry.name),
+    ['dsh-commander-mode/project-manager', 'dsh-commander-mode/workflow'],
+  );
 });
 
-test('group 子行的 name 与 JS 常量逐行一致', () => {
-  assert.deepEqual(rowNames(16).map(unquote), jsChildRows().map((child) => child.name));
+test('两个 preset 的能力行逐字相同（唯一差异是 PM 的 customSkillDirs）', () => {
+  // 这是 2.0.0 以来最关键的约束：能力行来自同一份清单，谁都不许私改。现在它由
+  // "同一份 JS 常量"保证，测试钉住"确实没有第二份"。
+  const commander = capabilityPartOf(commanderPresetPlugins(), COMMANDER_MODE_ROWS);
+  const manager = capabilityPartOf(projectManagerPresetPlugins(), PROJECT_MANAGER_MODE_ROWS);
+  assert.equal(commander.length, manager.length, '两个模式的能力行数量不一致');
+
+  for (let index = 0; index < commander.length; index += 1) {
+    const left = commander[index];
+    const right = manager[index];
+    assert.equal(left.id, right.id, `第 ${index + 1} 行 id 不一致`);
+    assert.equal(left.name, right.name, `第 ${index + 1} 行 name 不一致`);
+    assert.equal(left.group, right.group, `第 ${index + 1} 行 group 不一致`);
+    assert.deepEqual(left.isolate, right.isolate, `第 ${index + 1} 行 isolate 不一致`);
+    assert.equal(left.disabled, right.disabled, `第 ${index + 1} 行 disabled 不一致`);
+    if (left.id === 'skill-filesystem') continue; // 唯一允许的差异，下面单独断言
+    assert.deepEqual(left.config, right.config, `第 ${index + 1} 行 config 不一致`);
+  }
 });
+
+test('只有项目经理模式的 skill-filesystem 带 customSkillDirs（指挥者保持 1.x 行为）', () => {
+  const commander = capabilityPartOf(commanderPresetPlugins(), COMMANDER_MODE_ROWS);
+  const manager = capabilityPartOf(projectManagerPresetPlugins({ skillDirs: ['/pkg/skills'] }), PROJECT_MANAGER_MODE_ROWS);
+  assert.equal(commander.find((entry) => entry.id === 'skill-filesystem').config, undefined, '指挥者不应加载本包 skills/');
+  assert.deepEqual(manager.find((entry) => entry.id === 'skill-filesystem').config, { customSkillDirs: ['/pkg/skills'] });
+  // 空数组 / 非字符串项等价于"不加载"（避免给 skill-filesystem 一个坏路径）。
+  for (const skillDirs of [undefined, [], [''], [null], 'nope']) {
+    const plugins = projectManagerPresetPlugins({ skillDirs });
+    assert.equal(plugins.find((entry) => entry.id === 'skill-filesystem').config, undefined, `skillDirs=${JSON.stringify(skillDirs)} 不应注入`);
+  }
+});
+
+test('模式行不串味：两个 preset 各只带自己的模式行', () => {
+  const commander = commanderPresetPlugins().map((entry) => entry.id);
+  const manager = projectManagerPresetPlugins().map((entry) => entry.id);
+  assert.ok(commander.includes('commander-mode-agent'));
+  assert.ok(!commander.includes('project-manager-agent'), '指挥者模式不得挂项目经理协议');
+  assert.ok(!commander.includes('project-dev-workflow'), '指挥者模式不得挂工作流手册');
+  assert.ok(manager.includes('project-manager-agent'));
+  assert.ok(manager.includes('project-dev-workflow'));
+  assert.ok(!manager.includes('commander-mode-agent'), '项目经理模式不得挂指挥者协议');
+});
+
+test('两个 builder 每次返回独立的数组与对象（注册之间不串改）', () => {
+  const first = commanderPresetPlugins();
+  first[0].config.maxBytes = 1;
+  first.push({ id: 'junk', name: 'junk' });
+
+  const second = commanderPresetPlugins();
+  assert.equal(second.length, CAPABILITY_ROWS.length + 1);
+  assert.equal(second[0].config.maxBytes, 65536);
+
+  const managerFirst = projectManagerPresetPlugins({ skillDirs: ['/a'] });
+  managerFirst[0].config = { mutated: true };
+  const managerSecond = projectManagerPresetPlugins({ skillDirs: ['/a'] });
+  assert.deepEqual(managerSecond[0].config, { maxBytes: 65536 });
+});
+
+// ------------------------------------------------ 能力清单本身 ---
 
 test('能力清单不含模式专属行与旧 subagent 控件', () => {
-  // 这份清单是"指挥者与 specialist 共用"的能力集合，不是模式组合：
-  // - `commander-mode` 混进来 → specialist preset 也会挂上指挥者协议，子代理拒绝动手；
+  // 这份清单是"两个模式与 specialist 共用"的能力集合，不是模式组合：
+  // - `commander-mode-agent` 混进来 → specialist preset 也会挂上指挥者协议，子代理拒绝动手；
   // - `tool-subagent*` 混进来 → 与「智能体团队」的九个工具冲突（两套 send_message）；
-  // - `tool-plugin-manager` / `tool-plugin-market` 混进来 → 装插件属于"执行操作"，
-  //   本模式下应当派给子代理（而且随附 preset 里它们本来就是 disabled）。
+  // - `tool-plugin-manager` / `tool-plugin-market` 混进来 → 装插件属于"执行操作"。
   const ids = allCapabilityRowIds();
-  for (const forbidden of ['commander-mode', 'persona', 'plan-mode', 'tool-plugin-manager', 'tool-plugin-market']) {
+  for (const forbidden of ['commander-mode', 'commander-mode-agent', 'persona', 'plan-mode', 'tool-plugin-manager', 'tool-plugin-market']) {
     assert.ok(!ids.includes(forbidden), `能力清单不得包含 ${forbidden}`);
   }
   for (const forbidden of ['tool-subagent', 'tool-subagent-fork', 'tool-subagent-control', 'tool-subagent-list-agents']) {
@@ -142,7 +185,18 @@ test('能力清单不含模式专属行与旧 subagent 控件', () => {
   }
 });
 
-// ---------------------------------------------------------------- group ---
+test('顶层行 id 与 capabilityRowIds() 一致，顺序稳定', () => {
+  assert.deepEqual(capabilityRowIds(), CAPABILITY_ROWS.map((row) => row.id));
+  assert.equal(capabilityRowIds()[0], 'agent-instructions');
+  assert.equal(capabilityRowIds().at(-1), 'present');
+});
+
+test('group 子行 id 与 JS 常量一致', () => {
+  assert.deepEqual(
+    jsChildRows().map((child) => child.id),
+    ['compaction-basic', 'command-compact', 'tool-result-pruner', 'workflow-ptc', 'tool-workflow'],
+  );
+});
 
 test('每个 group 行在 JS 侧都带非空 isolate，非 group 行不带', () => {
   // 少了 isolate，compaction / workflowEngine 的状态会在模式之间共享 ——
@@ -160,49 +214,21 @@ test('每个 group 行在 JS 侧都带非空 isolate，非 group 行不带', () 
   }
 });
 
-test('YAML 的 group 行带 isolate，内容与 JS 一致', () => {
-  const groups = CAPABILITY_ROWS.filter((row) => row.group === true);
-  // group: true 与 isolate: 的行数都等于 group 数（没有"忘了写 isolate 的 group"）。
-  assert.equal(BLOCK.filter((line) => /^ {12}group: true\s*$/u.test(line)).length, groups.length);
-  assert.equal(BLOCK.filter((line) => /^ {12}isolate:\s*$/u.test(line)).length, groups.length);
-  // 两个 group 的 isolate 键必须与 JS 的常量逐字一致。
-  assert.match(
-    PATCH,
-    /- id: compaction\n\s+name: cordis:group\n\s+group: true\n\s+isolate:\n\s+compaction: true\n\s+toolResultPruner: true/u,
-  );
-  assert.match(PATCH, /- id: delegation\n\s+name: cordis:group\n\s+group: true\n\s+isolate:\n\s+workflowEngine: true/u);
-});
-
-// ---------------------------------------------------------------- shell ---
-
 test('两个 shell 行的平台条件互斥，当前平台恰好保留一个', () => {
-  // 同时启用 → 两行注册同名工具（`bash` 与 `pwsh` 本身不重名，但两个 shell 通道
-  // 会被同时暴露，行为不确定）；同时禁用 → 子代理没有任何 shell，跑不了测试。
+  // 同时启用 → 两个 shell 通道同时暴露，行为不确定；同时禁用 → 子代理没有任何 shell。
   const bash = CAPABILITY_ROWS.find((row) => row.id === 'tool-bash');
   const pwsh = CAPABILITY_ROWS.find((row) => row.id === 'tool-pwsh');
   assert.deepEqual(bash.disabled, { platform: 'not-win32' });
   assert.deepEqual(pwsh.disabled, { platform: 'win32' });
 
   const win32 = process.platform === 'win32';
-  const bashEntry = toEntry(bash);
-  const pwshEntry = toEntry(pwsh);
-  assert.equal(bashEntry.disabled, win32, 'Windows 上禁用 bash');
-  assert.equal(pwshEntry.disabled, !win32, '非 Windows 上禁用 pwsh');
-  assert.notEqual(bashEntry.disabled, pwshEntry.disabled, '两个 shell 行必须一开一关');
+  assert.equal(toEntry(bash).disabled, win32, 'Windows 上禁用 bash');
+  assert.equal(toEntry(pwsh).disabled, !win32, '非 Windows 上禁用 pwsh');
+  assert.notEqual(toEntry(bash).disabled, toEntry(pwsh).disabled, '两个 shell 行必须一开一关');
 });
 
-test('YAML 的 shell 条件与 JS 语义一致', () => {
-  // YAML 用 `!!js` 表达式，JS 用 `{platform}` 抽象条件；两边写反的后果是
-  // Windows 上装了 bash、Linux 上装了 pwsh，两条通道都失效。
-  assert.equal(rowDisabled('tool-bash'), "!!js process.platform === 'win32'", 'bash 只在非 win32 启用（等价于 not-win32 条件）');
-  assert.equal(rowDisabled('tool-pwsh'), "!!js process.platform !== 'win32'", 'pwsh 只在 win32 启用（等价于 win32 条件）');
-});
-
-// ---------------------------------------------------------------- config ---
-
-test('关键行的 config 在 YAML 与 JS 两侧一致', () => {
+test('关键行的 config 与行为一致', () => {
   // id/name 一致只保证"装了哪些行"，config 决定"那些行怎么工作"。
-  // 这里的每一行都有可见行为：glob 超限采样、并行 todo、web 抓取、上下文裁剪。
   const cases = [
     { id: 'agent-instructions', config: { maxBytes: 65536 } },
     { id: 'tool-fs', config: { applyPatch: false } },
@@ -214,31 +240,17 @@ test('关键行的 config 在 YAML 与 JS 两侧一致', () => {
     const row = CAPABILITY_ROWS.find((entry) => entry.id === id);
     assert.ok(row, `JS 侧缺少 ${id}`);
     assert.deepEqual(toEntry(row).config, config, `JS 侧 ${id} 的 config 不符`);
-    const block = rowBlock(id);
-    for (const [key, value] of Object.entries(config)) {
-      assert.match(block, new RegExp(`^ {14}${key}: ${value}\\s*$`, 'mu'), `YAML 侧 ${id} 缺少 ${key}: ${value}`);
-    }
   }
-});
-
-test('group 子行的 config 在两侧一致', () => {
-  // 裁剪阈值与 workflow provider 决定 specialist / 指挥者的上下文与编排行为。
+  // group 子行的 config 同样要在。
   const pruner = jsChildRows().find((row) => row.id === 'tool-result-pruner');
   assert.deepEqual(toEntry(pruner).config, { thresholdChars: 8192, headChars: 4096, tailChars: 1024 });
-  for (const [key, value] of Object.entries({ thresholdChars: 8192, headChars: 4096, tailChars: 1024 })) {
-    assert.match(childRowBlock('tool-result-pruner'), new RegExp(`^ {18}${key}: ${value}\\s*$`, 'mu'));
-  }
-
   const workflow = jsChildRows().find((row) => row.id === 'workflow-ptc');
   assert.deepEqual(toEntry(workflow).config, { provider: 'spawn' });
-  assert.match(childRowBlock('workflow-ptc'), /^ {18}provider: spawn\s*$/mu);
 });
 
-// ---------------------------------------------------------------- toEntry ---
+// ------------------------------------------------ toEntry ---
 
 test('toEntry 展开 disabled 的三种写法', () => {
-  // specialist preset 是运行时构造的普通对象，写不了 YAML 的 `!!js`，所以平台条件
-  // 在 JS 里落成布尔。这里求值错的后果与 YAML 表达式写反一样：平台行永远开/关。
   assert.equal(toEntry({ id: 'x', name: 'y', disabled: true }).disabled, true);
   assert.equal(toEntry({ id: 'x', name: 'y', disabled: false }).disabled, false);
   assert.equal(
@@ -254,8 +266,6 @@ test('toEntry 展开 disabled 的三种写法', () => {
 });
 
 test('toEntry 不写多余的 disabled 键，未知平台条件直接报错', () => {
-  // 没有 disabled 时塞一个 `disabled: false` 会让 Loader entry 多一个无意义字段；
-  // 未知平台条件静默 fallback 会让平台行在错误平台上启用 —— 两种都要防。
   const entry = toEntry({ id: 'x', name: 'y' });
   assert.equal('disabled' in entry, false);
   assert.throws(() => toEntry({ id: 'x', name: 'y', disabled: { platform: 'linux' } }), /未知的平台条件/u);
@@ -263,12 +273,9 @@ test('toEntry 不写多余的 disabled 键，未知平台条件直接报错', ()
 });
 
 test('toEntry 只产出 Loader 认识的字段', () => {
-  // 把内部元数据（未来可能给 CAPABILITY_ROWS 加字段）带进 Loader entry，
-  // 轻则 warning，重则被当成未知配置拒绝。
   const entry = toEntry(CAPABILITY_ROWS.find((row) => row.id === 'compaction'));
   assert.deepEqual(Object.keys(entry).sort(), ['config', 'group', 'id', 'isolate', 'name']);
   assert.equal(entry.group, true);
-  // 子行也被展开成 entry，而不是原始描述对象。
   assert.equal(entry.config.length, 3);
   assert.deepEqual(Object.keys(entry.config[0]).sort(), ['id', 'name']);
 });
@@ -290,11 +297,16 @@ test('toEntry 复制 config 与 isolate，修改结果不污染进程级常量',
   assert.equal(CAPABILITY_ROWS.find((row) => row.id === 'compaction').config[0].id, 'compaction-basic');
 });
 
-// ---------------------------------------------------------------- id 工具 ---
+test('capabilityEntries 每次返回新对象，且默认等于 toEntry 展开', () => {
+  const first = capabilityEntries();
+  first[0].config.maxBytes = 1;
+  assert.equal(capabilityEntries()[0].config.maxBytes, 65536);
+  assert.deepEqual(capabilityEntries(), CAPABILITY_ROWS.map((row) => toEntry(row)));
+});
+
+// ------------------------------------------------ id 工具 ---
 
 test('capabilityRowIds 返回新数组，调用方改不动常量', () => {
-  // 调用方（协议渲染、审计工具）可能 map/filter，但也可能不小心 push。
-  // 返回内部数组会让一次误操作永久改掉"能力清单"。
   const ids = capabilityRowIds();
   assert.notEqual(ids, capabilityRowIds());
   ids.push('junk');
@@ -303,15 +315,12 @@ test('capabilityRowIds 返回新数组，调用方改不动常量', () => {
 });
 
 test('allCapabilityRowIds 按文件顺序展开顶层行与子行', () => {
-  // 这个顺序就是与 YAML 逐行比对的基准。顺序错了（例如把子行统一排到最后），
-  // deepEqual 会漏报真实的漂移，或者对正确配置误报。
   const expected = [];
   for (const row of CAPABILITY_ROWS) {
     expected.push(row.id);
     if (Array.isArray(row.config)) for (const child of row.config) expected.push(child.id);
   }
   assert.deepEqual(allCapabilityRowIds(), expected);
-  // 子行确实被包含进来了。
   assert.ok(allCapabilityRowIds().includes('compaction-basic'));
   assert.ok(allCapabilityRowIds().includes('workflow-ptc'));
 });
@@ -329,7 +338,6 @@ test('specialistPresetPlugins 是完整组合：能力行 + 末尾人设行', ()
     name: 'dsh-commander-mode/specialist',
     config: { persona: '你是审查者。' },
   });
-  // 每个 entry 都有 Loader 必需的 id 与 name。
   for (const entry of plugins) {
     assert.ok(typeof entry.id === 'string' && entry.id !== '');
     assert.ok(typeof entry.name === 'string' && entry.name !== '');
@@ -351,8 +359,7 @@ test('specialistPresetPlugins 绝不包含指挥者协议行', () => {
 });
 
 test('specialistPresetPlugins 每次返回独立的数组与对象', () => {
-  // 每装一个 specialist 就调用一次。共享数组会让第二次注册带上第一次的改动
-  // （例如上一次下游改过的 config），故障只在"有两个以上 specialist"时出现。
+  // 每装一个 specialist 就调用一次。共享数组会让第二次注册带上第一次的改动。
   const first = specialistPresetPlugins({ personaSectionName: 'x', persona: 'a' });
   first[0].config.maxBytes = 1;
   first.push({ id: 'junk', name: 'junk' });

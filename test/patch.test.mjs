@@ -6,10 +6,16 @@
  * 自己插件、没声明能力行，而 `@deepseek-ai/dsh-web-app` 把能力行全局禁用了，于是那个
  * 模式下的会话**没有文件系统、没有 shell、也没有 AGENTS.md**。
  *
- * 2.0.0 起 patch 里有两个 preset（指挥者 / 项目经理）。本文件除了各自的结构断言，还锁住
- * 一条硬约束：**项目经理模式的 CAPABILITIES 与指挥者模式逐字节一致**，只有
- * `skill-filesystem` 一行多出 `customSkillDirs`（加载本包 `skills/` 目录）——否则两个模式
- * 会慢慢漂移成"一个能用 shell、另一个没有文件系统"。
+ * ## 3.7.0 起：YAML 只保留声明元数据
+ *
+ * 能力行与模式行改由 `lib/preset-plugins.js` 从 `lib/capabilities.js` 拼装（单一来源），
+ * `cordis.patch.yml` 不再写 `plugins`。所以本文件现在断言的是：
+ *
+ * 1. patch 只插入三行（配置行 + 两个模式声明行），能力行 / 模式行都不在 YAML；
+ * 2. 两个模式声明行仍写全 `id / name / description / order`（Loader 与插件页读它们）；
+ * 3. 能力行本身的关键契约（tool-fs config、两个 group 的 isolate、shell 互斥、
+ *    不含旧 subagent 控件）—— 这些现在查 JS 清单，与 `capabilities.test.mjs` 互补；
+ * 4. 配置行的位置与命名约束（必须是 profile 顶层、裸包名）。
  *
  * 本文件用逐行分析而不是 YAML 库来解析：这个包是刻意零依赖的，而下面的断言是结构性的。
  */
@@ -18,30 +24,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
+import { capabilityEntries, capabilityRowIds } from '../lib/capabilities.js';
+
 const PATCH = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
 const LINES = PATCH.split('\n');
-
-/** 本包从 `@deepseek-ai/dsh-preset-standard`（DSH 0.2.2-rc.1）镜像的能力行。 */
-const CAPABILITY_ROWS = [
-  'agent-instructions',
-  'time-context',
-  'tool-bash',
-  'tool-pwsh',
-  'tool-fs',
-  'tool-fs-search',
-  'tool-jobs',
-  'tool-schedule',
-  'skill-filesystem',
-  'tool-skill',
-  'command-goal',
-  'tool-goal',
-  'compaction',
-  'delegation',
-  'tool-ask-user',
-  'tool-todo',
-  'tool-web',
-  'present',
-];
 
 /** 两个 preset（顺序 = patch 里的声明顺序）。 */
 const PRESETS = ['preset-commander', 'preset-project-manager'];
@@ -65,104 +51,32 @@ function presetBlock(presetId) {
   return PATCH.slice(start, end);
 }
 
-/**
- * 一个 preset 块里 `plugins:` 那一层（10 空格）的行 id。
- *
- * @param {string} presetId - preset 行 id。
- * @returns {string[]} 行 id（保序，含 group 顶层行，不含 group 子行）。
- */
-function presetPluginRowIds(presetId) {
-  const block = presetBlock(presetId);
-  return block
-    .split('\n')
-    .map((line) => /^ {10}- id: (.+?)\s*$/u.exec(line)?.[1])
-    .filter((id) => id !== undefined);
-}
-
-/**
- * 一个 preset 块里 CAPABILITIES 注释标记之间的原文。
- *
- * @param {string} presetId - preset 行 id。
- * @returns {string} 能力块文本（含两端标记）。
- */
-function capabilityBlockOf(presetId) {
-  const block = presetBlock(presetId);
-  const start = block.indexOf('          # ---- CAPABILITIES');
-  const end = block.indexOf('          # ---- end CAPABILITIES');
-  assert.ok(start >= 0, `${presetId} 缺 CAPABILITIES 起点标记`);
-  assert.ok(end > start, `${presetId} 缺 CAPABILITIES 终点标记`);
-  const endLine = block.indexOf('\n', end);
-  return block.slice(start, endLine < 0 ? block.length : endLine + 1);
-}
-
-/**
- * 把一个能力块按行拆成独立 row 的原文（注释行跟着它下面的 row）。
- *
- * @param {string} block - 能力块文本。
- * @returns {{ id: string | undefined, text: string }[]} row 列表。
- */
-function capabilityRows(block) {
-  const chunks = block.split(/\n(?= {10}- id: )/u).map((text) => text.replace(/\n+$/u, ''));
-  return chunks.map((text) => ({ id: /^ {10}- id: (.+?)\s*$/mu.exec(text)?.[1], text }));
-}
-
 // ---------------------------------------------------------------- 能力行 ---
 
-test('两个模式所需的每一行能力都声明了', () => {
-  // 下面每一个都曾在真实会话里被观察到**缺失**。`tool-fs` 就是用户报的那个
-  // （"读取不到下载目录的文件"）；`agent-instructions` 缺席时模式看不见工作区约定。
+test('3.7.0：patch 只插入三行（配置行 + 两个模式声明行），能力行不在 YAML', () => {
+  // 能力行改由 lib/preset-plugins.js 从 lib/capabilities.js 拼装（单一来源）。
+  // 这条断言防止有人把能力行块复制回 YAML —— 那样单一来源就又变成两份。
+  assert.deepEqual(allRowIds().sort(), ['commander-mode', 'preset-commander', 'preset-project-manager']);
+});
+
+test('3.7.0：两个模式声明行不再写 plugins，只留声明元数据', () => {
   for (const presetId of PRESETS) {
-    const declared = presetPluginRowIds(presetId);
-    for (const id of CAPABILITY_ROWS) {
-      assert.ok(declared.includes(id), `${presetId} 缺少 ${id} 这一行`);
+    const block = presetBlock(presetId);
+    assert.ok(!/^\s{6}plugins:/mu.test(block), `${presetId} 不应再声明 plugins`);
+    // 声明元数据必须齐（Loader 与插件页都读它们）。
+    for (const key of ['id', 'name', 'description', 'order']) {
+      assert.match(block, new RegExp(`\\n {8}${key}: .+\\n`, 'u'), `${presetId} 缺 ${key}`);
     }
   }
 });
 
-test('每个 preset 的插件行集合恰好是能力行加它自己的模式行', () => {
-  assert.deepEqual([...presetPluginRowIds('preset-commander')].sort(), [...CAPABILITY_ROWS, 'commander-mode-agent'].sort());
-  assert.deepEqual(
-    [...presetPluginRowIds('preset-project-manager')].sort(),
-    [...CAPABILITY_ROWS, 'project-manager-agent', 'project-dev-workflow'].sort(),
-  );
-});
-
-test('项目经理模式的 CAPABILITIES 与指挥者模式逐字节一致（只允许 skill-filesystem 多 customSkillDirs）', () => {
-  // 这是 2.0.0 最关键的结构约束：两份能力块必须来自同一份复制，谁改了一边没改另一边，
-  // 对应的模式就会少一项能力，而故障是静默的。
-  const commander = capabilityBlockOf('preset-commander');
-  const manager = capabilityBlockOf('preset-project-manager');
-  // 注释允许不同，所以逐 row 比对而不是逐字节比整块。row 文本里注释会跟着 row 走，
-  // 但本包的两个块使用同一份注释；差异只应出现在 skill-filesystem 这一行。
-  const left = capabilityRows(commander);
-  const right = capabilityRows(manager);
-  assert.equal(left.length, right.length, '两个能力块的行数不一致');
-  for (let index = 0; index < left.length; index += 1) {
-    assert.equal(left[index].id, right[index].id, `第 ${index + 1} 行的 id 不一致`);
-    if (left[index].id === 'skill-filesystem') {
-      assert.ok(
-        right[index].text.startsWith(left[index].text),
-        '项目经理模式的 skill-filesystem 行应当在指挥者模式的同一行之后追加 config',
-      );
-      assert.ok(right[index].text.includes('customSkillDirs'), 'skill-filesystem 行缺 customSkillDirs');
-      continue;
-    }
-    assert.equal(right[index].text, left[index].text, `能力行 ${left[index].id} 两侧不一致`);
-  }
-});
-
-test('只有项目经理模式的 skill-filesystem 带 customSkillDirs（指向本包 skills/）', () => {
-  const commander = capabilityBlockOf('preset-commander');
-  const manager = capabilityBlockOf('preset-project-manager');
-  assert.ok(!commander.includes('customSkillDirs'), '指挥者模式不应加载本包 skills/ 目录（保持 1.x 行为）');
-  // 用包名定位包目录、join 'skills'，不写死任何绝对路径。
-  assert.match(manager, /customSkillDirs:\n\s+- !!js >-\n\s+process\.getBuiltinModule\('node:path'\)\.join\(/u);
-  assert.match(manager, /createRequire\(baseUrl\)\.resolve\('dsh-commander-mode\/package\.json'\)\), 'skills'\)/u);
-});
-
-test('两个 CAPABILITIES 块的标记各出现两次（防止只复制了块内容、没复制标记）', () => {
-  assert.equal(PATCH.split('# ---- CAPABILITIES (mirrors @deepseek-ai/dsh-preset-standard)').length - 1, 2);
-  assert.equal(PATCH.split('# ---- end CAPABILITIES').length - 1, 2);
+test('3.7.0：两个模式的能力行由同一份 JS 清单拼装（不再靠 YAML 逐字节比对）', () => {
+  // 旧的"两份 CAPABILITIES 块逐字节一致"断言已随 YAML 块一起删除；现在由
+  // lib/preset-plugins.js 的单一来源保证，测试在 capabilities.test.mjs 里钉住。
+  assert.ok(!PATCH.includes('# ---- CAPABILITIES'), 'YAML 不应再有 CAPABILITIES 块');
+  // 但 patch 仍要说明能力行从哪来（否则下一个人会以为是漏写了）。
+  assert.match(PATCH, /lib\/preset-plugins\.js/u);
+  assert.match(PATCH, /lib\/capabilities\.js/u);
 });
 
 test('与 preset-standard 的四处省略是有意为之', () => {
@@ -180,12 +94,12 @@ test('与 preset-standard 的四处省略是有意为之', () => {
 
 test('不声明旧的 subagent 控件，把派发通道让给智能体团队', () => {
   // `@deepseek-ai/dsh-experimental-agent-team-profile` 会禁用 tool-subagent-control /
-  // tool-subagent / tool-subagent-fork（0.2.2 起 `list-agents` 子路径导出已移除，
-  // list_agents 并进主入口，不再有第四行）。在 preset 里重新声明它们会把刚关掉的
-  // 旧控件装回来，于是同时拿到两套 send_message / list_agents / interrupt_agent。
-  const declared = allRowIds();
+  // tool-subagent / tool-subagent-fork。在 preset 里重新声明它们会把刚关掉的旧控件装回来，
+  // 于是同时拿到两套 send_message / list_agents / interrupt_agent。
+  // 3.7.0 起能力行在 JS 里，所以查 JS 清单（见 capabilities.test.mjs 的同类断言）。
+  const ids = capabilityRowIds();
   for (const id of ['tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork']) {
-    assert.ok(!declared.includes(id), `不得声明 ${id} —— 它会与智能体团队冲突`);
+    assert.ok(!ids.includes(id), `能力清单不得包含 ${id} —— 它会与智能体团队冲突`);
   }
   // 也不许出现 subagent / subagent_fork 这两个工具名。
   assert.ok(!PATCH.includes('toolName: subagent'));
@@ -193,26 +107,27 @@ test('不声明旧的 subagent 控件，把派发通道让给智能体团队', (
 
 test('0.2.2：tool-fs 显式写 applyPatch: false（逐字镜像 standard）', () => {
   // standard 从 0.2.2 起显式写 applyPatch: false（默认也是 false），镜像做到逐字一致。
-  assert.match(
-    PATCH,
-    /- id: tool-fs\n\s+name: '@deepseek-ai\/dsh-tool-fs'\n\s+config:\n(?:\s+#.*\n)*\s+applyPatch: false/u,
-  );
+  const toolFs = capabilityEntries().find((entry) => entry.id === 'tool-fs');
+  assert.deepEqual(toolFs, { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs', config: { applyPatch: false } });
 });
 
 test('delegation 组只保留 workflow 这条编排通道', () => {
-  assert.ok(allRowIds().includes('workflow-ptc'));
-  assert.ok(allRowIds().includes('tool-workflow'));
-  assert.match(PATCH, /isolate:\n\s+workflowEngine: true/u);
+  const delegation = capabilityEntries().find((entry) => entry.id === 'delegation');
+  assert.equal(delegation.group, true);
+  assert.deepEqual(delegation.isolate, { workflowEngine: true });
+  assert.deepEqual(delegation.config.map((row) => row.id), ['workflow-ptc', 'tool-workflow']);
 });
 
 test('compaction 组带着它自己的 isolate', () => {
   // 少了 isolate，几个模式会共享压缩 / 工具结果裁剪状态。
-  assert.match(PATCH, /isolate:\n\s+compaction: true\n\s+toolResultPruner: true/u);
+  const compaction = capabilityEntries().find((entry) => entry.id === 'compaction');
+  assert.deepEqual(compaction.isolate, { compaction: true, toolResultPruner: true });
 });
 
-test('两个平台的 shell 行互斥', () => {
-  assert.match(PATCH, /- id: tool-bash\n\s+name: '@deepseek-ai\/dsh-tool-bash'\n\s+disabled: !!js process\.platform === 'win32'/u);
-  assert.match(PATCH, /- id: tool-pwsh\n\s+name: '@deepseek-ai\/dsh-tool-pwsh'\n\s+disabled: !!js process\.platform !== 'win32'/u);
+test('两个平台的 shell 行互斥（JS 侧落成布尔）', () => {
+  const shell = capabilityEntries().filter((entry) => entry.id === 'tool-bash' || entry.id === 'tool-pwsh');
+  assert.equal(shell.length, 2);
+  assert.notEqual(shell[0].disabled, shell[1].disabled, '两个 shell 行必须一开一关');
 });
 
 // ---------------------------------------------------------------- preset ---
@@ -228,7 +143,7 @@ test('preset-commander 声明正确', () => {
   assert.match(PATCH, /description: .*子代理/u);
 });
 
-test('preset-project-manager 声明正确（id / 显示名 / 描述 / order 8 / 两行组件）', () => {
+test('preset-project-manager 声明正确（id / 显示名 / 描述 / order 8）', () => {
   assert.match(PATCH, /- id: preset-project-manager\n(?:\s+#.*\n)*\s+name: 'dsh-commander-mode\/preset-project-manager'/u);
   assert.match(PATCH, /config:\n\s+id: project-manager\n\s+name: 项目经理模式/u);
   assert.match(PATCH, /order: 8/u);
@@ -237,26 +152,24 @@ test('preset-project-manager 声明正确（id / 显示名 / 描述 / order 8 / 
   assert.match(PATCH, /按任务形状拆分与派单/u);
   assert.match(PATCH, /六段工作流可选/u);
   assert.ok(!/跑一条带门禁的项目流水线/u.test(PATCH), 'preset 描述不应再写强制流水线');
-  // 两行组件：项目经理协议 + 可选工作流手册（3.6.0 起只注册 skill）。
-  assert.match(PATCH, /\n {10}- id: project-manager-agent\n {12}name: 'dsh-commander-mode\/project-manager'/u);
-  assert.match(PATCH, /\n {10}- id: project-dev-workflow\n {12}name: 'dsh-commander-mode\/workflow'/u);
 });
 
-test('配置行是 profile 顶层行，模式行挂在 preset 里', () => {
+test('3.7.0：模式行由 JS 拼装，YAML 里不再有它们的 id', () => {
+  // 模式行（commander-mode-agent / project-manager-agent / project-dev-workflow）
+  // 改由 lib/preset-plugins.js 注入；YAML 里出现它们就意味着又回到"两份"。
+  for (const id of ['commander-mode-agent', 'project-manager-agent', 'project-dev-workflow']) {
+    assert.ok(!allRowIds().includes(id), `YAML 不应再声明模式行 ${id}`);
+  }
+  // 但 patch 注释要说明它们从哪来（否则下一个人会以为是漏写了）。
+  assert.match(PATCH, /lib\/preset-plugins\.js/u);
+});
+
+test('配置行是 profile 顶层行（模式行不在 YAML，无法再按缩进断言）', () => {
   // 配置行必须是顶层行：preset 子行不进 Loader entry 树，设置页看不到它的 Config
   // （dsh 0.2.1-rc.2 实测：命名空间不可达 → 设置卡片静默消失）。
   // 而且 name 必须是**裸包名**：dsh-client-modules 对含 `/` 的说明符直接放弃，
   // 写成 'dsh-commander-mode/host' 会让 client 半永远进不了页面清单。
   assert.match(PATCH, /\n {4}- id: commander-mode\n(?: {6}#.*\n)* {6}name: 'dsh-commander-mode'\n/u);
-
-  // 每个 preset 的模式行在它自己的 plugins 列表里（10 空格缩进），且是该块最后一行。
-  for (const [presetId, lastRow] of [
-    ['preset-commander', 'commander-mode-agent'],
-    ['preset-project-manager', 'project-dev-workflow'],
-  ]) {
-    const rows = presetPluginRowIds(presetId);
-    assert.equal(rows[rows.length - 1], lastRow, `${presetId} 的最后一行应是 ${lastRow}`);
-  }
 });
 
 test('配置行不注册任何工具（避免能力泄漏到别的模式）', () => {

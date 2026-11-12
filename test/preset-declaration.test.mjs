@@ -11,22 +11,25 @@
  *
  * ## 这里守什么
  *
- * 1. 语义与随附声明器一致：`agentPresets.register(config)` 收到**完整**的本行 config，
- *    且 config 形状是 `{ id, name, description, order, plugins }`；
+ * 1. 语义与随附声明器一致：`agentPresets.register(config)` 收到**完整**的 preset 定义；
+ *    3.7.0 起 `plugins` 由各声明模块从 `lib/preset-plugins.js` 注入（YAML 只给
+ *    `{ id, name, description, order }`），所以 `Config` 里 `plugins` 是**可选**的；
  * 2. 卸载时释放：`ctx.effect` 的 disposer 必须调用 `unregister`；
  * 3. 注册晚于卸载（竞态）：effect 先释放、注册后完成时，仍要立刻调 unregister，不能漏；
  * 4. 注册失败只记 warning，不抛（模式自己还要能起）。
  */
 
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 
 import {
   PresetDeclarationConfig,
   declarePreset,
 } from '../lib/preset-declaration.js';
+import { CAPABILITY_ROWS } from '../lib/capabilities.js';
 import { apply as applyCommander, name as commanderName } from '../preset-commander.js';
-import { apply as applyManager, name as managerName } from '../preset-project-manager.js';
+import { apply as applyManager, name as managerName, packageSkillsDir } from '../preset-project-manager.js';
 
 /**
  * 最小 ctx 替身：记录 effect / register / warn。
@@ -63,39 +66,39 @@ function makeCtx({ register } = {}) {
   return { ctx, record };
 }
 
-/** 与本包 patch 同形的 config。 */
+/** 与本包 patch 同形的 config（3.7.0 起只有声明元数据，没有 plugins）。 */
 function sampleConfig(id) {
   return {
     id,
     name: id === 'commander' ? '指挥者模式' : '项目经理模式',
     description: '测试用描述',
     order: id === 'commander' ? 7 : 8,
-    plugins: [
-      { id: 'agent-instructions', name: '@deepseek-ai/dsh-agent-instructions', config: { maxBytes: 65536 } },
-      { id: 'tool-pwsh', name: '@deepseek-ai/dsh-tool-pwsh', disabled: false },
-    ],
   };
 }
 
 // ---------------------------------------------------------------- 配置形状 ---
 
-test('Config 与随附声明器同形：id 必填、plugins 为数组、order 是数字', () => {
+test('Config：id 必填，plugins 可选（3.7.0 起由声明模块注入）', () => {
   const parsed = PresetDeclarationConfig(sampleConfig('commander'));
   assert.equal(parsed.id, 'commander');
   assert.equal(parsed.order, 7);
-  assert.equal(parsed.plugins.length, 2);
+  // schemastery 给可选数组补默认值 `[]`；调用方（声明模块）随后用自己拼装的列表覆盖它。
+  assert.deepEqual(parsed.plugins, [], 'YAML 不提供 plugins 时是空数组');
   // id 必填：缺了直接拒绝（声明器不该猜）。
-  assert.throws(() => PresetDeclarationConfig({ plugins: [] }));
-  // plugins 必填。
-  assert.throws(() => PresetDeclarationConfig({ id: 'x' }));
+  assert.throws(() => PresetDeclarationConfig({ name: 'x' }));
+  // plugins 可选：这是 3.7.0 的关键变化——YAML 不写它也能通过 schema，
+  // 否则两个模式行会被 schema 挡下、整个模式不激活。
+  assert.doesNotThrow(() => PresetDeclarationConfig({ id: 'x' }));
+  // 但给了就必须是数组（防手写 YAML 写错形状）。
+  assert.throws(() => PresetDeclarationConfig({ id: 'x', plugins: 'nope' }));
 });
 
 // ---------------------------------------------------------------- 注册 ---
 
-test('两个模块各自把自己的 config 原样交给 agentPresets.register', async () => {
-  for (const [apply, expectedId, expectedLabel] of [
-    [applyCommander, 'commander', 'preset-commander'],
-    [applyManager, 'project-manager', 'preset-project-manager'],
+test('两个模块各自注入自己的 plugins（能力行 + 自己的模式行）', async () => {
+  for (const [apply, expectedId, expectedLabel, modeRowIds] of [
+    [applyCommander, 'commander', 'preset-commander', ['commander-mode-agent']],
+    [applyManager, 'project-manager', 'preset-project-manager', ['project-manager-agent', 'project-dev-workflow']],
   ]) {
     const { ctx, record } = makeCtx();
     const config = sampleConfig(expectedId);
@@ -104,15 +107,70 @@ test('两个模块各自把自己的 config 原样交给 agentPresets.register',
     const definition = record.registrations[0];
     assert.equal(definition.id, expectedId);
     assert.equal(definition.order, config.order);
-    assert.deepEqual(definition.plugins, config.plugins, 'plugins 必须原样传递（不重排、不裁剪）');
+    assert.equal(definition.name, config.name);
+    // plugins 不再来自 YAML，而是由 lib/preset-plugins.js 拼装：
+    // 能力行（18）+ 该模式自己的模式行。
+    assert.equal(definition.plugins.length, CAPABILITY_ROWS.length + modeRowIds.length, `${expectedLabel}: 行数不对`);
+    assert.deepEqual(
+      definition.plugins.slice(-modeRowIds.length).map((entry) => entry.id),
+      modeRowIds,
+      `${expectedLabel}: 模式行应在最后`,
+    );
     assert.equal(record.disposers.length, 1, `${expectedLabel}: 应挂一个 effect`);
     assert.equal(record.disposers[0].label, `${expectedLabel}: preset ${expectedId}`);
   }
 });
 
+test('项目经理模式的 skill-filesystem 带本包 skills/ 目录；指挥者不带', async () => {
+  const skillsDir = packageSkillsDir();
+  assert.ok(typeof skillsDir === 'string' && skillsDir.endsWith('skills\\') || skillsDir.endsWith('skills/'), `skills 目录应存在：${skillsDir}`);
+
+  const commander = makeCtx();
+  await applyCommander(commander.ctx, sampleConfig('commander'));
+  const commanderSkillFs = commander.record.registrations[0].plugins.find((entry) => entry.id === 'skill-filesystem');
+  assert.equal(commanderSkillFs.config, undefined, '指挥者模式不应加载本包 skills/（保持 1.x 行为）');
+
+  const manager = makeCtx();
+  await applyManager(manager.ctx, sampleConfig('project-manager'));
+  const managerSkillFs = manager.record.registrations[0].plugins.find((entry) => entry.id === 'skill-filesystem');
+  assert.deepEqual(managerSkillFs.config, { customSkillDirs: [skillsDir] });
+});
+
 test('插件名稳定（Loader 诊断与测试都依赖它）', () => {
   assert.equal(commanderName, 'preset-commander-declaration');
   assert.equal(managerName, 'preset-project-manager-declaration');
+});
+
+test('3.7.0：cordis.patch.yml 里两个 preset 的 config 能通过声明器 schema', () => {
+  // 真实 Loader 在 apply 之前会拿导出的 Config 校验本行 config。YAML 只写元数据之后，
+  // 这里用一个最小逐行解析还原出 config，跑一遍 schema —— 挡住"手写 YAML 漏键 / 写错类型
+  // → 整个模式不激活"这类只有真实加载才暴露的问题（headless 沙箱不绑 preset，测不到）。
+  const patch = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+  const blockOf = (presetId) => {
+    const start = patch.indexOf(`    - id: ${presetId}\n`);
+    assert.ok(start >= 0, `找不到 ${presetId}`);
+    const next = patch.slice(start + 1).search(/\n {4}- id: /u);
+    return patch.slice(start, next < 0 ? patch.length : start + 1 + next);
+  };
+  for (const [presetId, expectedId] of [
+    ['preset-commander', 'commander'],
+    ['preset-project-manager', 'project-manager'],
+  ]) {
+    const block = blockOf(presetId);
+    /** 取 `config:` 下 8 空格缩进的标量值。 */
+    const field = (key) => new RegExp(`\\n {8}${key}: (.+)\\n`, 'u').exec(block)?.[1]?.trim();
+    const config = {
+      id: field('id'),
+      name: field('name'),
+      description: field('description'),
+      order: Number(field('order')),
+    };
+    assert.equal(config.id, expectedId, `${presetId} 的 config.id 不对`);
+    assert.ok(Number.isInteger(config.order), `${presetId} 的 order 必须是整数`);
+    assert.doesNotThrow(() => PresetDeclarationConfig(config), `${presetId} 的 config 过不了 schema`);
+    // plugins 不写 —— 由声明模块注入。
+    assert.equal(field('plugins'), undefined, `${presetId} 不应在 YAML 里写 plugins`);
+  }
 });
 
 // ---------------------------------------------------------------- 释放 ---
