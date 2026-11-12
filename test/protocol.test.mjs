@@ -280,6 +280,18 @@ test('双通道选择规则一眼可懂：独立模型走 A，长驻队友走 B�
   assert.ok(ROSTER_SECTION.includes('同一批文件不要同时交给两条通道'));
 });
 
+test('3.5.0：通道选择给出「小组长什么时候交下级」的判据（不是只有"可以"）', () => {
+  // 用户 2026-11-12 指出：协议只写了"小组长可以自己执行，也可以交下级"，
+  // 没有判据，于是它既可能把该自己干的活塞给一次性子智能体，也可能反过来什么都自己干。
+  // 判据必须落在协议里（模型看不到 README）。
+  for (const phrase of ['单点', '产出明确', '前台等一会就能拿到结果', 'workflow', '多阶段', '要持续对话', '要中途纠偏', '任务板进度']) {
+    assert.ok(ROSTER_SECTION.includes(phrase), `通道判据缺少：${phrase}`);
+  }
+  // 判据的方向必须写死：单点 → 一次性子智能体；多阶段 / 要持续对话 → 自己执行。
+  assert.match(ROSTER_SECTION, /单点[^。\n]*→[^。\n]*subagent_<id>/u, ROSTER_SECTION);
+  assert.match(ROSTER_SECTION, /多阶段[^。\n]*→[^。\n]*自己执行/u, ROSTER_SECTION);
+});
+
 test('名册是可复用工具，不是任务数上限，也不许造活', () => {
   for (const phrase of ['不是任务数上限', 'runtime 容量', '一个新的 child', '造活', '空着']) {
     assert.ok(ROSTER_SECTION.includes(phrase), `名册语义缺少：${phrase}`);
@@ -598,6 +610,17 @@ test('3.0.0：协议不再给指挥官"直接前台调用 subagent_<id>"的指�
   // 正面的替代口径必须在场：一次性子智能体工具属于小组长、指挥官不直接调用。
   assert.ok(COMMANDER_PROTOCOL.includes('你**不直接调用**') || COMMANDER_PROTOCOL.includes('你不直接调用'));
   assert.ok(COMMANDER_PROTOCOL.includes('属于小组长'));
+});
+
+test('3.5.0：长文「通道 A」定义里写明小组长交下级的判据', () => {
+  // 与 section 里的判据同一口径，长文补细节：什么算"单点任务"、什么情况它应当自己执行。
+  for (const phrase of ['单点任务', '产出明确', '前台等一会就能拿到', '不需要持续对话', '不需要中途纠偏', '任务板进度', '自己执行']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文通道 A 判据缺少：${phrase}`);
+  }
+  // 一次性子智能体的三个硬约束必须在判据旁边出现（否则"交下级"看起来没有代价）。
+  for (const phrase of ['没有任务板', '没有后台通知', '新 child']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺少一次性子智能体约束：${phrase}`);
+  }
 });
 
 test('3.0.0：名册启用时通道 A 明确标注「只有小组长用」且不属于指挥官', () => {

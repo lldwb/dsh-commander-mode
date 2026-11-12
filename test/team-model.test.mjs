@@ -92,6 +92,16 @@ test('七条规则各自覆盖用户 2026-11-11 的一条要求', () => {
   // 规则 3：小组长可以自己执行，也可以交下级子智能体；指挥官不直接调用。
   assert.match(byId.get('leader-may-execute').detail, /自己执行/u);
   assert.match(byId.get('leader-may-execute').detail, /不直接调用/u);
+  // 3.5.0（用户 2026-11-12）：光说"可以交下级"没有判据，模型要么把该自己干的活塞给
+  // 一次性子智能体，要么什么都自己干。判据必须写在规则正文里。
+  for (const phrase of ['什么时候该交下级', '单点', '产出明确', '前台等一会就能拿到结果', 'workflow', '多阶段', '要持续对话', '要中途纠偏', '任务板进度', '新 child']) {
+    assert.ok(byId.get('leader-may-execute').detail.includes(phrase), `leader-may-execute 缺判据：${phrase}`);
+  }
+  // 方向不能写反：单点 → 一次性子智能体；多阶段 / 要持续对话 → 自己执行。
+  assert.match(byId.get('leader-may-execute').detail, /单点[^。]*→[^。]*subagent_<id>/u);
+  assert.match(byId.get('leader-may-execute').detail, /多阶段[^。]*→[^。]*自己执行/u);
+  // 「为什么」也要说清代价：一次性子智能体每次调用都是新 child，上下文要重新交代。
+  assert.match(byId.get('leader-may-execute').why, /新 child|上下文/u);
 });
 
 // ---------------------------------------------------------------- 三层 ---
