@@ -239,7 +239,7 @@ test('只拦 wait_agent：读状态 / 派活 / 唤醒工具一律放行', () => 
     'team_task_update',
     'team_task_create',
     'send_message',
-    'spawn_teammate',
+    'subagent',
     'interrupt_agent',
     'read',
     'todo_write',

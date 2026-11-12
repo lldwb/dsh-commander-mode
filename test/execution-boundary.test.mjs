@@ -54,7 +54,7 @@ const READONLY_TOOLS = [
   'android_status', 'android_screenshot', 'android_ui_dump', 'android_logcat', 'android_ui_wait',
   'terminal_read', 'terminal_list',
   'todo_write', 'ask_user_question', 'present',
-  'spawn_teammate', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
+  'subagent', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
   'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',
 ];
 
@@ -73,9 +73,9 @@ test('只读半边与调度工具默认放行（拦了等于把人堵在原地�
 test('指挥者自己调用执行类工具被拒，且拒因点名"远程/桌面/浏览器/模拟器/终端"', () => {
   // 根 agent 的 session.header 里**没有** parentSession / origin=subagent / delegationDepth>0，
   // 否则 isDelegatedAgent 会把它当成子代理（门禁对子代理一律放行，这是刻意的 fail-open）。
-  const lead = { session: { header: {} }, ctx: { tools: { schemas: () => [{ name: 'read' }, { name: 'spawn_teammate' }] } } };
+  const lead = { session: { header: {} }, ctx: { tools: { schemas: () => [{ name: 'read' }, { name: 'subagent' }] } } };
   for (const name of ['ssh_exec', 'desktop_mouse_click', 'browser_navigate', 'android_ui_tap', 'terminal_send', 'create_worktree']) {
-    const decision = evaluatePreExecute({ agent: lead, name, availableTools: ['read', 'spawn_teammate'], canDelegate: true });
+    const decision = evaluatePreExecute({ agent: lead, name, availableTools: ['read', 'subagent'], canDelegate: true });
     assert.equal(decision?.kind, 'deny', `${name} 应当被拒`);
     for (const phrase of ['远程执行', '桌面注入', '浏览器操作', '模拟器控制', '持久终端']) {
       assert.ok(decision.reason.includes(phrase), `拒因缺少「${phrase}」：${decision.reason.slice(0, 120)}`);
@@ -85,8 +85,8 @@ test('指挥者自己调用执行类工具被拒，且拒因点名"远程/桌面
 
 test('只读半边即使被列进清单也走"子代理/无派发通道"的放行分支（边界不变）', () => {
   // 只是确认 evaluatePreExecute 的既有语义没被这次扩展改变：非清单工具一律放行。
-  const lead = { session: { header: {} }, ctx: { tools: { schemas: () => [{ name: 'spawn_teammate' }] } } };
+  const lead = { session: { header: {} }, ctx: { tools: { schemas: () => [{ name: 'subagent' }] } } };
   for (const name of ['browser_snapshot', 'desktop_ui_dump', 'android_logcat', 'terminal_read', 'ssh_host']) {
-    assert.equal(evaluatePreExecute({ agent: lead, name, availableTools: ['spawn_teammate'], canDelegate: true }), undefined);
+    assert.equal(evaluatePreExecute({ agent: lead, name, availableTools: ['subagent'], canDelegate: true }), undefined);
   }
 });

@@ -52,7 +52,7 @@ function assignedTicket(overrides = {}) {
     assignments: [{
       id: 'a-1',
       channel: 'team',
-      toolName: 'spawn_teammate',
+      toolName: 'subagent',
       ref: null,
       startedAt: 2,
       endedAt: null,
@@ -64,6 +64,9 @@ function assignedTicket(overrides = {}) {
 /**
  * 一个最小的 `agentTeams` 服务替身：与真实 API 对齐（同步 get/list、异步 create/update、
  * CAS `TEAM_TASK_STALE_REVISION`、删除墓碑）。
+ *
+ * 6.0.0（DSH 0.2.2-rc.2）：旧 `tryMembership(agent)` 名册判据已移除，Team 的权威判据是
+ * `isEnabled(agent) === true`；服务对象只需 `isEnabled` + 四个任务方法。
  *
  * @param {object[]} [initial] - 初始任务。
  * @returns {object} 服务。
@@ -90,7 +93,7 @@ function makeService(initial = []) {
   return {
     calls,
     tasks,
-    tryMembership: () => ({ role: 'lead', root: {} }),
+    isEnabled: () => true,
     listTasks: () => [...tasks.values()].filter((task) => task.status !== 'deleted').map(normalize),
     getTask: (_agent, id) => {
       const task = tasks.get(id);
@@ -319,15 +322,22 @@ test('teamErrorCode：直接 code / cause 里的 code / 无 code', () => {
 
 // ---------------------------------------------------------------- 可用性 ---
 
-test('available：服务缺失 / 不是成员 / 方法缺失时全部 no-op', async () => {
+test('available：服务缺失 / Team 未开启 / 方法缺失时全部 no-op', async () => {
+  // 6.0.0（DSH 0.2.2-rc.2）：判据从 `tryMembership(agent)` 改成
+  // `agentTeams.isEnabled(agent) === true` —— 成员就是标准 subagent，没有"成员名册"可查。
   const none = createTeamBoardBridge({ getService: () => undefined });
   assert.equal(none.available(AGENT), undefined);
   assert.equal(await none.createProjection(AGENT, ticket()), undefined);
 
-  const notMember = { tryMembership: () => undefined, createTask: async () => ({}), getTask: () => ({}), listTasks: () => [], updateTask: async () => ({}) };
-  assert.equal(createTeamBoardBridge({ getService: () => notMember }).available(AGENT), undefined);
+  // Team 未开启（本模式强制开启，但服务可能属于别的部署/会话）。
+  const disabled = { isEnabled: () => false, createTask: async () => ({}), getTask: () => ({}), listTasks: () => [], updateTask: async () => ({}) };
+  assert.equal(createTeamBoardBridge({ getService: () => disabled }).available(AGENT), undefined);
+  // `isEnabled` 返回非 true（undefined）也按"未开启"处理。
+  const unknown = { ...disabled, isEnabled: () => undefined };
+  assert.equal(createTeamBoardBridge({ getService: () => unknown }).available(AGENT), undefined);
 
-  const incomplete = { tryMembership: () => ({}) };
+  // 服务在但方法不全：不能半可用（缺 listTasks 会让"收养旧任务"静默失败）。
+  const incomplete = { isEnabled: () => true };
   assert.equal(createTeamBoardBridge({ getService: () => incomplete }).available(AGENT), undefined);
 });
 

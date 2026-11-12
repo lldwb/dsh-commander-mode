@@ -9,7 +9,8 @@
  *
  * 1. **七条规则的 id 固定**（其它模块与测试按 id 引用，改名等于破坏契约）；
  * 2. **三层层级定义**（level 0/1/2 与各自的职责边界）；
- * 3. **数字口径与运行时一致**（深度 2 / 并行 16）—— 模型没法自己读运行时配置，
+ * 3. **数字口径与运行时一致**（本 preset 的 `maxDepth: 2` / 宿主 `subagent.maxActiveSubagents`
+ *    默认 8）—— 模型没法自己读运行时配置，
  *    文本里的数字一旦与配置不一致，它就会按错的容量做规划；
  * 4. **紧凑版非空且短**（它每轮注入 system prompt，空间有限）。
  */
@@ -61,13 +62,15 @@ test('七条规则各自覆盖用户 2026-11-11 的一条要求', () => {
   const byId = new Map(TEAM_MODEL_RULES.map((rule) => [rule.id, rule]));
 
   // 规则 3：三层与职责；最大递归深度 2（小组长 L1、子智能体 L2、L2 不再向下派）。
-  assert.match(byId.get('hierarchy').detail, /maxDepth=2|深度 2/u);
+  // 6.0.0：口径从「深度 2」改成运行时真实键值「本 preset 的 delegation 行设 maxDepth: 2」。
+  assert.match(byId.get('hierarchy').detail, /maxDepth: 2|深度 2/u);
   assert.match(byId.get('hierarchy').detail, /L2/u);
 
-  // 规则 2：并行上限 16，插件不再自己压低；撞上限才排队。
-  assert.match(byId.get('runtime-limits').detail, /16/u);
+  // 规则 2：并行上限由宿主决定（rc.2 默认 8），插件不自己压低；撞上限才排队。
+  // 6.0.0：旧 Team 的 `maxMembers` 概念已移除，数字从 16 改为宿主默认 8。
+  assert.match(byId.get('runtime-limits').detail, /默认 8/u);
   assert.match(byId.get('runtime-limits').detail, /maxActiveSubagents/u);
-  assert.match(byId.get('runtime-limits').detail, /不再自己压低/u);
+  assert.match(byId.get('runtime-limits').detail, /不自己压低/u);
 
   // 规则 1/3：一个团队一个小任务，大任务拆成多个团队。
   assert.match(byId.get('one-team-one-task').detail, /一个团队/u);
@@ -119,8 +122,8 @@ test('HIERARCHY_LEVELS 三层，level 0/1/2 各自职责清晰', () => {
     assert.ok(commander.owns.includes(owns), `L0 的 owns 缺 ${owns}`);
   }
 
-  // L1：spawn_teammate 建出的具名队友 —— 一个团队任务；自己执行或交下级；进展与排期。
-  assert.match(leader.who, /spawn_teammate/u);
+  // L1：subagent 建出的具名队友 —— 一个团队任务；自己执行或交下级；进展与排期。
+  assert.match(leader.who, /subagent/u);
   assert.match(leader.owns, /一个团队任务/u);
   assert.match(leader.owns, /自己执行或交下级/u);
   assert.match(leader.owns, /进展与排期/u);
@@ -146,7 +149,8 @@ test('HIERARCHY_LEVELS 是冻结常量（防运行时被改写）', () => {
 test('TEAM_MODEL 含三层标题、关键数字与「小组长」口径', () => {
   // 第一行是 H1 标题（拼进别的 H1 文档时由调用方降级）。
   assert.ok(TEAM_MODEL.startsWith('# 团队模型：指挥官 → 小组长 → 子智能体'), TEAM_MODEL.slice(0, 120));
-  for (const phrase of ['深度 2', '16', '小组长', '子智能体', 'maxDepth', 'maxActiveSubagents']) {
+  // 6.0.0：数字口径改为「本 preset 的 maxDepth: 2」+「宿主 maxActiveSubagents 默认 8」。
+  for (const phrase of ['maxDepth: 2', '默认 8', '小组长', '子智能体', 'maxDepth', 'maxActiveSubagents']) {
     assert.ok(TEAM_MODEL.includes(phrase), `TEAM_MODEL 缺少：${phrase}`);
   }
   // 三层逐层渲染（L0/L1/L2 + 名字）。
@@ -194,11 +198,17 @@ test('TEAM_MODEL_BRIEF 非空、是短行数组，且每条都是可执行的规
 
 test('TEAM_MODEL_BRIEF 覆盖 3.0.0 的五个动作级口径', () => {
   const joined = TEAM_MODEL_BRIEF.join('\n');
-  for (const phrase of ['三层指挥链', '深度 2', '16', '只有小组长', '一个团队一个任务', 'spawn_teammate']) {
+  // 6.0.0：紧凑版口径同步为「本 preset 设 maxDepth: 2」「宿主默认 8」。
+  for (const phrase of ['三层指挥链', 'maxDepth: 2', '默认 8', '只有小组长', '一个团队一个任务', 'subagent']) {
     assert.ok(joined.includes(phrase), `紧凑版缺少：${phrase}`);
   }
-  // 紧凑版会被拼进**默认 section**（名册可能为空），所以不能出现 `subagent_<id>`
-  // 或 "specialist" —— 那会提示模型去调用一个可能不存在的工具。
-  assert.ok(!joined.includes('subagent_'), '紧凑版不应出现 subagent_ 工具名');
+  // 紧凑版会被拼进**默认 section**（名册可能为空），所以不能出现名册生成的
+  // `subagent_<id>` 一次性专家工具名或 "specialist" —— 那会提示模型去调用一个
+  // 可能不存在的工具。
+  // 6.0.0：标准工具 `subagent` / `subagent_fork`（建小组长的通道）允许出现，
+  // 所以不能再笼统地禁 `subagent_` 子串（`subagent_fork` 里就有）。
+  assert.ok(!joined.includes('subagent_<id>'), '紧凑版不应出现 subagent_<id> 工具名');
+  const rosterToolRefs = joined.match(/`subagent_(?!fork\b)[a-z][a-z0-9_-]*`/gu);
+  assert.equal(rosterToolRefs, null, `紧凑版不应出现名册工具名：${rosterToolRefs}`);
   assert.ok(!/specialist/iu.test(joined), '紧凑版不应出现 specialist');
 });

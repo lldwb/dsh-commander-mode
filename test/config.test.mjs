@@ -52,9 +52,10 @@ test('默认配置保持 0.1.x 的行为', () => {
   const config = Config();
   assert.equal(config.confirmPlan, true);
   assert.equal(config.escalateOnConflict, true);
-  // 3.0.0（规则 2）：并行上限取运行时「子智能体」设置（maxActiveSubagents / maxMembers
-  // 都是 16），插件不再自己压低到 8。
-  assert.equal(config.maxTeammates, 16);
+  // 6.0.0（DSH 0.2.2-rc.2）：`agent-team.maxMembers` 概念已移除，真实并行上限由宿主
+  // `subagent.maxActiveSubagents` 决定（rc.2 默认 8）。本插件的 maxTeammates 只是写进
+  // 协议的**建议值**，默认从 16 改为 8（与宿主默认对齐）。
+  assert.equal(config.maxTeammates, 8);
   assert.equal(config.registerSkill, true);
   assert.equal(config.maxSpecialists, 20);
   assert.deepEqual(config.blockedTools, [...DEFAULT_BLOCKED_TOOLS]);
@@ -105,9 +106,9 @@ test('maxSpecialists 允许 0（禁用名册），拒绝负数与小数', () => 
 
 test('maxTeammates 被限制在 1-16', () => {
   // 这个数字会原样写进协议（"建议并行 N 个"）。0 会让协议写出"最多 0 个"，
-  // 100 会让模型一次扇出几十个 teammate 把配额烧光。
-  // 3.0.0（规则 2）：上限从 12 抬到 16，与运行时 `subagent.maxActiveSubagents=16` /
-  // `agent-team.maxMembers=16` 对齐——插件不再自己压低并行度。
+  // 100 会让模型一次扇出几十个小组长把配额烧光。
+  // 3.0.0（规则 2）：上限从 12 抬到 16，给宿主把 maxActiveSubagents 调大的部署留空间。
+  // 6.0.0：默认值 16 → 8（宿主 `subagent.maxActiveSubagents` 默认 8）；上限仍是 16。
   assert.equal(Config({ maxTeammates: 1 }).maxTeammates, 1);
   assert.equal(Config({ maxTeammates: 16 }).maxTeammates, 16);
   assert.throws(() => Config({ maxTeammates: 0 }));
@@ -117,11 +118,13 @@ test('maxTeammates 被限制在 1-16', () => {
 test('readMaxTeammates 把 null 当作"未配置"，而不是 0', () => {
   // 手写 patch 里把 `maxTeammates:` 留空会得到 YAML null；`Number(null) === 0` 曾被夹成 1，
   // 协议于是静默变成"建议并行 1 个"，与 undefined/NaN 回退默认值的行为不一致。
-  // 3.0.0 起默认值是 16（运行时并行上限）。
-  assert.equal(readMaxTeammates(null), 16);
-  assert.equal(readMaxTeammates(undefined), 16);
-  assert.equal(readMaxTeammates(Number.NaN), 16);
-  assert.equal(readMaxTeammates({ get: () => null }), 16, 'volatile 引用解引用后是 null 也要回退');
+  // 6.0.0：schema 默认与 `readMaxTeammates()` 的裸回退统一为 8（rc.2 宿主
+  // 这个读取器只覆盖未经 schema 的路径（单测 / 手写解析），所以断言按 lib 现状钉住；
+  // 是否统一成 8 见迁移报告的 lib 侧问题清单。
+  assert.equal(readMaxTeammates(null), 8);
+  assert.equal(readMaxTeammates(undefined), 8);
+  assert.equal(readMaxTeammates(Number.NaN), 8);
+  assert.equal(readMaxTeammates({ get: () => null }), 8, 'volatile 引用解引用后是 null 也要回退');
 });
 
 test('blockedTools 的默认值必须与 guard 的默认拦截清单一致', () => {
@@ -282,8 +285,8 @@ test('readBlockedTools 的空数组表示"只留协议约束"', () => {
 
 test('readMaxTeammates 夹到 1-16 并四舍五入', () => {
   // 这个值会写进 prompt 的并行建议。0 / Infinity / NaN 都会让协议给出无法执行的
-  // 建议（"最多 0 个"或"不限量"）。3.0.0：默认与上限都是 16（运行时并行上限）。
-  assert.equal(readMaxTeammates(undefined), 16);
+  // 建议（"最多 0 个"或"不限量"）。6.0.0：schema 默认 8、裸回退也是 8、上限 16。
+  assert.equal(readMaxTeammates(undefined), 8);
   assert.equal(readMaxTeammates({ get: () => 9 }), 9, 'volatile 引用要解引用');
   assert.equal(readMaxTeammates('7'), 7, '数字字符串来自 YAML 时是合法输入');
   assert.equal(readMaxTeammates(3.5), 4);
@@ -293,8 +296,8 @@ test('readMaxTeammates 夹到 1-16 并四舍五入', () => {
   assert.equal(readMaxTeammates(17), 16);
   assert.equal(readMaxTeammates(0), 1);
   assert.equal(readMaxTeammates(-5), 1);
-  assert.equal(readMaxTeammates(Number.NaN), 16);
-  assert.equal(readMaxTeammates({}), 16);
+  assert.equal(readMaxTeammates(Number.NaN), 8);
+  assert.equal(readMaxTeammates({}), 8);
 });
 
 // ---------------------------------------------------------------- 解析 ---
@@ -308,7 +311,10 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       escalateOnConflict: true,
       registerSkill: true,
       syncGuard: true,
-      maxTeammates: 16,
+      // 6.0.0：schema 默认是 8；这里的 16 是 `readMaxTeammates()` 对"完全没给
+      // maxTeammates"的裸回退（`resolveConfig({})` 走的是未经 schema 的路径），
+      // 与 schema / protocol 的 8 不一致 —— 按 lib 现状钉住，待 lib 统一后改 8。
+      maxTeammates: 8,
       // 3.0.0：三层指挥链门禁（只有小组长改进度/排期、指挥官不直调子智能体）默认开启。
       delegationHierarchy: true,
       blockedTools: [...DEFAULT_BLOCKED_TOOLS],
@@ -463,7 +469,7 @@ test('5.0.0：默认 confirmPlan 开、requireMandate 关；显式打开 require
 // ------------------- 3.4.0 teamTaskProjection / requireTeamTask 冲突 ---
 //
 // 交叉审计发现的同类死锁：关掉投影后工单不会出现在任务板上，而 D-1 要求
-// `spawn_teammate` 前工单已有投影 → Team 通道永远派不出去（与 def6609d 同一形状）。
+// `subagent` 前工单已有投影 → Team 通道永远派不出去（与 def6609d 同一形状）。
 // 既然不投影，就不能再要求"已有投影"。
 
 test('3.4.0：teamTaskProjection:false 自动把 requireTeamTask 视为 false（并告警）', () => {
@@ -576,13 +582,17 @@ test('0.7.0 异步配置：默认开、可关、上限夹到 1–16', () => {
 
 // ------------------------------------------------ 3.0.0 三层指挥链配置 ---
 
-test('3.0.0：maxTeammates / maxAsyncTasks 的 schema 上限都是 16（规则 2）', () => {
+test('3.0.0 / 6.0.0：maxTeammates 默认 8、maxAsyncTasks 默认 16，schema 上限都是 16', () => {
   // 用户 2026-11-11 规则 2：并行上限取运行时「子智能体」设置
-  // （`subagent.maxActiveSubagents=16`、`agent-team.maxMembers=16`），插件不再自己压低。
+  // （`subagent.maxActiveSubagents`，rc.2 默认 8），插件不再自己压低。
+  // 6.0.0：旧的 `agent-team.maxMembers` 已移除，maxTeammates 从"成员上限"变成
+  // "写进协议的建议值"，默认 16 → 8（与宿主默认对齐）；maxAsyncTasks 仍是 16
+  // （一次性 specialist 的单点交付并行度，与宿主 subagent 上限同档）。
   // schema 的上限与默认值必须一起改：只改默认值会让用户写 16 被 schema 拒；
   // 只改上限不改默认值则等于没放开。
+  assert.equal(Config.dict.maxTeammates.meta.default, 8, 'maxTeammates 默认值应为 8');
+  assert.equal(Config.dict.maxAsyncTasks.meta.default, 16, 'maxAsyncTasks 默认值应为 16');
   for (const key of ['maxTeammates', 'maxAsyncTasks']) {
-    assert.equal(Config.dict[key].meta.default, 16, `${key} 默认值应为 16`);
     assert.equal(Config.dict[key].meta.max, 16, `${key} 上限应为 16`);
   }
 });

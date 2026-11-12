@@ -38,9 +38,16 @@ function task(id, status, extra = {}) {
   return { id, revision: 1, subject: `任务 ${id}`, description: '', status, blockedBy: [], writeScopes: [], ready: false, writeScopeErrors: [], ...extra };
 }
 
-/** 一行成员 view（字段取自 `agentTeams.listMembers()` 的真实返回：`status` 不是 `phase`）。 */
-function member(name, status, role = 'teammate') {
-  return { id: `id-${name}`, name, role, status, description: '', provider: 'spawn', context: 'fresh', diagnostics: [] };
+/**
+ * 一行成员 view。
+ *
+ * 6.0.0（DSH 0.2.2-rc.2）：`agentTeams.listMembers()` 已移除，成员改由
+ * `ctx.subagents.listDescendants(sessionId)` 快照读取（agent.js 缓存），形状是
+ * `{ name, status }` —— `status` 只有 `running` / `inactive`，`role` 恒为 `member`、
+ * 不再有 lead 行（Lead 是主会话，本来就不在成员里）。
+ */
+function member(name, status) {
+  return { name, status, role: 'member', depth: 1 };
 }
 
 // ---------------------------------------------------------------- 常量 ---
@@ -210,16 +217,17 @@ test('兜底提醒点名任务与工具，并要求补充回执而不是重复�
   assert.ok(nudge.includes('不要重复刚才的报告'), nudge);
 });
 
-test('看板里成员状态读 `status`（真实 view 字段），也容忍旧的 `phase`', () => {
+test('看板里成员状态读 `status`（真实快照字段），也容忍旧的 `phase`', () => {
   const ledger = createSyncLedger();
   recordBoard(ledger, [task('task-1', 'completed')]);
   const view = evaluateSync(ledger);
-  // 真实服务：listMembers() 的 row 用 status。
+  // 真实快照（`subagents.listDescendants`）只有 running / inactive 两态。
   assert.ok(renderSyncBoard(view, [member('browser-ops', 'inactive')]).includes('browser-ops inactive'));
+  assert.ok(renderSyncBoard(view, [member('reviewer', 'running')]).includes('reviewer running'));
   // 容忍：team/member 事件的形状是 phase，手写夹具可能给这个。
-  assert.ok(renderSyncBoard(view, [{ name: 'expert', role: 'teammate', phase: 'running' }]).includes('expert running'));
+  assert.ok(renderSyncBoard(view, [{ name: 'expert', role: 'member', phase: 'running' }]).includes('expert running'));
   // 两者都没有时给 unknown，而不是 undefined。
-  assert.ok(renderSyncBoard(view, [{ name: 'x', role: 'teammate' }]).includes('x unknown'));
+  assert.ok(renderSyncBoard(view, [{ name: 'x', role: 'member' }]).includes('x unknown'));
 });
 
 test('没有未同步项时兜底提醒是空串', () => {
@@ -251,7 +259,7 @@ test('超过宽限期仍无人认领的任务算孤儿，并点名到任务 id',
   assert.ok(issue.detail.includes('task-3'), issue.detail);
   // 兜底提醒要点名"建板必有主"的两个出路。
   const nudge = buildSyncNudge(view);
-  assert.ok(nudge.includes('spawn_teammate'), nudge);
+  assert.ok(nudge.includes('subagent'), nudge);
   assert.ok(nudge.includes('team_task_update'), nudge);
 });
 
@@ -316,7 +324,7 @@ test('最近三次派活全走一次性 specialist、且任务板还开着 → �
   assert.ok(issue.detail.includes('一次性 specialist'), issue.detail);
   assert.ok(issue.detail.includes('task-14'), issue.detail);
   // 提示要给出正确出路：Team 通道。
-  assert.ok(renderSyncBoard(view).includes('spawn_teammate'));
+  assert.ok(renderSyncBoard(view).includes('subagent'));
 });
 
 test('团队通道有派活 / 任务板已清空 / 次数不够 → 都不报团队闲置', () => {
@@ -369,15 +377,16 @@ test('派发计数与最近序列：只收两种通道，序列有上限', () =>
   assert.doesNotThrow(() => recordDelegation({}, DELEGATION_CHANNELS.TEAM));
 });
 
-test('看板给出派发通道配比；没有 teammate 时点名"重启不会自动复活"', () => {
+test('看板给出派发通道配比；没有成员时点名"重启不会自动复活"', () => {
   const ledger = createSyncLedger();
   recordBoard(ledger, [task('task-14', 'pending', { ready: true })], 0);
   recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message');
   recordDelegation(ledger, DELEGATION_CHANNELS.ONE_SHOT, 'subagent_implementer');
   const text = renderSyncBoard(evaluateSync(ledger, { now: 60_000 }), []);
   assert.ok(text.includes('派发通道：Team 1 次 / 一次性 specialist 1 次'), text);
-  assert.ok(text.includes('无 teammate'), text);
-  assert.ok(text.includes('spawn_teammate'), text);
+  // 6.0.0：成员就是可续做的标准 subagent / 小组长，所以看板文案是「无小组长」。
+  assert.ok(text.includes('无小组长'), text);
+  assert.ok(text.includes('subagent'), text);
 });
 
 test('孤儿任务每条会话只强提醒一次，之后降级为看板常驻', () => {

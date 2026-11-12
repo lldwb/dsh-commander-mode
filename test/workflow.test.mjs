@@ -87,7 +87,7 @@ test('六段齐全、顺序固定，每段都有六件套（目的/动作/产物
 
 test('每段点名专家小组长（architect-lead 等），subagent_<id> 只作为可交下级的工具出现', () => {
   // 3.0.0（规则 3 + 规则 5）：六段流水线的执行者是**专家小组长**（团队模型 L1），
-  // 项目经理用 `spawn_teammate` 建它、`send_message` 派活；`subagent_<id>` 是**小组长**
+  // 项目经理用 `subagent` 建它、`send_message` 派活；`subagent_<id>` 是**小组长**
   // 用来把子任务交给下级子智能体（L2）的工具，不是项目经理的直调通道。
   //
   // 2.x 的断言只检查 `subagent_<id>` 出现在该段（那在 3.0.0 里依然成立，所以旧断言会
@@ -122,7 +122,7 @@ test('每段点名专家小组长（architect-lead 等），subagent_<id> 只作
   }
   // 小组长可以自己执行，也可以交下级——这条口径必须写在开工前那一节。
   assert.ok(WORKFLOW_PROTOCOL.includes('专家小组长可以自己执行'), WORKFLOW_PROTOCOL.slice(0, 800));
-  assert.ok(WORKFLOW_PROTOCOL.includes('`spawn_teammate` 建'), '要写清专家小组长由 spawn_teammate 建');
+  assert.ok(WORKFLOW_PROTOCOL.includes('`subagent` 建'), '要写清专家小组长由 subagent 建');
 });
 
 test('20 个方法 skill 全部出现在阶段索引里', () => {

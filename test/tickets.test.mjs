@@ -235,7 +235,7 @@ test('看板最多列 maxItems 项，按需要人优先排序', () => {
 
 test('ticketView 只输出可读字段与最近回报', () => {
   const row = settleAssignment(
-    recordAssignment(ticket(), { id: 'a-1', channel: 'team', toolName: 'spawn_teammate', at: AT }),
+    recordAssignment(ticket(), { id: 'a-1', channel: 'team', toolName: 'subagent', at: AT }),
     AT + 1,
     'teammate-1',
   );

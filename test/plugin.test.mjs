@@ -86,13 +86,16 @@ function makeSettings(initial = {}) {
 }
 
 /** `subagents` 服务的替身：记录 startActivation，result 返回给定结算。 */
-function makeSubagents(record, settlement = { output: [{ type: 'text', text: '子代理答复' }], stopReason: 'completed' }) {
+function makeSubagents(record, settlement = { output: [{ type: 'text', text: '子代理答复' }], stopReason: 'completed' }, descendants = []) {
   return {
     resolveMaxDepth: (depth) => depth,
     startActivation: async (request) => {
       record.activations.push(request);
       return { childId: 'child-1', result: Promise.resolve(settlement), dispose: async () => {} };
     },
+    // 6.0.0：Team 成员改由 subagent 树读（`agentTeams.listMembers()` 已被 rc.2 移除），
+    // 形状是 `{ kind, id, path, activity, depth }`；agent.js 只取 `kind === 'child'` 的行。
+    listDescendants: async () => descendants,
   };
 }
 
@@ -102,7 +105,7 @@ function makeSubagents(record, settlement = { output: [{ type: 'text', text: '�
  * `inject` 回调收到的子上下文带着该依赖对应的桩服务；`effect()` 立即执行回调（与 Cordis
  * 的挂载语义一致），返回的 disposer 被记录下来。
  */
-function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, workers } = {}) {
+function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, workers, descendants } = {}) {
   const record = {
     sections: [],
     contexts: [],
@@ -143,7 +146,7 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
           };
         },
       },
-      subagents: makeSubagents(record, settlement),
+      subagents: makeSubagents(record, settlement, descendants),
       agentPresets: {
         register: async (definition) => {
           record.presets.push(definition);
@@ -271,21 +274,18 @@ function injectableLead() {
 /**
  * `agentTeams` 服务的替身。
  *
- * 只有 `tryMembership` / `listTasks` / `listMembers` 三个读方法是本插件用到的。
+ * 6.0.0（DSH 0.2.2-rc.2）：成员/名册 API（`tryMembership` / `listMembers`）已被移除，
+ * 本插件只剩 `isEnabled`（Team 模式是否开启，本模式强制开启）与 `listTasks` 两个读方法；
+ * 团队成员改从 `subagents.listDescendants()` 读（见上面的 `makeSubagents`）。
  *
- * @param {{ tasks?: object[], members?: object[], member?: boolean }} [options] - 初始视图。
- * @returns {object} 服务替身（`tasks`/`members` 可在测试里直接替换）。
+ * @param {{ tasks?: object[] }} [options] - 初始视图。
+ * @returns {object} 服务替身（`tasks` 可在测试里直接替换）。
  */
 function makeAgentTeams(options = {}) {
   const service = {
-    member: options.member !== false,
     tasks: options.tasks ?? [],
-    // 真实 `listMembers()` 的 row 用 `status`（running / inactive / provisioning / failed），
-    // Lead 自己也在列表里（role: 'lead'）。
-    members: options.members ?? [{ id: 'lead', name: 'lead', role: 'lead', status: 'running', diagnostics: [] }],
-    tryMembership: () => (service.member ? { role: 'lead' } : undefined),
+    isEnabled: () => options.enabled !== false,
     listTasks: () => service.tasks,
-    listMembers: () => service.members,
   };
   return service;
 }
@@ -339,8 +339,9 @@ test('没有配置服务时用默认值降级（模式仍然成立）', () => {
   preExecute(made.record);
   // 默认值来自 resolveConfig(undefined)，与 schema 默认一致。
   assert.equal(FALLBACK_OPTIONS.confirmPlan, true);
-  // 3.0.0：默认并行上限 8 → 16（与运行时「子智能体」设置对齐，规则 2）。
-  assert.equal(FALLBACK_OPTIONS.maxTeammates, 16);
+  // 6.0.0：默认建议并行上限从 16 改为 8（= DSH 0.2.2-rc.2 宿主的
+  // `subagent.maxActiveSubagents` 默认值；插件只是把它写进协议，不自己压低上限）。
+  assert.equal(FALLBACK_OPTIONS.maxTeammates, 8);
   assert.equal(FALLBACK_OPTIONS.delegationHierarchy, true, '三层指挥链门禁默认开启');
 });
 
@@ -389,7 +390,7 @@ test('放行时必须走 next()，不能自己返回 allow', async () => {
   for (const exec of [
     { name: 'read', agent: LEAD },
     { name: 'write', agent: TEAMMATE },
-    { name: 'spawn_teammate', agent: LEAD },
+    { name: 'subagent', agent: LEAD },
   ]) {
     const { next, calls } = spyNext();
     const decision = await listener(exec, next);
@@ -434,36 +435,43 @@ test('没有派发工具时放行，避免会话死锁', async () => {
   assert.equal(calls.count, 1);
 });
 
-test('agent 自己的 scope 里有 spawn_teammate 时照常拦截', async () => {
+test('agent 自己的 scope 里有 subagent 时照常拦截', async () => {
   const listener = preExecute(boot().record);
   const normalLead = {
     id: 'session-lead',
     session: { header: { id: 'session-lead' } },
-    ctx: { tools: { schemas: () => [{ name: 'spawn_teammate' }, { name: 'read' }, { name: 'write' }] } },
+    ctx: { tools: { schemas: () => [{ name: 'subagent' }, { name: 'read' }, { name: 'write' }] } },
   };
   const { next } = spyNext();
   const decision = await listener({ name: 'write', agent: normalLead }, next);
   assert.equal(decision.kind, 'deny');
 });
 
-test('只有 specialist 工具时也算有派发通道（不会被误判成死锁）', async () => {
+test('6.0.0：只有 specialist 工具时不再算有派发通道（层级门禁开启 → 放行避免死锁）', async () => {
+  // 6.0.0 收窄（lib/guard.js `hasUsableDispatchChannel`）：名册生成的一次性专家工具归小组长，
+  // **只在 `delegationHierarchy: false` 时**才算指挥官的可用派发通道。默认开启时，视图里只有
+  // `subagent_<id>` 等于没有可用通道 → `canDelegate === false` → 放行 write（宁可漏拦，不可拦死）。
+  const specialistLead = leadWithTools(['subagent_reviewer', 'read', 'write']);
   const listener = preExecute(boot({ specialists: ROSTER }).record);
-  const specialistLead = {
-    id: 'session-lead',
-    session: { header: { id: 'session-lead' } },
-    ctx: { tools: { schemas: () => [{ name: 'subagent_reviewer' }, { name: 'read' }, { name: 'write' }] } },
-  };
   const { next, calls } = spyNext();
-  const decision = await listener({ name: 'write', agent: specialistLead }, next);
-  assert.equal(decision.kind, 'deny');
-  assert.equal(calls.count, 0);
+  const allowed = await listener({ name: 'write', agent: specialistLead }, next);
+  assert.deepEqual(allowed, { kind: 'allow' }, '层级门禁开启时一次性专家工具不算通道 → 放行（逃生门）');
+  assert.equal(calls.count, 1, '放行必须走 next');
+
+  // 显式关掉层级门禁（2.x 语义）后，同一份视图重新算"有通道" → 仍拦 write。
+  const relaxedSettings = makeSettings({ specialists: ROSTER, options: { delegationHierarchy: false } });
+  const relaxed = preExecute(boot({ settings: relaxedSettings }).record);
+  const denied = await relaxed({ name: 'write', agent: specialistLead }, spyNext().next);
+  assert.equal(denied?.kind, 'deny', '关闭层级门禁后一次性专家工具是可用通道 → 仍拦 write');
+  assert.equal(denied.reason.includes('write'), true, denied.reason);
 });
 
-// ------------------------------------- 3.4.0 无 Team 通道的降级（接线层） ---
+// ------------------------------------- 6.0.0：Team 常驻，降级分支已删除 ---
 //
-// 交叉审计发现的死锁：层级门禁假设"指挥官总能用 Team 通道"。没有 Agent Teams 时，
-// 一次性子智能体是唯一出路 —— 拦了它 = 既不能自己动手也不能派活。所以接线层要能
-// 按 agent 的工具视图降级放行，**而有 Team 时仍然拦**（降级不是无条件放行）。
+// 3.4.0 曾因"层级门禁假设指挥官总能用 Team 通道"加过一套降级：没有 Agent Teams 时，
+// 一次性子智能体是唯一出路 → 接线层按工具视图降级放行。DSH 0.2.2-rc.2 起 Team 是 base
+// 自带、且本模式**强制开启**，所以 6.0.0 删除了 `hasTeamTools` 探测与全部降级分支：
+// 一次性专家工具恒归小组长，section 也不再按工具视图改口。
 
 /** 一个带工具视图的 Lead（`schemas()` 返回给定工具名）。 */
 function leadWithTools(names) {
@@ -474,60 +482,67 @@ function leadWithTools(names) {
   };
 }
 
-test('3.4.0 接线：没有 Team 工具的 Lead 调 subagent_* 不被层级门禁拒（降级放行）', async () => {
+test('6.0.0 接线：旧「没有 Team → 降级放行」已删除 —— 无 Team 视图的 Lead 调 subagent_* 仍被拒', async () => {
+  // 旧降级分支（没有 Agent Teams 时放行指挥官直调一次性专家）已随 rc.2 删除：
+  // `subagent` / `subagent_fork` / `send_message` 恒在，一次性专家工具仍归小组长。
   const listener = preExecute(boot({ specialists: ROSTER }).record);
   const noTeamLead = leadWithTools(['read', 'write', 'subagent_architect', 'subagent_reviewer', 'workflow']);
   const { next, calls } = spyNext();
   const decision = await listener({ name: 'subagent_architect', agent: noTeamLead }, next);
-  assert.deepEqual(decision, { kind: 'allow' }, '没有 Team 通道时应降级放行');
-  assert.equal(calls.count, 1, '放行必须走 next');
+  assert.equal(decision?.kind, 'deny', '6.0.0：不再按工具视图降级放行');
+  assert.ok(decision.reason.includes('小组长'), decision.reason);
+  assert.equal(calls.count, 0, '拒绝时不该调用 next');
 });
 
-test('3.4.0 接线对照：有 Team 工具的 Lead 调同一个工具仍被拒（降级不是放宽）', async () => {
+test('6.0.0 接线对照：有 Team 工具的 Lead 调同一个工具同样被拒（本来就不该放行）', async () => {
   const listener = preExecute(boot({ specialists: ROSTER }).record);
-  const teamLead = leadWithTools(['read', 'write', 'spawn_teammate', 'send_message', 'subagent_architect']);
+  const teamLead = leadWithTools(['read', 'write', 'subagent', 'send_message', 'subagent_architect']);
   const { next, calls } = spyNext();
   const decision = await listener({ name: 'subagent_architect', agent: teamLead }, next);
   assert.equal(decision?.kind, 'deny', '有 Team 通道时仍应拒绝指挥官直调子智能体');
   assert.ok(decision.reason.includes('小组长'), decision.reason);
   assert.equal(calls.count, 0);
-  // 只有 send_message（没有 spawn_teammate）也算"有 Team 通道" → 仍拒。
+  // 只有 send_message（没有 subagent）也算"有 Team 通道" → 仍拒。
   const sendOnlyLead = leadWithTools(['read', 'send_message', 'subagent_architect']);
   const second = await listener({ name: 'subagent_architect', agent: sendOnlyLead }, spyNext().next);
   assert.equal(second?.kind, 'deny');
 });
 
-test('3.4.0 接线：section 文本按工具视图改口（无 Team → 降级段；有 Team → 正常段）', async () => {
+test('6.0.0 接线：section 文本不再按工具视图改口（hasTeamTools 探测已删除）', async () => {
   const { record } = boot({ specialists: ROSTER });
   await flush();
   const section = record.sections[0];
+  // 6.0.0：`hasTeamTools` 选项与"没有 Team"降级段都已删除；section 只按**已安装名册**渲染，
+  // 与 agent 的工具视图无关 —— 所以下面两份视图得到同一份正常的两通道文本。
   const noTeam = section.text({ agent: leadWithTools(['read', 'write', 'subagent_architect', 'subagent_reviewer']) });
-  assert.ok(noTeam.includes('本部署**没有**智能体团队'), noTeam.slice(0, 400));
-  assert.ok(noTeam.includes('subagent_architect'), '降级段要点名名册里的工具');
-  assert.ok(!noTeam.includes('只有小组长用'), '无 Team 时不应说"只有小组长用"');
+  assert.ok(!noTeam.includes('本部署**没有**智能体团队'), noTeam.slice(0, 400));
+  assert.ok(noTeam.includes('subagent_architect'), '名册已安装，通道 A 照常点名工具');
+  assert.ok(noTeam.includes('只有小组长用'), 'Team 常驻：任何工具视图下都走正常的两通道说明');
 
-  const withTeam = section.text({ agent: leadWithTools(['read', 'spawn_teammate', 'send_message', 'subagent_architect']) });
-  assert.ok(withTeam.includes('只有小组长用'), '有 Team 时应走正常的两通道说明');
-  assert.ok(!withTeam.includes('本部署**没有**智能体团队'), withTeam.slice(0, 400));
+  const withTeam = section.text({ agent: leadWithTools(['read', 'subagent', 'send_message', 'subagent_architect']) });
+  assert.equal(withTeam, noTeam, 'section 不再随工具视图变化（旧降级改口已删除）');
 });
 
-test('3.4.0 接线：blockedTools 禁掉 Team 工具不再造成死锁（还有 specialist 时仍拦 write；全禁则放行）', async () => {
-  // 交叉审计的死锁：`canDelegate` 若只看工具视图，用户把 Team 工具写进 blockedTools 后
-  // 仍会得到"能派活"的假结论 → 执行边界继续拦 write → 而真正能调用的派发工具全被禁。
-  // 现在 `hasUsableDispatchChannel()` 按"真的能调用"算。
-  const lead = leadWithTools(['read', 'write', 'subagent_architect']);
+test('6.0.0 接线：blockedTools 禁掉 Team 通道不再造成死锁（workflow 仍算通道 → 拦；全禁 → 放行）', async () => {
+  // 死锁场景：`canDelegate` 若只看工具视图，用户把 Team 工具写进 blockedTools 后仍会得到
+  // "能派活"的假结论 → 执行边界继续拦 write → 而真正能调用的派发工具全被禁。
+  // 6.0.0：Team 通道 = `subagent` / `subagent_fork` / `send_message`；`workflow` 也算；
+  // 名册生成的一次性专家工具只在 `delegationHierarchy: false` 时才算通道。
+  const lead = leadWithTools(['read', 'write', 'subagent_architect', 'workflow']);
 
-  // ① Team 工具被 block、视图里也没有 → specialist 是唯一可用通道 → 仍应拦 write。
-  const withSpecialist = makeSettings({
-    options: { blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'spawn_teammate', 'send_message'] },
+  // ① Team 工具被 block，但 `workflow` 还在 → 仍有可用派活通道 → 仍应拦 write。
+  const withWorkflow = makeSettings({
+    options: { blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'subagent', 'subagent_fork', 'send_message'] },
   });
-  const denied = await preExecute(boot({ settings: withSpecialist }).record)({ name: 'write', agent: lead }, spyNext().next);
-  assert.equal(denied?.kind, 'deny', '还有 specialist 通道时执行边界仍应拦 write');
+  const denied = await preExecute(boot({ settings: withWorkflow }).record)({ name: 'write', agent: lead }, spyNext().next);
+  assert.equal(denied?.kind, 'deny', 'workflow 仍是可用通道时，执行边界应拦 write');
   assert.equal(denied.reason.includes('write'), true, denied.reason);
 
-  // ② 连 specialist 也 block → 没有任何可用派活通道 → 必须放行（逃生门，否则模式死锁）。
+  // ② 连 workflow 也 block → 没有任何可用派活通道 → 必须放行（逃生门，否则模式死锁）。
   const allBlocked = makeSettings({
-    options: { blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'spawn_teammate', 'send_message', 'subagent_architect'] },
+    options: {
+      blockedTools: [...DEFAULT_BLOCKED_TOOLS, 'subagent', 'subagent_fork', 'send_message', 'workflow', 'subagent_architect'],
+    },
   });
   const { next, calls } = spyNext();
   const allowed = await preExecute(boot({ settings: allBlocked }).record)({ name: 'write', agent: lead }, next);
@@ -775,7 +790,7 @@ test('派发通道观测：连续三次一次性 specialist 后，看板报"团�
   assert.ok(text.includes('派发通道：Team 0 次 / 一次性 specialist 3 次'), text);
   assert.ok(text.includes('一次性 specialist'), text);
   // 提示要给出 Team 通道的出路，而且不能把内部 issue code 泄漏到模型看得到的地方。
-  assert.ok(text.includes('spawn_teammate'), text);
+  assert.ok(text.includes('subagent'), text);
   assert.ok(!text.includes('channel-drift'), text);
 });
 
@@ -816,7 +831,7 @@ test('Team 通道派活会记进配比；等待/读状态/子级派发都不记'
 
   for (const exec of [
     { name: 'send_message', agent: LEAD },
-    { name: 'spawn_teammate', agent: LEAD },
+    { name: 'subagent', agent: LEAD },
     { name: 'wait_agent', agent: LEAD }, // 等待不算派活
     { name: 'list_agents', agent: LEAD }, // 读状态不算派活
     { name: 'team_task_create', agent: LEAD }, // 建板不算派活
@@ -842,17 +857,22 @@ test('syncGuard: false 时完全不记派发通道', () => {
   assert.equal(syncContext(record).text({ agent: LEAD }), '');
 });
 
-test('看板里带上团队状态（teammate 的 running/inactive），但过滤掉 Lead 自己', () => {
-  const agentTeams = makeAgentTeams({
-    tasks: [{ id: 'task-1', status: 'completed' }],
-    members: [
-      { id: 'lead', name: 'lead', role: 'lead', status: 'running' },
-      { id: 'm1', name: 'browser-ops', role: 'teammate', status: 'inactive' },
-      { id: 'm2', name: 'expert-knowledge', role: 'teammate', status: 'running' },
-    ],
-  });
-  const { record } = boot({ agentTeams });
-  const text = syncContext(record).text({ agent: LEAD });
+test('看板里带上团队状态（subagent 树快照的 running/inactive），不含 Lead 自己', async () => {
+  // 6.0.0：`agentTeams.listMembers()` 已移除，成员改由 `ctx.subagents.listDescendants(sessionId)`
+  // 的**缓存快照**读（agent.js 用异步刷新 + 同步读缓存；`tools/post-execute` 也会刷新）。
+  // 快照只取 `kind === 'child'` 的行，所以 Lead 自己（root 行）天然不会出现在团队状态里。
+  const agentTeams = makeAgentTeams({ tasks: [{ id: 'task-1', status: 'completed' }] });
+  const descendants = [
+    // Lead 自己：即使 listDescendants 返回了它，也必须被 `kind === 'child'` 过滤掉。
+    { kind: 'root', id: 'session-lead', path: 'lead', activity: 'running', depth: 0 },
+    { kind: 'child', id: 'child-1', path: 'browser-ops', activity: 'inactive', depth: 1 },
+    { kind: 'child', id: 'child-2', path: 'expert-knowledge', activity: 'running', depth: 1 },
+  ];
+  const { record } = boot({ agentTeams, descendants });
+  const context = syncContext(record);
+  context.text({ agent: LEAD }); // 第一次求值触发一次异步快照刷新
+  await flush(); // 等 `listDescendants()` 的 Promise 结算
+  const text = context.text({ agent: LEAD });
   assert.ok(text.includes('browser-ops inactive'), text);
   assert.ok(text.includes('expert-knowledge running'), text);
   assert.ok(!text.includes('lead running'), `不该把 Lead 自己算进团队状态：${text}`);

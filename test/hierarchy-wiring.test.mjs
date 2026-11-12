@@ -107,22 +107,33 @@ test('指挥者模式：Lead 改工单推进状态被拒、done/cancelled 放行
   );
 });
 
-test('指挥者模式：Lead 直接派子智能体被拒，workflow / Team 通道放行', async () => {
+test('指挥者模式：Lead 直接派一次性专家被拒，workflow / Team 通道放行', async () => {
   const { listener } = boot(applyCommander);
 
-  for (const name of ['subagent_architect', 'subagent_implementer', 'subagent', 'subagent_fork']) {
+  // 6.0.0：被拦的只剩**名册生成的一次性专家工具**（`subagent_<id>`）。`subagent` /
+  // `subagent_fork` 是建小组长的 Team 通道（旧 Team 的 `spawn_teammate` 已随 rc.2 移除），
+  // 对指挥官放行 —— 它们不再算"一次性专家工具"。
+  for (const name of ['subagent_architect', 'subagent_implementer']) {
     const reason = assertDenied(
       await decide(listener, name, LEAD, { task: '实现 X' }),
       `Lead 调 ${name}`,
     );
     assert.ok(reason.includes('小组长'), `${name} 的拒因应点名小组长：${reason}`);
-    assert.ok(reason.includes('spawn_teammate'), `${name} 的拒因应给出 spawn_teammate 出路：${reason}`);
+    assert.ok(reason.includes('subagent'), `${name} 的拒因应给出 subagent 出路：${reason}`);
+    // 拒因可以**泛指** `subagent_<id>`（"由小组长使用，你不要调用"），但不能教它去调具体工具。
+    assert.ok(!reason.includes(`2) 用 \`${name}\``), `${name} 的拒因不应教直调：${reason}`);
   }
 
-  // workflow 是编排通道，不在拦截范围；Team 通道本来就是指挥官该用的。
-  for (const name of ['workflow', 'spawn_teammate', 'send_message', 'team_task_create', 'team_task_list']) {
+  // workflow 是编排通道；Team 通道（建小组长 / 续做 / 建板 / 读板）本来就是指挥官该用的。
+  for (const name of ['workflow', 'subagent', 'send_message', 'team_task_create', 'team_task_list']) {
     assertAllowed(await decide(listener, name, LEAD, {}), `Lead 调 ${name}`);
   }
+
+  // `subagent_fork` 也是 Team 建人工具，6.0.0 语义下必须放行。
+  // （lib/guard.js 的 `isSpecialistDispatchTool()` 曾用 /^subagent_[a-z0-9_-]+$/ 只按前缀判定，
+  // 会把 `subagent_fork` 误当成名册生成的一次性专家工具；已在 lib 侧修正为先排除两个标准
+  // Team 工具名。这里钉住修复后的语义：指挥官可以用 `subagent_fork` 建小组长。）
+  assertAllowed(await decide(listener, 'subagent_fork', LEAD, {}), 'Lead 调 subagent_fork（Team 建人通道）');
 });
 
 test('指挥者模式：teammate（小组长）三条门禁全部放行（否则没人能干活）', async () => {
@@ -191,17 +202,20 @@ test('指挥者模式：执行边界拒因随 delegationHierarchy 切换（默�
   // `evaluatePreExecute()`，否则 `buildDenialReason` 会按默认（开启）生成理由——虽然默认值
   // 恰好一致，但一旦配置显式关掉，接线漏传就会让拒因继续教模型直调 `subagent_*`（与 2.x
   // 语义相反）。这里用一份"视图里真有 subagent_*"的 Lead 同时验证两个方向。
-  const toolView = ['read', 'write', 'pwsh', 'ask_user_question', 'spawn_teammate', 'send_message', 'subagent_architect'];
+  const toolView = ['read', 'write', 'pwsh', 'ask_user_question', 'subagent', 'send_message', 'subagent_architect'];
   const leadWithTools = {
     ...LEAD,
     ctx: { tools: { schemas: () => toolView.map((name) => ({ name })) } },
   };
 
-  // 默认（层级门禁开启）：拒因只给 Team 通道 + 小组长，绝不出现 subagent_*。
+  // 默认（层级门禁开启）：拒因只给 Team 通道 + 小组长，且明确"一次性专家工具归小组长、
+  // 你不要调用"。6.0.0：拒因里会出现**泛指**的 `subagent_<id>`（否定语境），所以旧断言
+  // `!includes('subagent_')` 改成"不得出现直调指令 + 必须出现否定语境"。
   const on = boot(applyCommander);
   const deniedOn = assertDenied(await decide(on.listener, 'write', leadWithTools, {}), 'write（层级门禁开启）');
-  assert.ok(!deniedOn.includes('subagent_'), `不得教指挥官直调 subagent_*：${deniedOn}`);
-  assert.ok(deniedOn.includes('spawn_teammate'), `必须给 Team 通道：${deniedOn}`);
+  assert.ok(!deniedOn.includes('2) 用 `subagent_architect`'), `不得教指挥官直调 subagent_*：${deniedOn}`);
+  assert.ok(deniedOn.includes('subagent_<id>') && deniedOn.includes('你不要调用'), `应说明一次性专家工具归小组长：${deniedOn}`);
+  assert.ok(deniedOn.includes('subagent'), `必须给 Team 通道：${deniedOn}`);
   assert.ok(deniedOn.includes('小组长'), `必须落到小组长：${deniedOn}`);
 
   // 显式关掉层级门禁（2.x 行为）：同一份视图恢复点名它真有的 specialist 工具。

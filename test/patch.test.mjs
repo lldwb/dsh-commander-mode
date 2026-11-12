@@ -80,8 +80,8 @@ test('3.7.0：能力行由同一份 JS 清单拼装（不再靠 YAML 逐字节�
 });
 
 test('与 preset-standard 的四处省略是有意为之', () => {
-  // 已核对到 DSH 0.2.2-rc.1：preset-standard（packages/bundle/web-app/presets/
-  // standard.patch.yml）顶层 22 行，本块镜像其中 18 行。
+  // 已核对到 DSH 0.2.2-rc.2：preset-standard（packages/bundle/web-app/presets/
+  // standard.patch.yml）顶层 23 行，本块镜像其中 19 行。
   // persona：不声明也已经生效，再声明有重复 section 的风险。
   // plan-mode：60 行随附文案，与本模式自带的"规划 + 让用户确认"冲突。
   // tool-plugin-manager：装插件属于"执行操作"，本模式下要派给子代理。
@@ -92,17 +92,21 @@ test('与 preset-standard 的四处省略是有意为之', () => {
   }
 });
 
-test('不声明旧的 subagent 控件，把派发通道让给智能体团队', () => {
-  // `@deepseek-ai/dsh-experimental-agent-team-profile` 会禁用 tool-subagent-control /
-  // tool-subagent / tool-subagent-fork。在 preset 里重新声明它们会把刚关掉的旧控件装回来，
-  // 于是同时拿到两套 send_message / list_agents / interrupt_agent。
-  // 3.7.0 起能力行在 JS 里，所以查 JS 清单（见 capabilities.test.mjs 的同类断言）。
-  const ids = capabilityRowIds();
-  for (const id of ['tool-subagent-control', 'tool-subagent-list-agents', 'tool-subagent', 'tool-subagent-fork']) {
-    assert.ok(!ids.includes(id), `能力清单不得包含 ${id} —— 它会与智能体团队冲突`);
+test('6.0.0：delegation 组声明标准 subagent 三行（Team 成员就是标准 subagent）', () => {
+  // rc.2 移除了 `@deepseek-ai/dsh-experimental-agent-team-profile` 与 Team 专属的
+  // spawn_teammate：Team 成员就是可续做的标准 subagent，建人/续做/纠偏走标准
+  // tool-subagent / tool-subagent-fork / tool-subagent-control。Web 的 base 层把这三行
+  // 全局禁用，preset 必须自己重述（否则指挥者没有建小组长的工具）。
+  const delegation = capabilityEntries().find((entry) => entry.id === 'delegation');
+  const childIds = delegation.config.map((row) => row.id);
+  for (const id of ['tool-subagent-control', 'tool-subagent', 'tool-subagent-fork']) {
+    assert.ok(childIds.includes(id), `delegation 组必须声明 ${id}`);
   }
-  // 也不许出现 subagent / subagent_fork 这两个工具名。
-  assert.ok(!PATCH.includes('toolName: subagent'));
+  // 已移除的 list-agents 子路径导出不得回来。
+  assert.ok(!childIds.includes('tool-subagent-list-agents'));
+  // 旧 Team 的 spawn_teammate 不得被**声明**（注释里说明"它已被移除"是允许的、也是必要的文档）。
+  assert.ok(!/^\s*- id: spawn_teammate\s*$/mu.test(PATCH), 'YAML 不得声明 spawn_teammate 行');
+  assert.ok(!/name:\s*['"]?@?[\w./-]*spawn_teammate/mu.test(PATCH), 'YAML 不得引用 spawn_teammate 模块');
 });
 
 test('0.2.2：tool-fs 显式写 applyPatch: false（逐字镜像 standard）', () => {
@@ -111,11 +115,17 @@ test('0.2.2：tool-fs 显式写 applyPatch: false（逐字镜像 standard）', (
   assert.deepEqual(toolFs, { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs', config: { applyPatch: false } });
 });
 
-test('delegation 组只保留 workflow 这条编排通道', () => {
+test('delegation 组 = 标准 subagent 三行 + workflow 编排两行', () => {
   const delegation = capabilityEntries().find((entry) => entry.id === 'delegation');
   assert.equal(delegation.group, true);
   assert.deepEqual(delegation.isolate, { workflowEngine: true });
-  assert.deepEqual(delegation.config.map((row) => row.id), ['workflow-ptc', 'tool-workflow']);
+  assert.deepEqual(delegation.config.map((row) => row.id), [
+    'tool-subagent-control',
+    'tool-subagent',
+    'tool-subagent-fork',
+    'workflow-ptc',
+    'tool-workflow',
+  ]);
 });
 
 test('compaction 组带着它自己的 isolate', () => {

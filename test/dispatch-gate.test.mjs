@@ -7,7 +7,7 @@
  *
  * ## 3.3.0：async + 自愈
  *
- * 会话 def6609d 的死锁：工单没有任务板投影 → 门禁拒绝 `spawn_teammate` 并让模型
+ * 会话 def6609d 的死锁：工单没有任务板投影 → 门禁拒绝 `subagent` 并让模型
  * "更新工单状态（例如 progress）触发投影"；而 3.0.0 起指挥官改工单推进状态被层级门禁
  * 拒绝 → **两条门禁互相矛盾，Team 通道永久不可用**。
  *
@@ -67,7 +67,7 @@ function gate(overrides = {}) {
 // ---------------------------------------------------------------- 识别 ---
 
 test('isNewWorkTool 只认开启新工作的工具', () => {
-  for (const name of ['subagent_implementer', 'subagent', 'subagent_fork', 'workflow', 'spawn_teammate', 'commander_worker_spawn']) {
+  for (const name of ['subagent_implementer', 'subagent', 'subagent_fork', 'workflow', 'subagent', 'commander_worker_spawn']) {
     assert.equal(isNewWorkTool(name), true, name);
   }
   for (const name of ['send_message', 'wait_agent', 'list_agents', 'team_task_create', 'commander_worker_send', 'read', '']) {
@@ -156,7 +156,7 @@ test('没有计划授权 → 拒绝，理由给出固定问题 id 与确认选�
 // 确实没有 `ask_user_question` 时跳过授权门禁（协议仍要求先讲计划）。
 
 /** 工具视图里没有 ask_user_question 的 agent 视图。 */
-const NO_ASK_TOOLS = ['read', 'write', 'spawn_teammate', 'send_message', 'subagent_architect'];
+const NO_ASK_TOOLS = ['read', 'write', 'subagent', 'send_message', 'subagent_architect'];
 
 test('3.4.0 降级：没有 ask_user_question + 无 mandate → 放行', async () => {
   assert.equal(
@@ -200,7 +200,7 @@ test('3.4.0 降级：没有 mandate 时不再校验"工单挂在旧授权下"', 
 test('3.4.0 降级判据：有 ask_user_question / 视图读不到 / 非数组 → 仍按"有"处理并拒绝', async () => {
   const noMandate = () => makeLedger({ mandate: null, tickets: [ticket()] });
   // 有 ask_user_question：原行为不变（必须先确认计划）。
-  const withAsk = await gate({ ledger: noMandate(), availableTools: ['read', 'ask_user_question', 'spawn_teammate'] });
+  const withAsk = await gate({ ledger: noMandate(), availableTools: ['read', 'ask_user_question', 'subagent'] });
   assert.equal(withAsk.kind, 'deny');
   assert.ok(withAsk.reason.includes(PLAN_QUESTION_ID), withAsk.reason);
   // 视图读不到（undefined）→ 按"有"处理。
@@ -249,7 +249,7 @@ test('工单建立在旧授权下 → 拒绝（计划已更新）', async () => 
 test('合法派发 → 放行（specialist 参数或 Team 标记都算）', async () => {
   assert.equal(await gate(), undefined);
   assert.equal(
-    await gate({ name: 'spawn_teammate', args: { prompt: '[ticket:t-1] 实现 X' }, ledger: makeLedger({ mandate: MANDATE, tickets: [ticket()] }) }),
+    await gate({ name: 'subagent', args: { prompt: '[ticket:t-1] 实现 X' }, ledger: makeLedger({ mandate: MANDATE, tickets: [ticket()] }) }),
     undefined,
   );
 });
@@ -277,7 +277,7 @@ const SPAWN_ARGS = { name: 'reviewer', prompt: '[ticket:t-1] 实现 X' };
 /** 无投影的工单 + 可派 teammate 的调用。 */
 function noProjectionGate(overrides = {}) {
   return gate({
-    name: 'spawn_teammate',
+    name: 'subagent',
     args: SPAWN_ARGS,
     ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
     teamBoard: board([]),
@@ -296,13 +296,13 @@ test('taskFromDispatchArgs：从 prompt/task/message 里找 [task:task-N]', () =
 
 test('D：没有 Agent Teams（teamBoard 为 undefined）→ 整段跳过，行为与 1.1.x 一致', async () => {
   assert.equal(
-    await gate({ name: 'spawn_teammate', args: SPAWN_ARGS, ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }) }),
+    await gate({ name: 'subagent', args: SPAWN_ARGS, ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }) }),
     undefined,
   );
   // 即使提供了 ensureTeamTask，也不该在没有任务板的部署里被调用。
   let called = 0;
   await gate({
-    name: 'spawn_teammate',
+    name: 'subagent',
     args: SPAWN_ARGS,
     ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
     ensureTeamTask: async () => { called += 1; return 'task-1'; },
@@ -359,7 +359,7 @@ test('D-1：自愈失败（返回 undefined / 抛错 / 未提供）→ 拒绝，
 
 test('D-1：投影任务不存在 → 拒绝，理由给"只改描述字段"与 worker 兜底', async () => {
   const missing = await gate({
-    name: 'spawn_teammate',
+    name: 'subagent',
     args: SPAWN_ARGS,
     ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] }),
     teamBoard: board([]),
@@ -374,7 +374,7 @@ test('D-1：投影任务不存在 → 拒绝，理由给"只改描述字段"与 
 test('D-1：投影任务已结束 → 拒绝（要求新建工单）', async () => {
   for (const status of ['completed', 'deleted']) {
     const ended = await gate({
-      name: 'spawn_teammate',
+      name: 'subagent',
       args: SPAWN_ARGS,
       ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] }),
       teamBoard: board([{ id: 'task-1', status }]),
@@ -390,7 +390,7 @@ test('D-1：有有效投影 → 放行，且不会调用 ensureTeamTask（不重
   const ledger = makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] });
   assert.equal(
     await gate({
-      name: 'spawn_teammate',
+      name: 'subagent',
       args: SPAWN_ARGS,
       ledger,
       teamBoard: board([{ id: 'task-1', status: 'pending' }]),
@@ -403,7 +403,7 @@ test('D-1：有有效投影 → 放行，且不会调用 ensureTeamTask（不重
   // requireTeamTask=false 时无投影也放行（不尝试补建）。
   assert.equal(
     await gate({
-      name: 'spawn_teammate',
+      name: 'subagent',
       args: SPAWN_ARGS,
       ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
       teamBoard: board([]),
@@ -431,12 +431,12 @@ test('D-2：requireTeamTaskMarker 要求 prompt 带 [task:task-N] 且与投影�
   const ledger = makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: 'task-1' })] });
   const teamBoard = board([{ id: 'task-1', status: 'pending' }]);
 
-  const missing = await gate({ name: 'spawn_teammate', args: SPAWN_ARGS, ledger, teamBoard, requireTeamTask: true, requireTeamTaskMarker: true });
+  const missing = await gate({ name: 'subagent', args: SPAWN_ARGS, ledger, teamBoard, requireTeamTask: true, requireTeamTaskMarker: true });
   assert.equal(missing.kind, 'deny');
   assert.match(missing.reason, /\[task:task-N\]/u);
 
   const mismatched = await gate({
-    name: 'spawn_teammate',
+    name: 'subagent',
     args: { name: 'reviewer', prompt: '[ticket:t-1] [task:task-9] 实现' },
     ledger,
     teamBoard,
@@ -448,7 +448,7 @@ test('D-2：requireTeamTaskMarker 要求 prompt 带 [task:task-N] 且与投影�
 
   assert.equal(
     await gate({
-      name: 'spawn_teammate',
+      name: 'subagent',
       args: { name: 'reviewer', prompt: '[ticket:t-1] [task:task-1] 实现' },
       ledger,
       teamBoard,
@@ -462,7 +462,7 @@ test('D-2：requireTeamTaskMarker 要求 prompt 带 [task:task-N] 且与投影�
 test('D-2：自愈补建后，marker 要与新 taskId 一致', async () => {
   // 补建得到 task-9：prompt 里写 [task:task-9] 才放行，写旧 id 仍拒绝。
   const base = {
-    name: 'spawn_teammate',
+    name: 'subagent',
     ledger: makeLedger({ mandate: MANDATE, tickets: [ticket({ teamTaskId: null })] }),
     teamBoard: board([]),
     requireTeamTask: true,

@@ -140,30 +140,52 @@ test('5.0.0：模式行只在 preset 里，不在能力清单里', () => {
 
 // ------------------------------------------------ 能力清单本身 ---
 
-test('能力清单不含模式专属行与旧 subagent 控件', () => {
-  // 这份清单是"两个模式与 specialist 共用"的能力集合，不是模式组合：
+test('能力清单含 delegation 三行，不含模式专属行与已移除的旧控件', () => {
+  // 这份清单是"模式与 specialist 共用"的能力集合，不是模式组合：
   // - `commander-mode-agent` 混进来 → specialist preset 也会挂上指挥者协议，子代理拒绝动手；
-  // - `tool-subagent*` 混进来 → 与「智能体团队」的九个工具冲突（两套 send_message）；
   // - `tool-plugin-manager` / `tool-plugin-market` 混进来 → 装插件属于"执行操作"。
+  //
+  // 6.0.0（DSH 0.2.2-rc.2）：旧 Team 的专属控件已移除，Team 成员就是标准 subagent；
+  // 指挥者「建小组长 / 续做 / 纠偏」的通道是 delegation 组的 `tool-subagent-control` /
+  // `tool-subagent` / `tool-subagent-fork` 三行 —— 它们**必须**在清单里。旧版断言
+  // 「不得包含 tool-subagent*」随 Team 模型变更作废（现在不含它们反而说明能力缺了）。
   const ids = allCapabilityRowIds();
   for (const forbidden of ['commander-mode', 'commander-mode-agent', 'persona', 'plan-mode', 'tool-plugin-manager', 'tool-plugin-market']) {
     assert.ok(!ids.includes(forbidden), `能力清单不得包含 ${forbidden}`);
   }
-  for (const forbidden of ['tool-subagent', 'tool-subagent-fork', 'tool-subagent-control', 'tool-subagent-list-agents']) {
-    assert.ok(!ids.includes(forbidden), `能力清单不得包含旧控件 ${forbidden}`);
+  for (const required of ['tool-subagent-control', 'tool-subagent', 'tool-subagent-fork']) {
+    assert.ok(ids.includes(required), `能力清单必须包含 delegation 行 ${required}`);
   }
+  // 旧的 Team 专属 list-agents 行已移除（list_agents 现在由 subagent-control 行提供）。
+  assert.ok(!ids.includes('tool-subagent-list-agents'), '能力清单不应包含已移除的 tool-subagent-list-agents');
 });
 
 test('顶层行 id 与 capabilityRowIds() 一致，顺序稳定', () => {
   assert.deepEqual(capabilityRowIds(), CAPABILITY_ROWS.map((row) => row.id));
   assert.equal(capabilityRowIds()[0], 'agent-instructions');
-  assert.equal(capabilityRowIds().at(-1), 'present');
+  // 6.0.0：清单镜像 0.2.2 preset-standard 的 23 行、排除 persona / planning /
+  // tool-plugin-manager / tool-plugin-market，共 19 行；末行从 `present` 变成
+  // rc.1 新增的 `tool-office`。
+  assert.equal(capabilityRowIds().length, 19);
+  assert.equal(capabilityRowIds().at(-1), 'tool-office');
 });
 
 test('group 子行 id 与 JS 常量一致', () => {
+  // 6.0.0：delegation 组新增 `tool-subagent-control` / `tool-subagent` /
+  // `tool-subagent-fork` 三行（旧 Team 控件已移除，改用标准 subagent 通道），
+  // 所以子行从 5 个变成 8 个。
   assert.deepEqual(
     jsChildRows().map((child) => child.id),
-    ['compaction-basic', 'command-compact', 'tool-result-pruner', 'workflow-ptc', 'tool-workflow'],
+    [
+      'compaction-basic',
+      'command-compact',
+      'tool-result-pruner',
+      'tool-subagent-control',
+      'tool-subagent',
+      'tool-subagent-fork',
+      'workflow-ptc',
+      'tool-workflow',
+    ],
   );
 });
 
@@ -215,6 +237,21 @@ test('关键行的 config 与行为一致', () => {
   assert.deepEqual(toEntry(pruner).config, { thresholdChars: 8192, headChars: 4096, tailChars: 1024 });
   const workflow = jsChildRows().find((row) => row.id === 'workflow-ptc');
   assert.deepEqual(toEntry(workflow).config, { provider: 'spawn' });
+  // 6.0.0：delegation 三行是「三层指挥链」的运行时依据 —— 两个 subagent 行都带
+  // `maxDepth: 2`（L1 小组长还能再派 L2 子智能体），control 行刻意不写 config
+  //（插件默认 `interrupt: true`，写 false 会把指挥官的纠偏通道关掉）。
+  const subagent = jsChildRows().find((row) => row.id === 'tool-subagent');
+  assert.deepEqual(toEntry(subagent).config, {
+    provider: 'spawn',
+    toolName: 'subagent',
+    modelSelection: true,
+    modelDiscovery: true,
+    maxDepth: 2,
+  });
+  const fork = jsChildRows().find((row) => row.id === 'tool-subagent-fork');
+  assert.deepEqual(toEntry(fork).config, { provider: 'fork', toolName: 'subagent_fork', maxDepth: 2 });
+  const control = jsChildRows().find((row) => row.id === 'tool-subagent-control');
+  assert.equal('config' in toEntry(control), false, 'tool-subagent-control 不应写 config（默认 interrupt: true）');
 });
 
 // ------------------------------------------------ toEntry ---

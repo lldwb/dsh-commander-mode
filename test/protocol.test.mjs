@@ -57,6 +57,21 @@ const SPECIALISTS = Object.freeze([
 const ROSTER = renderSpecialistRoster({ specialists: SPECIALISTS });
 const ROSTER_SECTION = renderCommanderSection({ specialists: SPECIALISTS, hasSpecialistTools: true });
 
+/**
+ * 从文本里抽出**名册生成的一次性专家工具**后缀（`subagent_<id>` → `<id>`）。
+ *
+ * 6.0.0：`subagent_fork` 是建小组长的 Team 工具（名字里也带 `subagent_` 前缀），
+ * 不是名册生成的一次性工具，必须排除；泛指的 `subagent_<id>`（尖括号占位）本来就匹配不到。
+ *
+ * @param {string} text - 协议文本。
+ * @returns {string[]} 出现的名册工具后缀。
+ */
+function rosterToolNames(text) {
+  return [...text.matchAll(/subagent_([a-z0-9][a-z0-9_-]*)/gu)]
+    .map((match) => match[1])
+    .filter((id) => id !== 'fork');
+}
+
 // ---------------------------------------------------------------- 原有硬要求 ---
 
 test('紧凑版点明身份与绝对边界', () => {
@@ -79,7 +94,7 @@ test('紧凑版把两次"必须问用户"都写进去了', () => {
 });
 
 test('紧凑版点名智能体团队的派发通道', () => {
-  for (const tool of ['spawn_teammate', 'send_message', 'wait_agent', 'list_agents', 'interrupt_agent', 'team_task_']) {
+  for (const tool of ['subagent', 'send_message', 'wait_agent', 'list_agents', 'interrupt_agent', 'team_task_']) {
     assert.ok(SECTION.includes(tool), `紧凑版应当点名 ${tool}`);
   }
   // 3.1.0：`wait_agent` 只以"被禁用"的身份出现，不能被当成可用通道。
@@ -138,15 +153,17 @@ test('escalateOnConflict: false 时去掉分歧上报这条触发条件', () => 
 });
 
 test('maxTeammates 会写进协议', () => {
-  assert.ok(renderCommanderSection({ maxTeammates: 7 }).includes('7 个'));
-  // 3.0.0：非法值回退 16（与 schema / 运行时并行上限一致），不再是 2.x 的 4。
-  // ⚠️ 旧断言 `includes('4 个')` 在 3.0.0 里仍会**意外通过**——"给 2-4 个**具体**选项"
+  // 6.0.0：`maxTeammates` 只是写进协议的**建议值**；真实并行上限由宿主
+  // `subagent.maxActiveSubagents` 决定（DSH 0.2.2-rc.2 默认 8），插件不自己压低。
+  assert.ok(renderCommanderSection({ maxTeammates: 7 }).includes('并行建议不超过 7 个'));
+  // 6.0.0：非法值回退 8（rc.2 宿主默认），不再是 3.0.0 的 16。
+  // ⚠️ 旧断言 `includes('4 个')` 会**意外通过**——"给 2-4 个**具体**选项"
   // 这句问法要求里就含 "4 个" 子串。所以这里按整句钉死渲染结果，而不是松散的 includes。
-  assert.ok(
-    renderCommanderSection({ maxTeammates: Number.NaN }).includes('并行子代理建议不超过 16 个'),
-    '非法 maxTeammates 应回退 16（与运行时并行上限一致）',
-  );
-  assert.ok(!renderCommanderSection({ maxTeammates: Number.NaN }).includes('并行子代理建议不超过 4 个'));
+  const fallback = renderCommanderSection({ maxTeammates: Number.NaN });
+  assert.ok(fallback.includes('并行建议不超过 8 个'), '非法 maxTeammates 应回退 8（rc.2 宿主默认）');
+  assert.ok(fallback.includes('subagent.maxActiveSubagents'), '必须说明真实上限由宿主决定');
+  assert.ok(!fallback.includes('并行建议不超过 16 个'), '6.0.0：16 不再是默认建议值');
+  assert.ok(!fallback.includes('并行子代理建议不超过 4 个'));
 });
 
 test('长文覆盖 Team 工具的语义细节', () => {
@@ -182,8 +199,12 @@ test('协议里不出现"你自己动手也行"这类松口话', () => {
 // ---------------------------------------------------------------- 名册为空 ---
 
 test('名册为空时，紧凑版绝不提到专职子代理通道', () => {
-  // 名册为空却在 section 里出现 `subagent_<id>` 或 specialist，模型就会去调用
+  // 名册为空却在 section 里出现**具体的** `subagent_<id>` 或 specialist，模型就会去调用
   // 不存在的工具，连试几次把轮次烧光。
+  //
+  // 6.0.0：空名册时仍会出现 `subagent` / `subagent_fork`（它们是建小组长的 Team 工具，
+  // 不是名册工具），以及绝对边界里泛指的 `` `subagent_<id>` ``（"不要调用"的否定语境）。
+  // 真正不能出现的是**名册生成的具体工具名**。
   const variants = [
     SECTION,
     renderCommanderSection({}),
@@ -193,12 +214,17 @@ test('名册为空时，紧凑版绝不提到专职子代理通道', () => {
     renderCommanderSection({ specialists: 'not-an-array' }),
   ];
   for (const text of variants) {
-    assert.ok(!text.includes('subagent_'), '空名册不应出现 subagent_ 工具名');
+    assert.deepEqual(rosterToolNames(text), [], '空名册不应出现名册生成的 subagent_<id> 工具名');
     assert.ok(!/specialist/i.test(text), '空名册不应出现 specialist');
+    // 泛指的 `subagent_<id>` 只允许出现在"由小组长使用 / 你不要调用"的否定语境里。
+    for (const line of text.split('\n').filter((item) => item.includes('subagent_<id>'))) {
+      assert.ok(line.includes('不调用'), `泛指的一次性专家工具只应出现在"别调用"的语境：${line}`);
+    }
   }
-  // 仍然完整地走 Team 通道。
-  assert.ok(SECTION.includes('spawn_teammate'));
-  assert.ok(SECTION.includes('派活只用**智能体团队**'));
+  // 仍然完整地走 Team 通道（6.0.0：`subagent` / `subagent_fork` 建小组长 + `send_message` 续做）。
+  assert.ok(SECTION.includes('派活走**智能体团队**'));
+  assert.ok(SECTION.includes('`subagent` / `subagent_fork` 建**小组长**'));
+  assert.ok(SECTION.includes('send_message'));
 });
 
 test('renderSpecialistRoster 空名册与非数组输入返回空串', () => {
@@ -263,7 +289,7 @@ test('名册非空时 section 列出每个工具、职责与模型', () => {
   assert.ok(ROSTER_SECTION.includes('子代理之间有分歧'));
   assert.ok(ROSTER_SECTION.includes('输出契约'));
   // Team 通道同时保留。
-  for (const tool of ['spawn_teammate', 'send_message', 'wait_agent', 'list_agents', 'interrupt_agent', 'team_task_']) {
+  for (const tool of ['subagent', 'send_message', 'wait_agent', 'list_agents', 'interrupt_agent', 'team_task_']) {
     assert.ok(ROSTER_SECTION.includes(tool), `启用名册后仍要保留 ${tool}`);
   }
   // 3.1.0：`wait_agent` 只以"被禁用"的身份出现（不是可用通道）。
@@ -276,7 +302,8 @@ test('双通道选择规则一眼可懂：独立模型走 A，长驻队友走 B�
   assert.ok(ROSTER_SECTION.includes('独立模型'));
   assert.ok(ROSTER_SECTION.includes('前台调用'));
   assert.ok(ROSTER_SECTION.includes('结果直接返回'));
-  assert.ok(ROSTER_SECTION.includes('长期存在的具名队友'));
+  // 6.0.0：Team 成员就是标准 subagent（`subagent` / `subagent_fork` 建小组长）。
+  assert.ok(ROSTER_SECTION.includes('长期存在的具名子代理'));
   assert.ok(ROSTER_SECTION.includes('共享任务板'));
   assert.ok(ROSTER_SECTION.includes('后台并行'));
   assert.ok(ROSTER_SECTION.includes('混用'));
@@ -323,7 +350,7 @@ test('长文给出定位匹配的判断步骤、开新子智能体的做法与�
   for (const phrase of [
     '派活前必须做定位匹配',
     '开一个新的子智能体',
-    'spawn_teammate',
+    'subagent',
     '依赖漏洞扫描',
     '常见的错配',
     '自查',
@@ -337,11 +364,12 @@ test('长文给出定位匹配的判断步骤、开新子智能体的做法与�
 });
 
 test('空名册时也要求派活前做定位匹配（Team 通道同样适用）', () => {
-  // 名册为空时没有 specialist，但 teammate 也有定位（description / prompt），
-  // 所以"任务与定位差距大就开新的 teammate"这条在默认形态下也必须出现。
+  // 名册为空时没有 specialist，但小组长也有定位（description / prompt），
+  // 所以"任务与定位差距大就开新的小组长"这条在默认形态下也必须出现。
   const empty = renderCommanderSection();
   assert.ok(empty.includes('定位匹配'));
-  assert.ok(empty.includes('开一个新的 teammate'));
+  // 6.0.0：Team 通道建的是**小组长**（旧 Team 的 `spawn_teammate` 已移除）。
+  assert.ok(empty.includes('开一个新的小组长'));
   assert.ok(empty.includes('不要把任务硬塞给定位不符的旧成员'));
 });
 
@@ -359,14 +387,21 @@ test('名册非空但工具没挂载时降级，不点名不存在的具体工�
   assert.ok(degraded.includes('不要调用不存在的工具'));
   // 泛指的 `subagent_<id>` 可以出现（提醒别去调），但具体工具名不能给。
   assert.ok(!degraded.includes('subagent_architect'));
-  assert.ok(degraded.includes('spawn_teammate'));
+  assert.ok(degraded.includes('subagent'));
 });
 
 test('开场在名册启用时补一句选通道，默认开场不提专职通道', () => {
   const rosterOpening = renderModeOpening({ specialists: SPECIALISTS, hasSpecialistTools: true });
   assert.ok(rosterOpening.startsWith(ROSTER_SECTION));
-  assert.ok(rosterOpening.includes('subagent_'));
-  assert.ok(!OPENING.includes('subagent_'));
+  // 名册启用时，开场必须点名名册生成的一次性专家工具（并说明它归小组长）。
+  assert.ok(rosterToolNames(rosterOpening).length > 0, rosterOpening.slice(-400));
+  assert.ok(rosterOpening.includes('由小组长使用，你不调用'), rosterOpening.slice(-400));
+  // 6.0.0：默认开场里 `subagent_<id>` 只以泛指形式出现在"不要调用"的语境；
+  // 名册生成的具体工具名一个都不能出现。
+  assert.deepEqual(rosterToolNames(OPENING), [], OPENING.slice(-400));
+  for (const line of OPENING.split('\n').filter((item) => item.includes('subagent_<id>'))) {
+    assert.ok(line.includes('不调用'), `泛指的一次性专家工具只应出现在"别调用"的语境：${line}`);
+  }
   assert.ok(!/specialist/i.test(OPENING));
 });
 
@@ -511,12 +546,13 @@ test('两条通道都在时，紧凑版给出「通道配比：Team 优先，spe
   // 0.5.0 依据：session-7064696b 里 Team 通道在重启后被彻底放弃（后 300 个事件 0 次），
   // 任务板留下 6 项没收尾。所以通道选择必须是 section 的一部分，而不是只在 skill 长文里。
   assert.ok(ROSTER_SECTION.includes('通道配比：Team 优先'), ROSTER_SECTION);
-  for (const phrase of ['按任务形状选通道', '建板必有主', '复用同一个 teammate', '重启后先看团队', '静默结束']) {
+  // 6.0.0：Team 成员是标准 subagent，复用对象从"teammate"改称"小组长"。
+  for (const phrase of ['按任务形状选通道', '建板必有主', '复用同一个小组长', '重启后先看团队', '静默结束']) {
     assert.ok(ROSTER_SECTION.includes(phrase), `Team 优先缺少：${phrase}`);
   }
   // 必须点名"多阶段/长任务走 Team"，否则 specialist 还是会被当万能通道。
   assert.ok(ROSTER_SECTION.includes('多阶段'), ROSTER_SECTION);
-  assert.ok(ROSTER_SECTION.includes('spawn_teammate'), ROSTER_SECTION);
+  assert.ok(ROSTER_SECTION.includes('subagent'), ROSTER_SECTION);
 });
 
 test('没有专职子代理工具时不提「通道配比」（没有选择，就不制造选择）', () => {
@@ -544,10 +580,12 @@ test('长文写明一次性 specialist 的三条硬约束（无任务板/无后�
 // ------------------------------------------------ 3.0.0 三层指挥链协议 ---
 
 test('3.0.0：section 含团队模型小节与三层指挥链的关键口径', () => {
-  // 用户 2026-11-11 的五条规则落在 section 里的部分：三层、深度 2、并行 16、
+  // 用户 2026-11-11 的五条规则落在 section 里的部分：三层、深度 2、并行上限、
   // 「只有小组长能改进展与排期」、一团队一任务。
   assert.ok(SECTION.includes('### 团队模型：指挥官 → 小组长 → 子智能体'), SECTION);
-  for (const phrase of ['小组长', '子智能体', '深度 2', '16', '只有小组长', '一个团队一个任务']) {
+  // 6.0.0：深度口径从"深度 2"改成显式的 `maxDepth: 2`；并行上限从 16 改成宿主的
+  // `subagent.maxActiveSubagents`（rc.2 默认 8），插件不自己压低。
+  for (const phrase of ['小组长', '子智能体', 'maxDepth: 2', 'subagent.maxActiveSubagents', '默认 8', '只有小组长', '一个团队一个任务']) {
     assert.ok(SECTION.includes(phrase), `section 缺少 3.0.0 口径：${phrase}`);
   }
   // 紧凑版逐条来自 TEAM_MODEL_BRIEF（唯一正文来源），不是各写一份。
@@ -555,11 +593,12 @@ test('3.0.0：section 含团队模型小节与三层指挥链的关键口径', (
     assert.ok(SECTION.includes(line), `section 缺少 TEAM_MODEL_BRIEF 行：${line.slice(0, 40)}`);
   }
   // 空名册时只有 Team 一条通道，且它建的是**小组长**（不是 2.x 的"子代理"）。
-  assert.ok(SECTION.includes('派活只用**智能体团队**'), SECTION);
-  assert.ok(SECTION.includes('`spawn_teammate` 建**小组长**'), SECTION);
+  assert.ok(SECTION.includes('派活走**智能体团队**'), SECTION);
+  assert.ok(SECTION.includes('`subagent` / `subagent_fork` 建**小组长**'), SECTION);
   // 一次性子智能体通道的"只有小组长用"标注在名册非空时出现（见下一条用例）；
-  // 空名册时 section 连 `subagent_` 都不能出现（0.2 起的硬约束）。
-  assert.ok(!SECTION.includes('subagent_'), '空名册 section 不应出现 subagent_ 工具名');
+  // 空名册时 section 不能出现**名册生成的** `subagent_<id>` 具体工具名（0.2 起的硬约束；
+  // 6.0.0 起 `subagent_fork` 是 Team 建人工具，不算名册工具，故用 rosterToolNames 判定）。
+  assert.deepEqual(rosterToolNames(SECTION), [], '空名册 section 不应出现名册生成的一次性专家工具名');
 });
 
 test('3.0.0：指挥官协议长文含 TEAM_MODEL 正文（唯一正文来源，不另抄一份）', () => {
@@ -637,77 +676,92 @@ test('3.0.0：名册启用时通道 A 明确标注「只有小组长用」且不
   assert.ok(ROSTER_SECTION.includes('你的唯一通道'), ROSTER_SECTION);
 });
 
-// ------------------------------------- 3.4.0 无智能体团队的协议降级 ---
+// ------------------------------------- 6.0.0：Team 常驻，降级形态已删除 ---
 //
-// 交叉审计发现的同类死锁：`evaluateSpecialistDispatch()` 假设"指挥官总能用 Team 通道"，
-// 而协议固定规则里也一直写 `spawn_teammate`。在没有 Agent Teams 的部署里，一次性子智能体
-// 是唯一出路（门禁已同步降级放行），协议必须改口，否则模型会去找不存在的工具。
+// 3.4.0 曾有一整套「这个部署没有 Agent Teams」的降级协议（覆盖段 + 通道改口 + 逃生段），
+// 配套门禁的「没有 Team → 降级放行 subagent_<id>」。DSH 0.2.2-rc.2 起 Team 是 base 自带、
+// 且本模式**强制开启**，所以 6.0.0 把 `hasTeamTools` 选项与全部降级形态删除了。
+// 下面几条把旧断言改成等价强度的新语义：传 `hasTeamTools:false`（旧选项）不改变任何输出，
+// 也**不再**出现任何降级文案 —— 同时保留"名册工具仍被点名 / 不点名不存在的工具"这些断言。
 
-/** 3.4.0：没有 Team 工具时的名册。 */
+/** 旧 3.4.0 降级用例用的名册（6.0.0 起走正常的两通道形态）。 */
 const NO_TEAM_SPECIALISTS = Object.freeze([
   Object.freeze({ id: 'architect', provider: 'deepseek', model: 'deepseek-reasoner', description: '系统架构与取舍' }),
   Object.freeze({ id: 'reviewer', provider: 'anthropic', model: 'claude-sonnet-4', description: '独立审查与回归验证' }),
 ]);
 
-test('3.4.0 降级：hasTeamTools:false + 名册 → 通道段改口为「一次性子智能体是唯一通道」', () => {
+test('6.0.0：hasTeamTools 已删除 —— 传 false + 名册仍走正常的两通道形态（不再改口）', () => {
   const text = renderCommanderSection({ hasTeamTools: false, specialists: NO_TEAM_SPECIALISTS, hasSpecialistTools: true });
-  // 明确告诉模型这个部署没有 Team，且小组长这一层建不起来。
-  assert.ok(text.includes('本部署**没有**智能体团队'), text.slice(0, 400));
-  assert.ok(text.includes('小组长这一层无法建立'), text);
-  assert.ok(text.includes('**唯一**的派活通道'), text);
-  // 名册里的具体工具必须点名（那是它真正能用的通道）。
-  for (const specialist of NO_TEAM_SPECIALISTS) {
-    assert.ok(text.includes(`subagent_${specialist.id}`), `降级段应点名 subagent_${specialist.id}`);
-  }
-  // 不能再出现 Team 前提的通道标题（否则模型会以为通道 A 属于它）。
-  assert.ok(!text.includes('通道 A：一次性子智能体工具'), '不应出现 Team 前提的通道 A 标题');
-  assert.ok(!text.includes('只有小组长用'), '不应说"只有小组长用"（本部署没有小组长）');
-  // 也不应给"没有通道"的逃生段（有一次性子智能体，不算没路）。
+  // 旧选项被忽略：输出与不传时完全一致。
+  assert.equal(text, renderCommanderSection({ specialists: NO_TEAM_SPECIALISTS, hasSpecialistTools: true }));
+  // 旧的降级文案（覆盖段 / 通道改口 / 逃生段）一条都不能再出现。
+  assert.ok(!text.includes('本部署**没有**智能体团队'), text.slice(0, 400));
+  assert.ok(!text.includes('小组长这一层无法建立'), text);
+  assert.ok(!text.includes('**唯一**的派活通道'), text);
   assert.ok(!text.includes('没有可用的派活通道'), text);
+  // 名册里的具体工具照常点名（通道 A 仍然存在，只是属于小组长）。
+  for (const specialist of NO_TEAM_SPECIALISTS) {
+    assert.ok(text.includes(`subagent_${specialist.id}`), `通道 A 应点名 subagent_${specialist.id}`);
+  }
+  // 正常的 Team 前提标题必须在场（旧断言是"不应出现"，6.0.0 反转）。
+  assert.ok(text.includes('通道 A：一次性专家工具'), '应出现正常的通道 A 标题');
+  assert.ok(text.includes('只有小组长用'), 'Team 常驻：一次性专家工具归小组长');
+  assert.ok(text.includes('你的唯一通道'), 'Team 通道是唯一通道');
 });
 
-test('3.4.0 降级：hasTeamTools:false + 无名册 → 逃生段「没有可用的派活通道」', () => {
+test('6.0.0：hasTeamTools 已删除 —— 传 false + 无名册仍走 Team 常驻形态（不再有逃生段）', () => {
   const text = renderCommanderSection({ hasTeamTools: false, specialists: [], hasSpecialistTools: false });
-  assert.ok(text.includes('本部署没有可用的派活通道'), text);
-  assert.ok(text.includes('请用户决定'), text);
-  // 逃生段可以泛指 `subagent_<id>`（提醒"连它也没有"），但绝不能点名具体工具名。
-  assert.ok(!text.includes('subagent_architect'), text);
-  assert.ok(!text.includes('subagent_reviewer'), text);
+  assert.equal(text, SECTION);
+  // 旧的逃生段（"没有可用的派活通道 / 请用户决定"）已删除。
+  assert.ok(!text.includes('本部署没有可用的派活通道'), text);
+  assert.ok(!text.includes('请用户决定'), text);
+  // 也不能点名任何名册生成的具体工具名。
+  assert.deepEqual(rosterToolNames(text), []);
+  // Team 通道完整在场。
+  assert.ok(text.includes('派活走**智能体团队**'));
+  assert.ok(text.includes('`subagent` / `subagent_fork` 建**小组长**'));
 });
 
-test('3.4.0 降级：section 顶部有显式覆盖段（Team 工具都不存在）', () => {
+test('6.0.0：section 顶部不再有「没有 Team」的覆盖段', () => {
   for (const text of [
     renderCommanderSection({ hasTeamTools: false, specialists: NO_TEAM_SPECIALISTS, hasSpecialistTools: true }),
     renderCommanderSection({ hasTeamTools: false, specialists: [], hasSpecialistTools: false }),
   ]) {
-    assert.ok(text.includes('本部署没有智能体团队'), text.slice(0, 600));
-    assert.ok(text.includes('都不存在'), '覆盖段要明确那些工具不存在');
-    assert.ok(text.includes('降级说明'), '要指向「派发通道」的降级说明');
-    // 覆盖段必须出现在固定规则之前（先说明前提，再让模型读下文）。
-    assert.ok(
-      text.indexOf('本部署没有智能体团队') < text.indexOf('### 绝对边界'),
-      '覆盖段应在「绝对边界」之前',
-    );
+    assert.ok(!text.includes('本部署没有智能体团队'), text.slice(0, 600));
+    assert.ok(!text.includes('都不存在'), '不应再有"那些工具都不存在"的覆盖段');
+    assert.ok(!text.includes('降级说明'), '不应再指向「派发通道」的降级说明');
+    // 固定规则照常从「绝对边界」开始（旧断言钉的是覆盖段在它之前，6.0.0 反转成没有覆盖段）。
+    assert.ok(text.indexOf('### 绝对边界') > 0, '固定规则必须完整在场');
   }
 });
 
-test('3.4.0 降级：renderModeOpening 的「现在做什么」不再教 spawn_teammate', () => {
+test('6.0.0：hasTeamTools 已删除 —— renderModeOpening 恒教 Team 通道（不再降级改口）', () => {
   const opening = renderModeOpening({ hasTeamTools: false, specialists: NO_TEAM_SPECIALISTS, hasSpecialistTools: true });
+  // 旧选项被忽略：与不传时完全一致。
+  assert.equal(opening, renderModeOpening({ specialists: NO_TEAM_SPECIALISTS, hasSpecialistTools: true }));
   const tail = opening.slice(opening.indexOf('### 现在做什么'));
-  assert.ok(tail.includes('一次性子智能体'), tail);
-  assert.ok(tail.includes('小组长这一层建不起来'), tail);
-  assert.ok(!tail.includes('spawn_teammate'), `「现在做什么」不应再教 spawn_teammate：${tail}`);
-  // 连一次性子智能体都没有时，收尾句干脆不提通道（只要求先规划 + 让用户确认）。
+  // 6.0.0：Team 常驻，所以「现在做什么」必须教 `subagent` / `subagent_fork` + `send_message`
+  // （旧断言是"不应教 subagent"——那是 3.4.0 无 Team 部署的语义，已删除）。
+  assert.ok(tail.includes('`subagent` / `subagent_fork`'), tail);
+  assert.ok(tail.includes('send_message'), tail);
+  assert.ok(tail.includes('由小组长使用，你不调用'), tail);
+  assert.ok(!tail.includes('小组长这一层建不起来'), tail);
+  assert.ok(!tail.includes('一次性子智能体'), tail);
+  // 连一次性子智能体都没有时（空名册）：仍然教 Team 通道，且不提名册生成的工具。
   const bare = renderModeOpening({ hasTeamTools: false, specialists: [], hasSpecialistTools: false });
+  assert.equal(bare, renderModeOpening());
   const bareTail = bare.slice(bare.indexOf('### 现在做什么'));
-  assert.ok(!bareTail.includes('spawn_teammate'), bareTail);
+  assert.ok(bareTail.includes('`subagent` / `subagent_fork`'), bareTail);
+  assert.ok(bareTail.includes('send_message'), bareTail);
   assert.ok(!bareTail.includes('subagent_<id>'), bareTail);
+  assert.deepEqual(rosterToolNames(bareTail), []);
 });
 
-test('3.4.0 默认回归：不传 hasTeamTools 与 hasTeamTools:true 等价，且无覆盖段', () => {
+test('6.0.0 默认回归：hasTeamTools 旧选项被忽略，且无覆盖段', () => {
   assert.equal(renderCommanderSection(), renderCommanderSection({ hasTeamTools: true }));
+  assert.equal(renderCommanderSection(), renderCommanderSection({ hasTeamTools: false }));
   assert.equal(renderModeOpening(), renderModeOpening({ hasTeamTools: true }));
-  // 默认形态（有 Team）里不应出现降级覆盖段。
+  // 默认形态（Team 常驻）里不应出现降级覆盖段。
   assert.ok(!SECTION.includes('本部署没有智能体团队'), SECTION.slice(0, 400));
   assert.ok(!SECTION.includes('本部署**没有**智能体团队'));
   // 名册启用时默认仍走"两条通道、你只走通道 B"的正常形态。
