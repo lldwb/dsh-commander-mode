@@ -12,10 +12,14 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 - **指挥者不执行**：`write` / `edit` / `pwsh` 这类调用会被**确定性拒绝**并附上纠正指令
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
 - **三层指挥链（3.0.0）**：**指挥官 → 小组长 → 子智能体**。指挥官的下一级只有小组长
-  （`subagent` 建出的具名队友）：它自己执行，或把子任务交给下级子智能体。最大递归
-  深度 2、并行上限 16，都来自运行时「子智能体」设置，插件不再自己压低。
-- **派发通道（3.0.0 起指挥官只剩一条）**：指挥官的通道是「智能体团队」（小组长）；一次性
-  `subagent_<id>`（开箱六位专家，可继承你的模型或绑定专属模型）归**小组长**使用。
+  （`subagent` / `subagent_fork` 建出的具名子代理）：它自己执行，或把子任务交给下级子智能体。
+  最大递归深度 2、并行上限 16，都来自运行时「子智能体」设置，插件不再自己压低。
+- **派发通道（7.0.0：指挥官只剩一条，且是不可配置的硬门禁）**：指挥官唯一能用的派发通道是
+  **建小组长**——`subagent` / `subagent_fork` 建人 + `send_message` 派活/续做 + `team_task_*`
+  管任务板 + `list_agents` 读状态，`interrupt_agent` 仍可纠偏。`workflow`、名册生成的一次性
+  专家工具 `subagent_<id>`（开箱六位专家，可继承你的模型或绑定专属模型）、Worker Session
+  （`commander_worker_*`）对指挥官**一律拒绝**：`delegationHierarchy: false` 也拦。这三条是
+  **小组长**的通道（L1→L2 不受限）。见「派发通道怎么选」。
 - **两次必须问你**：规划拆分完成后先确认再派活；出现分歧、歧义或取舍时交回你选。
 - **结算即同步**：任务一完成就同步**任务板 / 计划清单 / 团队状态**，而不是收尾才补
   （3.0.0：任务板由小组长结算，指挥官只核对）。
@@ -24,8 +28,9 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 - **a2a 有纪律**：派活一次写全、开工前先约定回报格式、**不等**（`wait_agent` 3.1.0 起硬禁用、
   3.2.0 起整条链生效、无开关）——状态用 `list_agents` / 任务板读一次，少一轮就是一个回合。0.4.0 起生效。
 - **Team 优先（0.5.0）**：多阶段 / 长任务 / 需要中途追加指令或任务板进度 → 走「智能体团队」
-  （`subagent` + `team_task_*` + `send_message`）；一次性单点任务由**小组长**用
-  `subagent_<id>`（3.0.0：指挥官的通道只剩 Team）。
+  （`subagent` / `subagent_fork` + `team_task_*` + `send_message`）；一次性单点任务由**小组长**
+  用 `subagent_<id>`（3.0.0：指挥官的通道只剩 Team；7.0.0：`workflow` / 一次性专家 / Worker
+  Session 对指挥官也是硬门禁拒绝）。
   看板会显示**派发通道配比**并点名**孤儿任务**（没人认领 / 主人已停手），防止"重启后队友没了
   就退化成只用一次性 specialist、任务板留下 6 项没收尾"。
 - **工单与计划授权（0.6.0）**：每一件被派出去的活都挂一张**工单**（`commander_ticket_*`），
@@ -34,15 +39,19 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
   计划授权状态、进行中工单、待验收 / 受阻 / 停滞 / 等你回答的项与下一步动作。
   账本落在 `<DSH_HOME>/commander/<profile>.json`（原子写、损坏自动备份、重启不丢）。
 - **异步派工与完成唤醒（0.7.0）**：一次性 specialist 不再阻塞等待——工具立即返回 childId，
-  结算时用一条「【指挥者·派工完成】」通知**唤醒**指挥者（带工单、`STATUS:`、摘要与下一步），
+  结算时用一条「【指挥者·派工完成】」通知**唤醒**它的调用者（带工单、`STATUS:`、摘要与下一步），
   并同时写账本。派活后可以继续做别的或结束回合，**不要等**（3.1.0 起 `wait_agent` 硬禁用、
   3.2.0 起整条链生效）也不要 `list_agents` 轮询；
   在飞数量有上限（`maxAsyncTasks`，3.0.0 起默认 16），`asyncDelegation: false` 可回退前台阻塞行为。
-- **Worker Session（0.8.0；1.0.0 起默认开启）**：`commander_worker_spawn` 可给一张工单开
-  **独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），worker 只拿工作
-  工具、结束时用 `commander_report` 汇报并用通知唤醒你；有槽位上限（`maxWorkers`）与重启恢复
-  提示。它改变执行模型（会话列表会出现 `执行 <ticket>：<标题>` 会话），不需要时在 profile
-  patch 里显式写 `workerSessions: false` 即可回退（关闭后不注册四个 `commander_worker_*` 工具）。
+  **7.0.0 起这条通道归小组长**：指挥官调 `subagent_<id>` 会被硬门禁拒绝，唤醒的是调用它的那一级
+  （通常是小组长）。
+- **Worker Session（0.8.0；7.0.0 起通道下线）**：0.8.0 曾提供第三条执行通道——`commander_worker_spawn`
+  可给一张工单开**独立 DSH Session + 独立目录**（`workRoot/<ticket>`，可选 prepare 命令），
+  worker 只拿工作工具、结束时用 `commander_report` 汇报并用通知唤醒调用者；有槽位上限
+  （`maxWorkers`）与重启恢复提示。**7.0.0 起这条通道已下线**（用户硬要求「连 Worker Session
+  一起禁」）：四个 `commander_worker_*` 工具不再注册，`workerSessions` 恒读成 `false`，
+  `workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission` 四个配置项废弃；
+  `lib/worker-tools.js` / `lib/worker-sessions.js` 保留仅为兼容旧账本数据。派发只走小组长。
 - **外部事件接入（1.1.0）**：CI / 告警 / 定时巡检可以用
   `bin/commander-event.mjs` 往 `events/inbox/` 写事件，插件轮询取走并 `steer` 对应指挥者
   会话——**空闲的指挥者会被外部事件唤醒**（不需要人先说话）。事件不建工单、不派活，
@@ -110,13 +119,15 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 |---|---|
 | 只读侦察（`read` / `glob` / `grep` / `web_search`） | 写文件、改文件（`write` / `edit`） |
 | 规划与拆分、维护 `todo_write` | 跑命令（`pwsh` / `bash`） |
-| 建任务板、派发给小组长（`subagent`） | 杀作业（`job_kill`） |
+| 建任务板、派发给小组长（`subagent` / `subagent_fork`） | 杀作业（`job_kill`） |
 | 结算后三同步：任务板 / 计划清单 / 团队状态 | 装插件（`plugin_manager`） |
 | 读状态（`list_agents` / 任务板）、核对验收判据 | 替用户拍板 |
 | 用 `ask_user_question` 让用户确认计划、上报分歧 | |
 
 > **3.0.0 起是三层指挥链（指挥官 → 小组长 → 子智能体）**：下表与后续小节里的「子代理」
 > 现在特指**小组长**；一次性 `subagent_<id>` 归小组长使用。详见「3.0.0 团队模型」一节。
+> **7.0.0 起「派给谁」也钉死了**：指挥官只能建小组长（`subagent` / `subagent_fork`），
+> `workflow` / 一次性专家 / Worker Session 一律硬门禁拒绝（不可配置、无开关）。
 
 ### 结算同步（0.4.0）
 
@@ -235,6 +246,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
   **3.3.0 起对 Worker Session 另有一条停滞看门狗**：每 60 秒扫描带 `execution` 的未结束工单，
   超过 `ticketStallMs` 且**开工后从未回报**就 `steer` 指挥者（同工单 10 分钟节流），提示它
   可能卡在回合中途——只提醒、不自动改状态（见「Worker Session」与「3.3.0」）。
+  **7.0.0 起 Worker 通道下线**，这条看门狗随 `lib/worker-sessions.js` 一起不再启用。
 
 **账本**：
 
@@ -247,6 +259,10 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 - 关掉 `ledger: false` 时退化为 0.5.0 行为（没有工单工具、没有授权门禁、只有同步看板与协议）。
 
 ### 异步派工与完成唤醒（0.7.0）
+
+> **7.0.0：这条通道归小组长**。指挥官调 `subagent_<id>` 会被 `evaluateCommanderChannels()` 硬门禁
+> 拒绝；下面描述的异步语义（立即返回 childId、完成通知唤醒调用者）对**小组长**派 specialist
+> 仍然成立。
 
 0.4/0.5 的派活是**前台阻塞**：`subagent_<id>` 会一直等到 specialist 结算才把结果返回。任务一长，
 指挥者就在空转，用户也只能等。0.7.0 把一次性 specialist 改成**异步**（默认开）：
@@ -266,16 +282,25 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 为什么不用 runtime 的 `delivery:'parent'` 完成通知：它的通知内容与工单映射不可控，而且会多一条
 模型可见消息；`delivery:'caller'` + 后台 await + `steer` 让我们完全控制通知格式、去重与账本写入。
 
-### Worker Session（0.8.0；1.0.0 起默认开启）
+### Worker Session（0.8.0；7.0.0 起通道下线）
+
+> **7.0.0：这条通道已下线**（用户硬要求「不能出现这种另辟蹊径开子智能体的方法…连 Worker
+> Session 一起禁」）。四个 `commander_worker_*` 工具**不再注册**；`lib/config.js` 的
+> `resolveConfig()` 把 `workerSessions` **恒读成 `false`**（profile patch 里写 `true` 也不生效），
+> 配置行不再提供 `commanderWorkers` 服务；`workRoot` / `maxWorkers` / `prepareCommand` /
+> `workerPermission` 四个配置项**废弃**（字段保留只为兼容旧配置，不删键）。
+> `lib/worker-tools.js` / `lib/worker-sessions.js` **保留仅为兼容旧账本数据**，不再被任何运行
+> 路径启用。下面 0.8.0–3.3.0 的描述是**历史记录**，不是当前行为；当前派发通道见
+> 「派发通道怎么选」。
 
 0.6/0.7 让派活有状态、有通知，但所有执行者仍**共享 cwd**——长任务并行会互相踩文件。
 0.8.0 提供第三种执行通道：**每张工单一个独立 DSH Session + 独立目录**。0.8.0 曾默认关闭
 （改变执行模型）；0.9.1 在真实 Web profile + 真实模型里跑通全链路后，**1.0.0 起默认开启**。
 
-- **关闭**：在 profile patch 的 `commander-mode` 配置里显式写 `workerSessions: false`（需重载）。
-  关闭后不注册四个 `commander_worker_*` 工具、不会出现 worker 会话，派工语义回到 0.7
-  （specialist / Team 两条通道）。想改 `workRoot` / `maxWorkers` / `prepareCommand` /
-  `workerPermission` 同理。
+- **关闭（历史：0.8.0–6.0.0 的开关方式）**：在 profile patch 的 `commander-mode` 配置里显式写
+  `workerSessions: false`（需重载）。关闭后不注册四个 `commander_worker_*` 工具、不会出现 worker
+  会话，派工语义回到 0.7（specialist / Team 两条通道）。想改 `workRoot` / `maxWorkers` /
+  `prepareCommand` / `workerPermission` 同理。**7.0.0 起这个开关已无意义**（恒 false，见上）。
 - **四个工具**：
   - `commander_worker_spawn`：给已有工单开 worker。建目录（`workRoot/<ticket>`，可跑一次
     `prepareCommand`，可用 `DSH_COMMANDER_*` 环境变量）→ `workspaceRegistry.create` →
@@ -318,14 +343,16 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 
 3.0.0 起，本模式按**三层指挥链**工作。2.x 只有两层（指挥者 → 子代理），指挥者可以绕过
 队友直接派一次性 specialist；3.0.0 把中间那层固定下来：**指挥官只和小组长打交道**。
+**7.0.0 把这条钉成不可配置的硬门禁**：越过小组长的通道（`workflow` / 一次性专家 / Worker
+Session）对指挥官一律拒绝。
 
 ### 三层职责
 
 - **L0 指挥官**（主会话 / Lead）：目标、拆分、派单、验收、与用户沟通。它不执行操作，也不越过
-  小组长去派一次性子智能体。
-- **L1 小组长**（`subagent` 建出的具名队友）：各背**一个团队任务**，可以**自己执行**
-  （它继承同一 preset scope，有写文件与跑命令的能力），也可以把子任务交给**下级子智能体**；
-  **任务进展与排期由它写**。
+  小组长用别的通道（`workflow` / 一次性专家 / Worker Session）派活——7.0.0 起是硬门禁。
+- **L1 小组长**（`subagent` / `subagent_fork` 建出的具名子代理，可续做）：各背**一个团队任务**，
+  可以**自己执行**（它继承同一 preset scope，有写文件与跑命令的能力），也可以把子任务交给
+  **下级子智能体**；**任务进展与排期由它写**。L1→L2 不受派发通道硬门禁限制。
 - **L2 子智能体**（小组长派出的 `subagent_<id>` / `subagent` / `workflow` 子代理）：只负责执行，
   **不再向下派**（运行时递归深度上限 2）。
 
@@ -340,9 +367,11 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
    `reopen` / `set_dependencies`）；指挥官只建任务、`reassign` 指派 owner、读板与验收。
 5. **只有一个模式（5.0.0）**：原「项目经理模式」已并入，协议正文只有 `lib/protocol.js` 一份。
 
-这五条在实现里落成 `lib/team-model.js` 的**七条规则**（hierarchy / runtime-limits /
+这五条在实现里落成 `lib/team-model.js` 的**八条规则**（hierarchy / runtime-limits /
 one-team-one-task / continuous-intake / ambiguity-chain / leader-owns-board /
-leader-may-execute）；指挥官协议与项目经理协议都拼接同一份正文，不会出现两套说法。
+leader-may-execute / **dispatch-channel-hard**）；指挥者协议拼接这一份正文（5.0.0 起只有
+一个模式），不会出现两套说法。第 8 条是 7.0.0 新增的**派发通道硬规则**：指挥官只有一条
+派发通道（建小组长），并钉死「需要小组长 / 小组长失败」时的唯一恢复阶梯。
 
 ### 运行限制：深度 2 / 并行 16（来自运行时，插件不再压低）
 
@@ -355,7 +384,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
   会让模型提前串行化。
 - 这两个数字写在协议正文里（模型读不到运行时配置）：文本与运行时不一致时以本节口径为准。
 
-### 确定性门禁：三条「谁来做」
+### 确定性门禁：三条「谁来做」+ 一条不可配置的派发通道硬门禁
 
 协议是概率性的，3.0.0 把三条最容易被绕过的边界做成 `tools/pre-execute` 门禁（`lib/guard.js`），
 **只拦指挥官本人**：小组长 / 子智能体（`isDelegatedAgent` 命中）与身份读不出来的调用一律放行。
@@ -363,25 +392,39 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 > **例外是「禁止等待」门禁**（3.2.0）：它**不按身份放行**——指挥官、小组长、子智能体与
 > 身份读不到的调用一律拒绝（等待不是完成工作必需的动作）。见「禁止等待子智能体」一节。
 
+**三条「谁来做」门禁**（其中任务板写入 / 工单推进状态受 `delegationHierarchy` 控制）：
+
 - **任务板写入**（`evaluateBoardWrite`）：`team_task_update` 的 `claim` / `release` / `complete` /
   `reopen` / `set_dependencies` 由小组长做；指挥官做会被拒，拒因会告诉它「用 `send_message`
   让 owner 结算，或 `reassign` 改派」。`reassign` / `edit` / `delete` 仍由指挥官做。
 - **工单推进状态**（`evaluateTicketWrite`）：`commander_ticket_update` 的 `progress` / `waiting` /
   `ready` / `blocked` / `failed` 只允许小组长回报——工单会投影到共享任务板，只拦任务板的话
   指挥官仍能绕道工单间接改进度。`done` / `cancelled` 仍是指挥官的验收动作。
-- **子智能体派发**（`evaluateSpecialistDispatch`）：`subagent_<id>` / `subagent` / `subagent_fork`
-  被拒（团队活交给小组长，一次性专家由小组长自己调用）。`workflow` **不在**拦截范围——它是
-  编排，不产生"某个子智能体在执行"的层级派发。
-- 三条都受新配置 `delegationHierarchy` 控制（默认 `true`）；设成 `false` 时门禁全部关闭，
-  回到 2.x 的"只靠协议"行为（文本仍在，但没有硬拦截）。
+- **子智能体派发**（`evaluateSpecialistDispatch`）：**7.0.0 起保留为纯函数**（既有路径与测试
+  引用），接线以下面的硬门禁为准——历史上它拦名册生成的 `subagent_<id>`，现在这条边界由
+  `evaluateCommanderChannels()` 接管，且不再受 `delegationHierarchy` 控制。
+
+**派发通道硬门禁（7.0.0，不可配置、无开关）**：`evaluateCommanderChannels()` 在 `tools/pre-execute`
+上**先于层级门禁、无条件**执行。对**指挥官本人**一律拒绝 `workflow`、名册生成的一次性专家
+工具 `subagent_<id>`、所有 `commander_worker_*`（Worker Session）；唯一允许的派发通道是
+`subagent` / `subagent_fork`（建小组长）+ `send_message`（派活/续做）+ `team_task_*`（任务板）
++ `list_agents`（读状态），`interrupt_agent` 仍可纠偏。**`subagent_<id>` 的拒绝不再受
+`delegationHierarchy` 控制**（`delegationHierarchy: false` 也拒），`workflow` 与 Worker Session
+一并拒绝；**小组长 / 子智能体不受限**（L1→L2 是用户认可的链路）。拒因带**恢复阶梯**
+（建人 / 冷恢复 / 纠偏或换人接管 / 建人失败重试一次再 blocked），见「派发通道怎么选」。
+
+- **任务板写入 / 工单推进状态**两条门禁受配置 `delegationHierarchy` 控制（默认 `true`）；设成
+  `false` 时**只关闭这两条**，回到 2.x 的"只靠协议"行为（文本仍在，但没有硬拦截）。
+  **派发通道硬门禁不在其中**：它不是层级门禁的可选子集，关掉配置也放不开。
 
 ### 3.0.0 破坏性变更与迁移
 
 大版本：对外契约有结构性变化，"指挥者直接派 specialist、自己改进度"的旧用法不再被允许。
 
-1. **指挥官不再直接调用 `subagent_<id>` / `subagent` / `subagent_fork`**：团队活一律
-   `subagent` 建小组长 + `send_message` 派活；直调会被确定性拒绝（见上）。一次性专家
-   仍可用，但只由**小组长**调用。
+1. **指挥官不再直接调用 `subagent_<id>`**：团队活一律 `subagent` / `subagent_fork` 建小组长
+   + `send_message` 派活；直调名册专家会被确定性拒绝（见上）。一次性专家仍可用，但只由
+   **小组长**调用。**7.0.0 校正**：`subagent` / `subagent_fork` 是指挥官**必须**用的建人通道，
+   **不是**被拦对象——被拦的是 `subagent_<id>`、`workflow` 与 Worker Session。
 2. **任务板进度与排期写入权从指挥官移到小组长**：`team_task_update` 的
    `claim` / `release` / `complete` / `reopen` / `set_dependencies`，以及
    `commander_ticket_update` 的 `progress` / `waiting` / `ready` / `blocked` / `failed` 只允许
@@ -391,11 +434,13 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
    （如 `architect-lead`），再 `send_message` 派该段任务；专家小组长可以自己执行，也可以把
    子任务交给下级 `subagent_<id>`。项目经理**不直接调** `subagent_<id>`。
 4. **新配置 `delegationHierarchy`**（默认 `true`）：关闭后回到 2.x 的"只靠协议"行为，适合
-   暂时不想让门禁拦住旧流程的部署；协议文本仍是 3.0.0 的三层模型。
+   暂时不想让门禁拦住旧流程的部署；协议文本仍是 3.0.0 的三层模型。**7.0.0 校正**：它只控制
+   任务板写入 / 工单推进状态这两条，**不能放开派发通道硬规则**（`evaluateCommanderChannels`
+   无条件执行，`workflow` / 一次性专家 / Worker Session 照旧拒绝）。
 
 **用户要做什么**：重新安装 / 重启 DSH（preset 与协议文本都在启动时确定）。旧习惯（指挥官自己
 `claim` / `complete`、直接调 `subagent_<id>`）会收到拒绝与纠正指令，按拒因改走小组长即可；
-确实要回退硬门禁就设 `delegationHierarchy: false`。
+`delegationHierarchy: false` 只能回退任务板 / 工单两条门禁，**放不开派发通道硬规则**（7.0.0）。
 
 ## 指挥者模式（含项目经理职责，5.0.0 合并）
 
@@ -414,10 +459,11 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 | 工单账本 / 计划授权 | **可选严格流程**：工具都在（`ledger: true`），但 `requireMandate` / `requireTicket` **默认关**；打开即回到旧版指挥者的严格流程 |
 | 验收判据 / 落盘证据 / 独立验证 | 并入本模式协议（每个任务都要过） |
 
-**3.0.0 起：六位专家 = 六位专家小组长**（团队模型 L1）。每个任务先 `subagent` 建一位
-专家小组长、`send_message` 派该任务；专家小组长可以自己执行，也可以把子任务交给下级
-子智能体（`subagent_<id>`）。指挥者**不直接调用** `subagent_<id>` / `subagent` /
-`subagent_fork`——直调会被门禁拒绝（见「3.0.0 团队模型」）。建议的小组长名字：
+**3.0.0 起：六位专家 = 六位专家小组长**（团队模型 L1）。每个任务先 `subagent` / `subagent_fork`
+建一位专家小组长、`send_message` 派该任务；专家小组长可以自己执行，也可以把子任务交给下级
+子智能体（`subagent_<id>`）。指挥者**不直接调用** `subagent_<id>`（一次性专家工具）；
+7.0.0 起 `workflow` 与 Worker Session 对指挥官同样被硬门禁拒绝。**`subagent` / `subagent_fork`
+是指挥者建小组长的通道，必须使用**（见「派发通道怎么选」）。建议的小组长名字：
 `architect-lead`、`implementer-lead`、`reviewer-lead`、`tester-lead`、`security-lead`、
 `doc-writer-lead`（`security-auditor` 的小组长名是 `security-lead`）。
 
@@ -477,10 +523,14 @@ preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层。5
 
 - 项目经理自己调用 `write` / `edit` / `pwsh` / `bash` / `job_kill` / `plugin_manager`
   会被**直接拒绝**（复用 `lib/guard.js`；子代理必须放行，否则专家干不了活）；
-- 3.0.0 起还会拒绝：直接调 `subagent_<id>` / `subagent` / `subagent_fork`、自己
+- 3.0.0 起还会拒绝：直接调 `subagent_<id>`、自己
   `team_task_update` 改进度/排期（`claim` / `release` / `complete` / `reopen` /
   `set_dependencies`）、自己 `commander_ticket_update` 报推进状态（`progress` / `waiting` /
-  `ready` / `blocked` / `failed`）——这些交给小组长（`delegationHierarchy: false` 可关闭）；
+  `ready` / `blocked` / `failed`）——这些交给小组长（前两条中任务板 / 工单两条受
+  `delegationHierarchy` 控制）；
+- **7.0.0 起还多一条不可配置的硬门禁**：`workflow`、名册一次性专家（`subagent_<id>`）、
+  Worker Session（`commander_worker_*`）对指挥者**一律拒绝**——`delegationHierarchy: false`
+  也拦。唯一派发通道是 `subagent` / `subagent_fork` 建小组长 + `send_message` 派活；
 - `wait_agent` 会被**无条件拒绝**（3.1.0 起禁止等待、无开关；3.2.0 起整条链生效，见「禁止等待子智能体」一节）；
 - 协议里明确**禁止人日 / 人天 / 工期估算**，用「步骤 + 验收判据 + 依赖」代替；
 - 收尾必须写经验教训，并额外回答「这个模式本身哪一步形式化了、哪一步产物无法验收、
@@ -562,8 +612,10 @@ skill 注册失败只记 warning。
 0.2.0 参考 [ToxicantX/dsh-multi-model-orchestrator](https://github.com/ToxicantX/dsh-multi-model-orchestrator)
 加了第二条派发通道：**名册里的每个 specialist 是一个独立工具**。
 
-> **3.0.0 起这些专家由小组长使用**：指挥官的通道只剩 Team（`subagent` 建小组长），
-> 一次性 `subagent_<id>` 归小组长调用；指挥官直调会被门禁拒绝。见「3.0.0 团队模型」。
+> **3.0.0 起这些专家由小组长使用**：指挥官唯一能用的派发通道是建小组长
+> （`subagent` / `subagent_fork`），一次性 `subagent_<id>` 归小组长调用。**7.0.0 起是硬门禁**：
+> 指挥官直调会被 `evaluateCommanderChannels()` 拒绝（不可配置、无开关），`workflow` 与
+> Worker Session 一并拒绝。见「派发通道怎么选」。
 
 0.3.0 起**开箱就带一套按主流软件开发生命周期划分的专家**，装好即可派活，不用先配置：
 
@@ -607,25 +659,45 @@ skill 注册失败只记 warning。
 | `maxTokens` | 否 | 该专家的输出上限 |
 
 保存后：**新会话**立刻拿到新的 `subagent_<id>` 工具（工具清单在启动时确定；3.0.0 起这些工具
-由小组长使用，指挥官直调会被门禁拒绝）；已打开的会话保持启动时的名册 —— 设置页里也这么写。
+由小组长使用，指挥官直调会被门禁拒绝——7.0.0 起是无条件硬拒绝）；已打开的会话保持启动时的
+名册 —— 设置页里也这么写。
 
 于是同一个会话里，小组长可以把"实现"交给跑在小模型上的 `subagent_implementer`、把"审查"交给
 跑在强模型上的 `subagent_reviewer`，而不是所有子代理都继承父会话的模型。
 
-### 派发通道怎么选（3.0.0：指挥官只走 Team）
+### 派发通道怎么选（7.0.0：指挥官只能建小组长）
 
 | 通道 | 工具 | 谁用 | 适合 |
 |---|---|---|---|
-| **智能体团队** | `subagent` / `send_message` / `team_task_*`（`wait_agent` 硬禁用：3.1.0 起无开关、3.2.0 起整条链生效） | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
+| **智能体团队（建小组长）** | `subagent` / `subagent_fork` 建人 + `send_message` 派活/续做 + `team_task_*` 管板 + `list_agents` 读状态（`wait_agent` 硬禁用：3.1.0 起无开关、3.2.0 起整条链生效） | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
 | **多模型 specialist** | `subagent_<id>`（前台，结果直接返回） | **小组长**（L1） | 独立模型/专门职责、一次性的实现/审查/分析 |
+| **一次性扇出编排** | `workflow` | **小组长**（L1） | 并行调研 / 并行审查多个模块这类无状态扇出 |
+| ~~Worker Session~~ | ~~`commander_worker_*`~~ | **7.0.0 起通道下线** | — |
 
-3.0.0 起指挥官的通道只剩 Team：直调 `subagent_<id>` / `subagent` / `subagent_fork` 会被门禁
-拒绝，一次性 specialist 由小组长自己调用（`workflow` 不在拦截范围）。两条通道可混用；
-同一批文件不要同时交给两条通道。名册为空时协议里不会出现 specialist 相关文字。
+7.0.0 起指挥官的通道**只剩一条**：`subagent` / `subagent_fork` 建小组长 + `send_message` 派活。
+`workflow`、名册一次性专家（`subagent_<id>`）、Worker Session 对指挥官**一律硬拒绝**
+（`evaluateCommanderChannels()`，在层级门禁之前无条件执行；不可配置、无开关，
+`delegationHierarchy: false` 也拦）——它们是**小组长**的通道（L1→L2 不受限）。两条通道
+（Team / specialist）在小组长那一层可混用；同一批文件不要同时交给两条通道。名册为空时协议里
+不会出现 specialist 相关文字。
 
-**没有「智能体团队」的部署会自动降级**：一次性子智能体成为指挥官**唯一**的派活通道
-（门禁同步降级放行），协议里会显式写明"本部署没有 Team 工具、小组长这一层建不起来"——
-**不是静默降级**，见「3.4.0：门禁交叉冲突排查与降级放行」一节。
+**需要小组长 / 小组长失败时的唯一恢复阶梯**（7.0.0，协议正文与门禁拒因里都写着）：
+
+1. **需要小组长** → 用 `subagent`（需要继承你已完成轮次的上下文时用 `subagent_fork`）创建，
+   prompt 自包含并写 `[ticket:t-N]`；建完用 `send_message` 派活（或在创建时的 prompt 里一次派全）。
+2. **小组长已存在但 inactive** → 用 `send_message` 冷恢复并派活，**不要新建**（新建会丢掉它
+   已有的上下文与产物）。
+3. **小组长停滞 / 失败** → 先只读核对产物（`list_agents` / `team_task_list` / `git log` /
+   产物目录）→ 确认停滞就 `interrupt_agent` 纠偏，或**新建一个小组长接管同一张工单**（旧的
+   不再使用，避免两个执行者写同一批文件）→ 仍不行就把工单标 `blocked`、上报用户。
+4. **`subagent` 本身报错（含内部错误）** → 重试一次；再失败就标 `blocked` 并问用户。
+5. **任何一步都不许换通道**：不许 `workflow` / 一次性专家 / Worker Session，也不许自己直接动手
+   ——小组长失败就**换一个小组长重派或上报用户，不要换通道**。
+
+> **历史（3.4.0）**：3.4.0 曾在"没有 Team 工具"的部署里把一次性子智能体降级成指挥官唯一通道
+> （门禁同步放行）。6.0.0 起 Team 是 base 自带、本模式强制开启，这条降级分支已删除；7.0.0 起
+> `workflow` / 一次性专家 / Worker 对指挥官一律拒绝，**不存在"没有通道所以放行"的降级**——
+> 读不到建人工具时协议与拒因会让指挥者把任务写进正文、请用户决定。
 
 ### 派活前必须做「定位匹配」
 
@@ -636,13 +708,13 @@ skill 注册失败只记 warning。
 | 情况 | 做法 |
 |---|---|
 | 任务落在定位内 | 用对应的小组长，正常派活 |
-| **差距大**（跨领域 / 不同产出 / 另一套技能） | **不要硬派**：先换一个匹配的小组长；没有就**开一个新的小组长**（3.0.0 起"开新子智能体"= `subagent`） |
+| **差距大**（跨领域 / 不同产出 / 另一套技能） | **不要硬派**：先换一个匹配的小组长；没有就**开一个新的小组长**（3.0.0 起"开新子智能体"= `subagent` / `subagent_fork`） |
 | 一个任务里混着两种定位的工作 | 拆成两个任务，分别派 |
 | 找不到任何匹配定位 | 把任务与候选定位写进正文，问用户 |
 
 **"开一个新的小组长"怎么做**（3.0.0：开新子智能体 = 开新小组长）：
 
-- **`subagent` 就是入口** — 名字、`description`、`prompt` 都由指挥者写，
+- **`subagent` / `subagent_fork` 就是入口** — 名字、`description`、`prompt` 都由指挥者写，
   所以可以按这次任务的定位新建一个小组长（例：现有 `reviewer-lead` 做代码审查，这次要"依赖
   漏洞扫描" → spawn 一个 `security-lead`，把定位写进它的 description 与 prompt）。
 - **名册不能由指挥者改**（那是用户在设置页配的，决定小组长能派哪些 `subagent_<id>`）。
@@ -750,7 +822,11 @@ specialist 跑在**自己的独立 preset** 里（`commander-specialist-<id>-<ha
 
 - 读不出 agent 身份（没有 `session.header`）→ 当作子代理，放行；
 - 判定过程抛错 → 放行，并让工具调用继续；
-- 这个部署里一个派发工具都没有（用户关掉了「智能体团队」、名册也为空）→ 放行（否则死锁）。
+- 这个部署里一个派发工具都没有（例如 base 组合缺 Team 能力行、`availableTools` 里读不到
+  `subagent` / `subagent_fork` / `send_message`）→ 放行（否则死锁）。
+- **7.0.0 的派发通道硬门禁沿用同一方向**：`evaluateCommanderChannels()` 对身份读不到 / 判定
+  抛错的调用同样放行（拦错小组长会让 L1→L2 断链）；但一旦确认是**指挥官本人**，
+  `workflow` / 一次性专家 / Worker Session 一律拒绝，且不受任何配置影响。
 
 > **唯一的例外是「禁止等待」门禁**（3.2.0）：它**不按身份判定、也不"拿不准就放行"**——
 > 指挥官、小组长、子智能体与身份读不到的调用一律拒绝。理由是等待不是完成工作所必需的
@@ -762,6 +838,8 @@ specialist 跑在**自己的独立 preset** 里（`commander-specialist-<id>-<ha
 ## 依赖：智能体团队（0.2.2-rc.2 口径；6.0.0 起**默认开、不可关**）
 
 3.0.0 起 Team 是**指挥官唯一的天然通道**：没有它就建不出小组长，三层指挥链只剩协议文本。
+**7.0.0 起它是唯一通道本身**（硬门禁）：`workflow` / 一次性专家 / Worker Session 对指挥官
+一律拒绝。
 
 **6.0.0（DSH 0.2.2-rc.2）起 Team 模型变了**：Team 成员就是**可续做的标准 subagent**，
 Team 专属的 `spawn_teammate` 与 Team 作用域的 `send_message` / `list_agents` /
@@ -818,7 +896,8 @@ rc.2 的 Team 模式是**按根会话选择**（`team/mode` 事件），新会�
 > **specialist 工具与 Team 工具为什么不冲突**：specialist 工具是本插件用
 > `ctx.tools.register()` 注册的 `subagent_<id>`，是**名册生成的一次性专家工具**；建小组长
 > 的 `subagent` / `subagent_fork` 是另一族工具名，两套通道可以并存（门禁把 `subagent_<id>`
-> 留给小组长，把 `subagent` / `subagent_fork` 留给指挥官建人）。
+> 留给小组长，把 `subagent` / `subagent_fork` 留给指挥官建人）。**7.0.0 起**对指挥官还多拒
+> `workflow` 与 Worker Session（`commander_worker_*`），它们同样只在小组长那一层可用。
 
 ## 共享任务板投影（1.2.0）
 
@@ -854,7 +933,7 @@ Team 通道：owner 由插件自动绑定
 |---|---|---|
 | `open` | `pending` | 无 owner |
 | `working`（Team 通道） | `in_progress` | `subagent` 结算后 owner = 队友 |
-| `working`（specialist / worker） | `pending` | 一次性执行者不是 Team 成员，板上无主 |
+| `working`（specialist / worker） | `pending` | 一次性执行者不是 Team 成员，板上无主（worker 通道 7.0.0 已下线，这一行只对历史账本有意义） |
 | `waiting` / `review` / `blocked` / `failed` | 保持原 status | 板上无法表达，真实状态见 `[commander:status=...]` |
 | `done` | `completed` | pending 时 Lead 先 claim 再 complete |
 | `cancelled` | `deleted` | 删除墓碑 |
@@ -1002,9 +1081,9 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认"。3.4.0：设成 `false` 时 `requireMandate` 会被自动视为 `false`（否则授权永远记录不到，派发全被拒） |
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
 | `maxTeammates` | `16` | 写进协议的建议并行子代理上限（1–16）。3.0.0：8 → 16，与运行时 `subagent.maxActiveSubagents` / `subagent.maxActiveSubagents` 一致；插件不再自己压低 |
-| `delegationHierarchy` | `true` | 3.0.0：三层指挥链的三条确定性门禁（任务板写入 / 工单推进状态 / 子智能体派发）；`false` = 只留协议（2.x 行为） |
+| `delegationHierarchy` | `true` | 3.0.0：三层指挥链的**三条**确定性门禁（任务板写入 / 工单推进状态 / 子智能体派发）；`false` = 只留协议（2.x 行为）。**7.0.0：实际只控制前两条**（子智能体派发已并入无条件的派发通道硬门禁），**不能放开派发通道硬规则**（`evaluateCommanderChannels` 无条件执行） |
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
-| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束。⚠️ 别把**唯一的派发通道**一起禁掉（`subagent` / `send_message` / `workflow` 等）；即使禁掉也不会死锁——3.4.0 起"能派活"按真的能调用计算，没有可用通道时执行边界会放行你自己动手 |
+| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束。⚠️ 别把**唯一的派发通道**一起禁掉（`subagent` / `subagent_fork` / `send_message`）；即使禁掉也不会死锁——3.4.0 起"能派活"按真的能调用计算，没有可用通道时执行边界会放行你自己动手。**7.0.0**：`workflow` / `subagent_<id>` / `commander_worker_*` 对指挥官已被硬门禁拒绝，不需要写进这里 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
 | `ledger` | `true` | 工单账本（`commander_ticket_*` + 看板 + 计划授权门禁）；关掉退化为 0.5.0 行为 |
 | `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
@@ -1013,13 +1092,13 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 | `teamTaskProjection` | `true` | 1.2.0：工单自动投影到 Agent Teams 共享任务板（B）；没有团队服务时自动 no-op。3.4.0：设为 `false` 时 `requireTeamTask` 自动视为 `false`（否则 Team 通道永远派不出去），且工单工具真的不再投影 |
 | `requireTeamTask` | `true` | 1.2.0：Team 通道派发要求工单有有效投影（D-1）；没有团队服务时自动跳过。3.4.0：`teamTaskProjection: false` 时自动视为 `false` |
 | `requireTeamTaskMarker` | `false` | 1.2.0：Team 通道派发要求 prompt 带 `[task:task-N]` 且与投影一致（D-2） |
-| `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒指挥者；关掉回退前台阻塞 |
-| `maxAsyncTasks` | `16` | 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16，与运行时并行上限对齐 |
-| `workerSessions` | `true` | 每工单独立 Worker Session + 独立目录（1.0.0 起默认开启；`false` 回退到 specialist/Team） |
-| `workRoot` | `''` | Worker 目录根；空 = `<DSH_HOME>/commander/work`。相对路径以 `DSH_HOME` 为基准 |
-| `maxWorkers` | `6` | 每个指挥者会话同时最多几个 Worker Session（1–12）。2.4.0：3 → 6 |
-| `prepareCommand` | `''` | 建 worker 目录后执行一次的 prepare 命令（可用 `DSH_COMMANDER_*` 环境变量） |
-| `workerPermission` | `danger-full-access` | Worker Session 的权限预设；目录不是安全边界 |
+| `asyncDelegation` | `true` | 一次性 specialist 异步派发：工具立即返回，完成通知唤醒调用者；关掉回退前台阻塞。**7.0.0**：这条通道归小组长（指挥官调 `subagent_<id>` 会被硬门禁拒绝） |
+| `maxAsyncTasks` | `16` | 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16，与运行时并行上限对齐。**7.0.0**：由小组长发起的那一层生效 |
+| `workerSessions` | `true`（**读取恒为 `false`**） | **7.0.0 废弃**：Worker Session 通道下线。字段保留只为兼容旧配置——`resolveConfig()` 恒读成 `false`，profile patch 里写 `true` 也不生效（四个 `commander_worker_*` 工具不再注册） |
+| `workRoot` | `''` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
+| `maxWorkers` | `6` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
+| `prepareCommand` | `''` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
+| `workerPermission` | `danger-full-access` | **7.0.0 废弃**（Worker 通道下线；字段保留只为兼容旧配置，读取值不再被使用） |
 | `ticketStallMs` | `600000` | 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理） |
 | `maxTickets` | `100` | 账本最多保留工单数（超出裁剪最老的已结束工单） |
 | `eventInbox` | `true` | 外部事件投递（1.1.0）：轮询 `events/inbox/` 并 `steer` 对应指挥者会话；关掉不轮询 |
@@ -1075,13 +1154,14 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   记 Team；`subagent_<id>` / `workflow` 记一次性。
   `wait_agent`（硬禁用：3.1.0 起无开关、3.2.0 起整条链生效）/ `list_agents` / `team_task_*` 不计入（它们是读状态与建板，不是派活）。
   重启会重置计数（账本是进程内的），重启后第一次派发的配比从零开始。
-  3.0.0 起指挥官只能走 Team，所以这条配比对它恒为 Team；看板保留它是为了历史会话与
-  `delegationHierarchy: false` 的回退配置。
+  **7.0.0 起指挥官只能建小组长**，所以这条配比对它恒为 Team（一次性计数恒为 0）；看板保留
+  它是为了历史会话与小组长侧的活动。
 - **工单门禁只覆盖 DSH 工具调用（0.6.0）。** 与执行门禁同一边界：如果某个插件通过别的途径
   派活（例如自定义工具自己起子代理），本插件的 `tools/pre-execute` 看不到。
 - **工单是"状态"不是"锁"（0.6.0）。** 工单的 `scope`（写作用域）只是提示；执行环境仍共享
   cwd，没有 worktree / 文件锁。真正的执行隔离需要给每个工单独立 Session + 目录
-  （Worker Session），属于后续版本方向，不在 0.6.0 内。
+  （Worker Session）——它 0.8.0 上线、**7.0.0 起通道下线**，所以当前版本没有按工单隔离的
+  执行环境，边界仍是共享 cwd。
 - **停滞只是代理指标（0.6.0）。** "派发后 N 分钟没有新回报"不等于任务没进展，也不等于失败；
   看板只提示"先只读核对产物，再决定问用户 / 补派 / 标记受阻"，**不自动重派或结束**。
 - **账本是单进程文件（0.6.0）。** 同一 profile 下多进程写同一 `stateDir` 没有锁；正常部署只有
@@ -1092,29 +1172,35 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   报可执行错误，模式其余部分（门禁、看板降级）仍工作。
 - **异步完成通知依赖指挥者 agent 仍存活（0.7.0）。** 会话关闭后再结算：账本仍会写入，但 `steer`
   投递失败（只记 warning），通知丢失——该工单属于旧会话，新会话的看板看不到它。这是"会话内
-  模式"的边界，不是队列；要跨会话必须等 1.0 的 Worker Session / 常驻服务。
+  模式"的边界，不是队列；要跨会话得靠常驻服务（1.0 的 Worker Session 曾是这个方向的尝试，
+  **7.0.0 已下线**）。
 - **进程重启会清空"在飞"表（0.7.0）。** 重启后未结算的 Assignment 不会自动恢复；工单会以
   "派发后没有新回报"出现在看板（停滞提示），需要指挥者只读核对后补派或标记受阻。真正的恢复
-  属于 1.0 的 Worker Session。
+  属于常驻服务（Worker Session 曾在 0.8.0–6.0.0 提供过，7.0.0 下线）。
 - **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束；
   真实并行上限是宿主 `subagent.maxActiveSubagents`（rc.2 默认 8），本插件的 `maxTeammates`
   只是写进协议的建议值（6.0.0 起默认 8）。
 - **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
   判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
-- **Worker 会话会出现在会话列表（0.8.0；1.0.0 默认开启后更常见）。** 名字是
-  `执行 <ticket>：<标题>`，没有 UI 过滤；它们各自落在 `workRoot/<ticket>` 对应的 workspace 里
-  （不是默认工作区）。不想要这类会话就把 `workerSessions: false`，worker 通道与四个工具一起
-  消失，派工回到 specialist / Team。
-- **Worker 工具收敛不是安全边界（0.9.1）。** 静态 `tools.restrict({allow})` 让模型少看到
+- **Worker 会话不会再出现（7.0.0）。** 0.8.0–6.0.0 里它会出现在会话列表（名字是
+  `执行 <ticket>：<标题>`，落在 `workRoot/<ticket>` 对应的 workspace）。**7.0.0 起通道下线**：
+  四个 `commander_worker_*` 工具不再注册、`workerSessions` 恒读成 `false`，不会再有这类会话。
+- **Worker 相关代码保留但不再启用（7.0.0）。** `lib/worker-tools.js` / `lib/worker-sessions.js`
+  与账本里的 `execution` 字段都还在（旧账本的 `execution` 记录仍能读出，schema 未删字段），
+  但没有任何运行路径会启用它们：不注册工具、不提供 `commanderWorkers` 服务、
+  `resolveConfig()` 恒把 `workerSessions` 读成 `false`。旧账本里的 `execution` 记录属于历史
+  数据，不是当前通道。
+- **Worker 工具收敛不是安全边界（0.9.1，历史）。** 静态 `tools.restrict({allow})` 让模型少看到
   无关工具；但装饰发生在 agent 组装早期，restrict 可能因"未知全局工具"抛错，所以再加
   `tools.guard` 白名单——非工作工具的调用会被确定性拒绝。0.9.1 的真机 E2E 曾经把这条做错：
   按 `tools.get()` 过滤 allow，组装未完成时得到空数组，worker 连 `write` 都没有（只能开子
-  代理代写文件）。
-- **Worker 恢复是"提示"，不是队列（0.8.0）。** 重启后只有指挥者会话再次创建时才会为 open
+  代理代写文件）。7.0.0 起 Worker 通道下线，这段实现只保留在仓库里。
+- **Worker 恢复是"提示"，不是队列（0.8.0，历史）。** 重启后只有指挥者会话再次创建时才会为 open
   工单的 worker 投递恢复提示；进程内没人触发就不会自动恢复。`worker-<ticket>` Session 依赖
-  DSH 自己的会话持久化，会话被删就只剩账本记录（看板按停滞提示）。
-- **`prepareCommand` 按用户 shell 执行（0.8.0）。** 它在 `workRoot` 的父目录下跑，超时 10 分钟；
-  失败会让 spawn 抛错（带 stderr 摘要），不会反复重试同一条命令。
+  DSH 自己的会话持久化，会话被删就只剩账本记录（看板按停滞提示）。7.0.0 起随 Worker 通道
+  下线，不再触发。
+- **`prepareCommand` 按用户 shell 执行（0.8.0，历史）。** 它在 `workRoot` 的父目录下跑，超时 10
+  分钟；失败会让 spawn 抛错（带 stderr 摘要），不会反复重试同一条命令。7.0.0 起该配置废弃。
 - **共享工作目录。** 所有 specialist / teammate 观察同一个 cwd，改文件立即可见；本模式不
   提供 worktree 隔离或文件锁。协议要求"写作用域不重叠"，但 `writeScopes` 只是**提示**——
   Bash、formatter、代码生成器与直接外部写入都能绕过它。最终 diff 仍需人（或指挥者的
@@ -1170,23 +1256,30 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **`skills/` 目录由本模式加载（5.0.0）。** 通过 `skill-filesystem.config.customSkillDirs`
   加载本包 20 个方法 skill；目录缺失或 skill 文件损坏时只影响 skill 加载，不影响协议
   section 与门禁。`skill` 只是方法入口，验收仍看产物与证据。
-- **三条「谁来做」门禁只拦指挥官本人（3.0.0）。** `evaluateBoardWrite` / `evaluateTicketWrite` /
-  `evaluateSpecialistDispatch` 只对 Lead 生效：小组长 / 子智能体（`isDelegatedAgent` 命中）
-  与身份读不出来的调用一律放行（宁可漏拦，不可拦死）。`delegationHierarchy: false` 时三条
-  全部关闭，只剩协议约束。**禁止等待门禁不在这一组里**：3.2.0 起它不按身份放行（见下条）。
-- **没有「智能体团队」时三层指挥链退化为协议（3.0.0）。** 没有 `subagent` /
-  `send_message` 就建不出小组长：门禁按"宁可漏拦"放行（否则会话死锁），协议里的 Team 通道
-  自动降级为"把任务连同验收判据写进正文，请用户决定"。此时"只有小组长改进度"没有执行者，
-  规则 4 实际不生效。
+- **三条「谁来做」门禁只拦指挥官本人（3.0.0）。** `evaluateBoardWrite` / `evaluateTicketWrite`
+  （以及保留为纯函数的 `evaluateSpecialistDispatch`）只对 Lead 生效：小组长 / 子智能体
+  （`isDelegatedAgent` 命中）与身份读不出来的调用一律放行（宁可漏拦，不可拦死）。
+  `delegationHierarchy: false` 时这三条全部关闭，只剩协议约束。**禁止等待门禁不在这一组里**：
+  3.2.0 起它不按身份放行（见下条）。
+  **7.0.0 的派发通道硬门禁也不在这一组里**：它无条件执行、`delegationHierarchy` 关不掉；
+  但**身份读不到时同样放行**——`evaluateCommanderChannels()` 沿用 `isDelegatedAgent()` 的语义
+  （读不到 `session.header` / 判定抛错都当子级），因为拦错小组长的代价是它派不了自己的手下
+  （L1→L2 断链），而指挥官的身份在真实运行时总是可读的。
+- **没有「智能体团队」时三层指挥链退化为协议（3.0.0）。** 没有 `subagent` / `subagent_fork` /
+  `send_message` 就建不出小组长：协议里的 Team 通道降级为"把任务连同验收判据写进正文，请用户
+  决定"。此时"只有小组长改进度"没有执行者，规则 4 实际不生效。**7.0.0 起这条退化不会放宽派发
+  通道**：`workflow` / 一次性专家 / Worker Session 仍被硬门禁拒绝（它们不是"没有 Team 时的
+  替代通道"）。
 - **深度 2 是运行时限制，不是插件限制（3.0.0）。** 插件只把 `subagent.maxDepth=2` 写进协议
   文本；L2 再向下派由运行时拒绝。想加深要改运行时「子智能体」设置，插件不会（也不能）绕过它。
 - **任务板写入权只判断"调用者是不是 Lead"（3.0.0）。** 门禁不校验 owner 归属：指挥官
   `reassign` 给某个 teammate 后，那个 teammate 就能 claim / complete。owner 指错人（例如
   指给不存在的成员）时进度会卡在"无人结算"——看板会提示，门禁不会替你修。
-- **`workflow` 不在子智能体派发门禁内（3.0.0）。** `evaluateSpecialistDispatch` 只拦
-  `subagent` / `subagent_fork` / `subagent_<id>`；`workflow` 是编排工具（一次性扇出 fresh
-  子代理），不产生"某个小组长背任务"的层级，所以仍可由指挥官调用——它适合无状态扇出，
-  不适合需要排期与验收的长任务。
+- **`workflow` / 一次性专家 / Worker Session 对指挥官一律拒绝（7.0.0）。**
+  `evaluateCommanderChannels()` 在 `tools/pre-execute` 上无条件拒绝 `workflow`、名册生成的
+  `subagent_<id>`、所有 `commander_worker_*`；`delegationHierarchy: false` 也拦。这三条通道
+  **小组长可以用**（L1→L2 是用户认可的链路），所以协议里仍会写它们——只是标明"不是指挥官的
+  通道"。拒绝理由带恢复阶梯（建人 / 冷恢复 / 纠偏或换人接管 / 建人失败重试一次再 blocked）。
 - **投影失败现在会 warn（3.3.0）。** 以前只记 debug，投影失败看起来"无害"；现在失败会以
   warn 级带**错误码**（例如 `TEAM_INVALID_WRITE_SCOPE`）出现在日志里——因为投影失败会让
   Team 通道被派发门禁挡死。看到这个错误码先查工单 `scope` 里有没有绝对路径。
@@ -1201,16 +1294,16 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   idle"（定时扫描，`ticketStallMs` 阈值）。两者互不替代：会话 `def6609d` 的现场属于后者，
   当时只有前者，所以指挥者永远等不到唤醒。
 
-- **没有「智能体团队」的部署：一次性子智能体是唯一通道（3.4.0）。** 这时 `evaluateSpecialistDispatch()`
-  **降级放行**指挥官直调 `subagent_<id>` / `subagent` / `subagent_fork`（否则"不能自己动手
-  也不能派活"就是死锁）；协议也**显式覆盖**成"本部署没有 Team 工具、小组长建不起来，改走
-  一次性子智能体"，不是静默降级。
+- **没有「智能体团队」的部署：三层指挥链退化为协议（3.0.0；3.4.0 的降级已在 6.0.0 删除）。**
+  6.0.0 起 Team 是 base 自带、本模式强制开启，正常部署不会缺 `subagent` / `subagent_fork`。
+  若真读不到建人工具：7.0.0 的派发通道硬门禁不会因此放行 `workflow` / 一次性专家 / Worker
+  Session（它们仍被拒），协议与拒因会让指挥者把任务连同验收判据写进正文、请用户决定。
 - **没有 `ask_user_question` 的部署：计划授权门禁自动跳过（3.4.0）。** Mandate 只能由
   `ask_user_question` 的确认结果记录，没有它时授权永远拿不到，若仍拒绝派发整个模式会死锁；
   所以门禁跳过（协议仍要求先把计划讲给用户）。
-- **降级判据是"工具视图可读且确实没有"（3.4.0）。** 两条降级都只在 `availableTools` 是数组、
-  且确实不含对应工具时生效；**视图读不到（`undefined`）时按"有"处理**——保持原门禁，
-  宁可漏拦也不因为读不到而放宽。
+- **降级判据是"工具视图可读且确实没有"（3.4.0）。** 保留下来的降级（计划授权门禁）只在
+  `availableTools` 是数组、且确实不含 `ask_user_question` 时生效；**视图读不到（`undefined`）
+  时按"有"处理**——保持原门禁，宁可漏拦也不因为读不到而放宽。
 
 - **`confirmPlan: false` 会自动关掉计划授权门禁（3.4.0）。** 关掉"规划后确认"后，协议不再
   让模型调用 `ask_user_question`，Mandate 永远记录不到 → 若仍要求授权，所有派发会被永久
@@ -1222,9 +1315,10 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   在 `teamTaskProjection: false` 且 `requireTeamTask: true` 时自动把 `requireTeamTask` 视为
   false 并 warning；同时工单工具**真的尊重**这个开关（关掉时不再投影，此前只有
   `syncTicketMirror` 尊重它，配置与行为不一致）。
-- **"能派活"的判据是"真的能调用"，不是"视图里有"（3.4.0）。** 执行边界的 `canDelegate` 由
-  `hasUsableDispatchChannel()` 计算：Team / `workflow` / 一次性子智能体都要**没被
-  `blockedTools` 禁掉**才算数（一次性子智能体还要求层级门禁关闭或本部署无 Team）。
+- **"能派活"的判据是"真的能调用"，不是"视图里有"（3.4.0；7.0.0 收窄到只算建小组长）。**
+  执行边界的 `canDelegate` 由 `hasUsableDispatchChannel()` 计算：7.0.0 起只把
+  `subagent` / `subagent_fork` / `send_message` 算作指挥官的可用派发通道（`workflow` 已从
+  `DELEGATION_TOOLS` 删除），且都要**没被 `blockedTools` 禁掉**才算数。
   所以把 `subagent` / `send_message` 写进 `blockedTools` 不会造成死锁——门禁会判定
   "没有可用派活通道"，从而放行你自己动手；读不到工具视图时按"有"处理（宁严不漏）。
 
@@ -1342,16 +1436,18 @@ node --test "test/**/*.test.mjs"
 | `lib/workflow.js` | 项目开发工作流文本（每段六件套 + 20 个 skill 的阶段索引 + 六段角色常量） |
 | `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 禁止等待 / 禁人日 / git 分类提交 / 经验教训），由指挥者协议 import 拼接 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
-| `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill；5.0.0 起含「按任务形状拆」「验收与收口」两节） |
+| `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill；5.0.0 起含「按任务形状拆」「验收与收口」两节；**7.0.0 起含 `DISPATCH_CHANNEL_RULES`**——唯一派发通道 + 恢复阶梯） |
+| `lib/team-model.js` | 团队模型的**唯一正文来源**：三层职责 + **八条规则**（7.0.0 新增第 8 条 `dispatch-channel-hard`） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
 | `lib/tickets.js` | 工单状态机：六态回报 → 工单状态/阶段、停滞判定、计划授权判定、`STATUS:` 解析、工单看板渲染（纯函数） |
 | `lib/ledger.js` | 账本存储层：原子写、损坏备份、schema 清洗、路径解析 |
 | `lib/ledger-service.js` | `commanderLedger` 服务：会话隔离的工单/授权/派发/回报读写与裁剪 |
 | `lib/dispatch-gate.js` | 派发门禁：没有计划授权 / 不带工单 → 确定性拒绝；子代理/缺服务/身份不明一律放行 |
 | `lib/ticket-tools.js` | 三个工单工具（create / update / list）的 schema、执行与错误文案 |
-| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、拒绝理由 |
-| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除） |
-| `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
+| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、**派发通道硬门禁**（`evaluateCommanderChannels` + `COMMANDER_FORBIDDEN_DISPATCH` / `COMMANDER_WORKER_TOOL_PREFIX` / `buildCommanderChannelReason`，7.0.0 无条件、不可配置）、`DELEGATION_TOOLS` / `hasUsableDispatchChannel`（7.0.0 去掉 `workflow`）、拒绝理由 |
+| `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除；**7.0.0：`workerSessions` 恒读成 `false`**，`workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission` 废弃） |
+| `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现（**7.0.0：`startActivation` 的 `prompt` / `parent` / `agentPreset` / `agentOptions` / `maxDepth` 改为顶层字段，修 `spec.parent.id` 崩溃**） |
+| `lib/worker-tools.js` / `lib/worker-sessions.js` | Worker Session 的四个工具与独立 Session 管理（`commanderWorkers` 服务）；**7.0.0 起不启用**：不再注册工具、不提供服务，保留仅为兼容旧账本数据 |
 | `lib/capabilities.js` | **能力行唯一真源**（`CAPABILITY_ROWS` + `capabilityEntries()`）：模式的 preset 与每个 specialist preset 都从这里展开 |
 | `lib/preset-plugins.js` | 模式的**完整 plugins 组合**（能力行 + 模式行 + 可选工作流行），由 `preset-commander.js` 在 `apply()` 里注入 |
 | `specialist.js` | specialist preset 里的人设行（`dsh-commander-mode/specialist`） |
@@ -1370,16 +1466,64 @@ node --test "test/**/*.test.mjs"
 **零随附包依赖**：
 
 ```js
-request = { prompt: [{type:'text', text}], parent, agentPreset, agentOptions, maxDepth }
-const started = await subagents.startActivation({ provider:'spawn', request, signal, delivery:'caller' })
+// 7.0.0 修复：这些字段必须在**顶层**（rc.2 的 SubagentActivationSpec 不再接受 request 包一层）
+const started = await subagents.startActivation({
+  provider: 'spawn',
+  prompt: [{ type: 'text', text }],
+  parent, agentPreset, agentOptions, maxDepth,
+  signal, delivery: 'caller',
+})
 const settled = await started.result   // { output: blocks[], stopReason, structured? }
 ```
+
+> **7.0.0 修掉的契约 bug**：旧代码写成 `startActivation({ provider, request: { prompt, parent,
+> agentPreset, agentOptions, maxDepth }, ... })`，而 DSH 0.2.2-rc.2 的 `SubagentActivationSpec`
+> 要求这些字段在**顶层**——`SubagentRuntime.startActivation()` 直接读 `spec.parent.id`，
+> 于是抛 `Cannot read properties of undefined (reading 'id')`（真实会话 `session-fb21d6a0` 里
+> `subagent_implementer` 的"内部错误"）。小组长仍会用 specialist 工具（L1→L2），所以这个
+> 模块保留并修好；只是指挥官不能再直接调它。
 
 而每个 specialist 的**人设**必须由独立 preset 承载（0.2.x 的 tool-subagent 已不再接受
 `persona` 参数）：`lib/capabilities.js` 提供完整能力行，`specialist.js` 提供人设 section。
 
 ### 验证过什么
 
+- **7.0.0 第二十七轮（派发通道硬门禁 + Worker Session 通道下线）**：
+  - **硬门禁单测覆盖**（`lib/guard.js` 真实模块、非 mock）：指挥官调 `workflow` / 名册专家
+    `subagent_<id>` / `commander_worker_*` → **deny**；小组长 / 子智能体调同样工具 →
+    **放行**（L1→L2）；`delegationHierarchy: false` 时**仍然 deny**（硬门禁不在层级门禁开关
+    里）；拒因含「唯一一条派发通道」与**恢复阶梯**四步（建人 / 冷恢复 / 纠偏或换人接管 /
+    建人失败重试一次再 blocked），且不点名 agent 没有的工具。
+  - **协议文本 grep 证明**：`lib/protocol.js` 的 `DISPATCH_CHANNEL_RULES` 含「指挥官只有一条
+    派发通道」「恢复阶梯」「任何一步都不许换通道」；`lib/team-model.js` 规则 **8 条**
+    （新增 `dispatch-channel-hard`）；`WORKER_RULES` / `ASYNC_RULES` 已删除、grep 不到；
+    协议正文不再把 `workflow` / Worker Session 写成指挥官的派发通道。
+  - **配置事实**：`resolveConfig({ workerSessions: true })` → `workerSessions: false`（恒 false）；
+    `workRoot` / `maxWorkers` / `prepareCommand` / `workerPermission` 字段仍在（兼容旧 patch），
+    但读取值不再被任何运行路径使用；四个 `commander_worker_*` 工具不再注册。
+  - **`DELEGATION_TOOLS` 实测**：恰好 `['subagent', 'subagent_fork', 'send_message',
+    'team_task_create']`（`workflow` 已移除）；`hasUsableDispatchChannel()` 只把
+    `subagent` / `subagent_fork` / `send_message` 算作可用派发通道。
+  - **`startActivation` 契约修复**：`lib/specialists.js` 的五个字段移到顶层后，不再抛
+    `Cannot read properties of undefined (reading 'id')`（`session-fb21d6a0` 的现场）。
+  - **`node --test "test/**/*.test.mjs"`** → **671 / 671 通过、0 失败**（6.0.0 基线 659，净增 12：
+    新增 `test/commander-channels.test.mjs`——硬门禁纯函数（指挥官 deny / 小组长与子智能体放行 /
+    身份读不到放行 / `delegationHierarchy:false` 仍 deny / 拒因含五步恢复阶梯且不点名没有的工具）
+    与 model-facing 文案扫描（旧口径零残留、三份正文都含「不要换通道 + 恢复阶梯」）；
+    既有用例按 7.0.0 契约校准——`hasUsableDispatchChannel` 去 workflow、Worker 工具不再注册、
+    `startActivation` 顶层字段、`DELEGATION_TOOLS` 四项、team-model 八条规则等，逐条注明
+    「7.0.0：用户要求禁止另辟蹊径」，未删除任何断言来"变绿"）。
+  - **真实 Loader 回归（devkit headless 沙箱 `commander-700-regress`）**：`create → install`
+    （`dsh-commander-mode@7.0.0` 链入）`→ compose`（573 行合成树，`commander-mode` 配置行 +
+    `preset-commander` 声明行都在）`→ run → destroy`。headless 模板没有 `agentPresets`，
+    `preset-commander` 停在 `pending (waiting for service: agentPresets)`（已知模板边界），
+    所以用 `--patch` 把模式行临时挂到顶层来跑真实模型回合；**原始返回逐字**：
+    - `workflow` → `Error: 派发通道门禁：\`workflow\` 不是指挥官的派发通道（7.0.0 起**硬禁用、
+      没有开关**，不要重试）。…⚠️ **任何一步都不许换通道**…现在请按这个恢复阶梯做…`
+    - `commander_worker_spawn` → 同形状的 `Error: 派发通道门禁：\`commander_worker_spawn\`
+      不是指挥官的派发通道…`（Worker 工具已不注册，调用仍被同一道门禁拒绝）
+    - `list_agents` → `lead [running] — root agent`（允许通道照常放行）
+    沙箱已 `devkit_sandbox_destroy`，零残留。
 - **5.0.0 第二十六轮（两个模式合并成一个）**：
   - **协议实测（真实模块）**：`renderCommanderSection()` 默认 9983 字符 / 141 行、
     启用名册 11308 / 171 行、开场 10137 / 147 行（预算提到 12000 字符 / 180 行）。
@@ -1932,6 +2076,55 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.0.0** —— **派发通道收窄成唯一一条：指挥官只建小组长；Worker Session 通道下线**
+  （用户硬要求：「不能出现这种另辟蹊径开子智能体的方法，需要把这种指挥官->小组长->小组长的
+  手下 这种分发没问题」；口径明确：**连 Worker Session 一起禁**。大版本：对外契约有破坏性变更）。
+  ① **现场**：两个真实会话都是"绕开小组长层"的另辟蹊径 —— `session-2cd6ae3c`：Worker 停滞被
+  停掉后，指挥者向用户推荐"改用 specialist 分 4 路"，用名册生成的 `subagent_<id>` 直接开
+  4 个子智能体，跳过小组长层；`session-fb21d6a0`：`subagent_implementer` 报内部错误后，指挥者
+  取消工单、新建工单、换到 Worker Session 继续 —— 每一步都"看起来在解决问题"，但中间那层
+  被整条跳过。
+  ② **硬门禁**：`lib/guard.js` 新增 `evaluateCommanderChannels()`（连同
+  `COMMANDER_FORBIDDEN_DISPATCH = ['workflow']`、`COMMANDER_WORKER_TOOL_PREFIX = 'commander_worker_'`、
+  `buildCommanderChannelReason()`），`agent.js` 的 `tools/pre-execute` 在**层级门禁之前无条件**
+  调用它：对**指挥官本人**（root agent，非 delegated）一律拒绝 `workflow`、名册生成的一次性
+  专家工具 `subagent_<id>`、所有 `commander_worker_*`。唯一允许的派发通道是 `subagent` /
+  `subagent_fork`（建小组长）+ `send_message`（派活/续做）+ `team_task_*`（任务板）+
+  `list_agents`（读状态），`interrupt_agent` 仍可纠偏。**小组长 / 子智能体不受限**（L1→L2 是
+  用户认可的链路）。**不可配置、无开关**：`delegationHierarchy: false` 也拦。
+  ③ **Worker Session 通道下线**：不再注册四个 `commander_worker_*` 工具；`lib/config.js` 的
+  `resolveConfig()` 把 `workerSessions` **恒读成 `false`**（即使 profile patch 里写 `true`），
+  配置行也不再提供 `commanderWorkers` 服务；`workRoot` / `maxWorkers` / `prepareCommand` /
+  `workerPermission` 同样**废弃**（字段保留只为兼容旧配置，不删键）。`lib/worker-tools.js` /
+  `lib/worker-sessions.js` 保留仅为兼容旧账本数据，不再被任何运行路径启用。
+  ④ **派发通道判据同步收窄**：`DELEGATION_TOOLS` 去掉 `workflow`；
+  `hasUsableDispatchChannel()` 只把 `subagent` / `subagent_fork` / `send_message` 算作指挥官
+  可用派发通道（否则"没有通道→不拦"的死锁保护会误判：执行边界继续拦 `write`，而指挥官实际
+  无路可派）。`evaluateSpecialistDispatch()` 保留为纯函数（既有路径 / 测试引用），接线以
+  `evaluateCommanderChannels()` 为准。
+  ⑤ **协议与团队模型改写**：`lib/protocol.js` 新增 `DISPATCH_CHANNEL_RULES`（删掉
+  `WORKER_RULES` / `ASYNC_RULES`），`lib/team-model.js` 规则从七条变**八条**（新增第 8 条
+  `dispatch-channel-hard`），`lib/discipline.js` / `lib/workflow.js` 同步改写。并新增**恢复
+  阶梯**（用户追问「如果遇到需要小组长怎么办，比如 session-fb21d6a0 这种会话」）：
+  ①需要小组长 → `subagent`（要继承你已完成轮次的上下文用 `subagent_fork`）创建，prompt
+  自包含 + `[ticket:t-N]`，建完 `send_message` 派活；②已存在但 inactive → `send_message`
+  冷恢复，不要新建；③停滞 / 失败 → 先只读核对产物（`list_agents` / `team_task_list` /
+  `git log` / 产物目录）→ `interrupt_agent` 纠偏，或新建一个小组长接管同一张工单（旧的不再
+  用，避免两个执行者写同一批文件）→ 仍不行标 `blocked` 上报用户；④`subagent` 本身报错
+  （含内部错误）→ 重试一次，再失败就 `blocked` + 问用户；⑤**任何一步都不许换通道**。
+  ⑥ **修复一个真实 bug**：`lib/specialists.js` 调 `ctx.subagents.startActivation()` 时把
+  `prompt` / `parent` / `agentPreset` / `agentOptions` / `maxDepth` 包在 `request: {...}` 里，
+  而 DSH 0.2.2-rc.2 的 `SubagentActivationSpec` 要求这些字段在**顶层**——于是
+  `SubagentRuntime.startActivation()` 读 `spec.parent.id` 时报
+  `Cannot read properties of undefined (reading 'id')`（`session-fb21d6a0` 里
+  `subagent_implementer` 的"内部错误"就是它）。已改为顶层字段；小组长仍会用 specialist 工具
+  （L1→L2），所以该模块保留并修好。
+  ⑦ **用户要做什么**：重新安装 / 重启 DSH 即可（协议文本与门禁在启动时装配），**不需要改任何
+  配置**。如果你在 profile 里开过 `workerSessions`（或写过 `workRoot` / `maxWorkers` /
+  `prepareCommand` / `workerPermission`），现在**一律无效**：Worker 通道已下线，字段保留只是
+  为了不让旧 patch 报未知键。派发只用小组长；`delegationHierarchy: false` 也放不开派发通道
+  硬规则（它只影响任务板写入 / 工单推进状态两条门禁）。
 
 - **6.0.0** —— **适配 DSH 0.2.2-rc.2 的新 Agent Teams 模型；团队默认开、不可关**
   （用户 2026-11-12 两次强调：「使用指挥官模式时默认启用智能体团队协作（不可关闭）」）。
