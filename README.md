@@ -12,7 +12,7 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 - **指挥者不执行**：`write` / `edit` / `pwsh` 这类调用会被**确定性拒绝**并附上纠正指令
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
 - **三层指挥链（3.0.0）**：**指挥官 → 小组长 → 子智能体**。指挥官的下一级只有小组长
-  （`spawn_teammate` 建出的具名队友）：它自己执行，或把子任务交给下级子智能体。最大递归
+  （`subagent` 建出的具名队友）：它自己执行，或把子任务交给下级子智能体。最大递归
   深度 2、并行上限 16，都来自运行时「子智能体」设置，插件不再自己压低。
 - **派发通道（3.0.0 起指挥官只剩一条）**：指挥官的通道是「智能体团队」（小组长）；一次性
   `subagent_<id>`（开箱六位专家，可继承你的模型或绑定专属模型）归**小组长**使用。
@@ -24,7 +24,7 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 - **a2a 有纪律**：派活一次写全、开工前先约定回报格式、**不等**（`wait_agent` 3.1.0 起硬禁用、
   3.2.0 起整条链生效、无开关）——状态用 `list_agents` / 任务板读一次，少一轮就是一个回合。0.4.0 起生效。
 - **Team 优先（0.5.0）**：多阶段 / 长任务 / 需要中途追加指令或任务板进度 → 走「智能体团队」
-  （`spawn_teammate` + `team_task_*` + `send_message`）；一次性单点任务由**小组长**用
+  （`subagent` + `team_task_*` + `send_message`）；一次性单点任务由**小组长**用
   `subagent_<id>`（3.0.0：指挥官的通道只剩 Team）。
   看板会显示**派发通道配比**并点名**孤儿任务**（没人认领 / 主人已停手），防止"重启后队友没了
   就退化成只用一次性 specialist、任务板留下 6 项没收尾"。
@@ -110,7 +110,7 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 |---|---|
 | 只读侦察（`read` / `glob` / `grep` / `web_search`） | 写文件、改文件（`write` / `edit`） |
 | 规划与拆分、维护 `todo_write` | 跑命令（`pwsh` / `bash`） |
-| 建任务板、派发给小组长（`spawn_teammate`） | 杀作业（`job_kill`） |
+| 建任务板、派发给小组长（`subagent`） | 杀作业（`job_kill`） |
 | 结算后三同步：任务板 / 计划清单 / 团队状态 | 装插件（`plugin_manager`） |
 | 读状态（`list_agents` / 任务板）、核对验收判据 | 替用户拍板 |
 | 用 `ask_user_question` 让用户确认计划、上报分歧 | |
@@ -167,7 +167,7 @@ token 又和它自己的执行者人设冲突。0.4.0 起 prompt section 按 age
 
 | 阶段 | Team 工具调用 | 一次性 specialist | 任务板 |
 |---|---|---|---|
-| seq 0–1000 | **118 次**（6 `spawn_teammate` / 14 建板 / 22 `send_message` / 37 `wait_agent`） | 0 | 正常推进 |
+| seq 0–1000 | **118 次**（6 `subagent` / 14 建板 / 22 `send_message` / 37 `wait_agent`） | 0 | 正常推进 |
 | seq 1000–1333（运行时重启后） | 13 次 | **13 次** | 开始漂移 |
 | seq 1333–结束 | **0 次** | **2 次** | 留了 6 项没收尾 |
 
@@ -185,7 +185,7 @@ token 又和它自己的执行者人设冲突。0.4.0 起 prompt section 按 age
    - **派发通道配比**：`派发通道：Team N 次 / 一次性 specialist M 次`；最近 3 次派活全是
      一次性 specialist 且任务板还有未结算 → `⚠️ 团队闲置`，提示改用 Team；
    - **孤儿任务**（`⚠️ 任务板有孤儿任务`）：未结算 + 超过 10 分钟宽限期 + （无人认领 或
-     主人已 `inactive`）→ 提示"用 `spawn_teammate` 补人认领，或自己 `team_task_update`
+     主人已 `inactive`）→ 提示"用 `subagent` 补人认领，或自己 `team_task_update`
      结算/删除"。这类任务每条会话**强制兜底提醒一次**，之后留在看板里常驻。
 
 宽限期 10 分钟是刻意留的：规划阶段一次建 5–15 个任务是常态，过早报警只会有噪声；
@@ -205,7 +205,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
    （或自定义答案以"确认"开头）才算拿到**计划授权（Mandate）**。
 2. **先建工单再派活**：计划确认后，每一项要交付的活用 `commander_ticket_create` 建工单
    （`title` + `acceptance`，可选 `intent` / `scope`）。一张工单可多次派发（实现 / 返工 / 审查）。
-3. **每次派发都带工单**：specialist 工具传 `ticket` 参数；Team 的 `spawn_teammate` 在
+3. **每次派发都带工单**：specialist 工具传 `ticket` 参数；Team 的 `subagent` 在
    prompt 首行写 `[ticket:t-N]`。
 4. **回报必须结构化**：执行者（3.0.0 起是小组长）最终答复最后一行写
    `STATUS: progress|waiting|ready|blocked|failed|dropped`；**推进状态由小组长**用
@@ -323,7 +323,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 
 - **L0 指挥官**（主会话 / Lead）：目标、拆分、派单、验收、与用户沟通。它不执行操作，也不越过
   小组长去派一次性子智能体。
-- **L1 小组长**（`spawn_teammate` 建出的具名队友）：各背**一个团队任务**，可以**自己执行**
+- **L1 小组长**（`subagent` 建出的具名队友）：各背**一个团队任务**，可以**自己执行**
   （它继承同一 preset scope，有写文件与跑命令的能力），也可以把子任务交给**下级子智能体**；
   **任务进展与排期由它写**。
 - **L2 子智能体**（小组长派出的 `subagent_<id>` / `subagent` / `workflow` 子代理）：只负责执行，
@@ -348,7 +348,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 
 - **最大递归深度 2**：`subagent.maxDepth = 2`。小组长是 L1、子智能体是 L2；L2 再向下派会被
   运行时拒绝，硬试只是白烧轮次。
-- **并行上限 16**：`subagent.maxActiveSubagents = 16`、`agent-team.maxMembers = 16`。互不依赖
+- **并行上限 16**：`subagent.maxActiveSubagents = 16`、`subagent.maxActiveSubagents = 16`。互不依赖
   的工作流各开一个小组长并行推进；**真到上限才排队或复用**，不要因为"怕撞上限"提前串行化。
 - 插件**不再自己压低**这两个数字：`maxTeammates` / `maxAsyncTasks` 的默认值与上限都改成 16，
   与运行时一致（见「配置」）。2.x 里 `maxTeammates` 默认 4 / 8 的"建议并行度"是历史包袱，
@@ -380,14 +380,14 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 大版本：对外契约有结构性变化，"指挥者直接派 specialist、自己改进度"的旧用法不再被允许。
 
 1. **指挥官不再直接调用 `subagent_<id>` / `subagent` / `subagent_fork`**：团队活一律
-   `spawn_teammate` 建小组长 + `send_message` 派活；直调会被确定性拒绝（见上）。一次性专家
+   `subagent` 建小组长 + `send_message` 派活；直调会被确定性拒绝（见上）。一次性专家
    仍可用，但只由**小组长**调用。
 2. **任务板进度与排期写入权从指挥官移到小组长**：`team_task_update` 的
    `claim` / `release` / `complete` / `reopen` / `set_dependencies`，以及
    `commander_ticket_update` 的 `progress` / `waiting` / `ready` / `blocked` / `failed` 只允许
    小组长做。指挥官只做：`team_task_create` 建任务、`team_task_update` `action:"reassign"`
    指派 owner、`team_task_list` / `team_task_get` 读板，以及验收后的工单 `done` / `cancelled`。
-3. **六位专家改为「专家小组长」**：每个任务先 `spawn_teammate` 建一位专家小组长
+3. **六位专家改为「专家小组长」**：每个任务先 `subagent` 建一位专家小组长
    （如 `architect-lead`），再 `send_message` 派该段任务；专家小组长可以自己执行，也可以把
    子任务交给下级 `subagent_<id>`。项目经理**不直接调** `subagent_<id>`。
 4. **新配置 `delegationHierarchy`**（默认 `true`）：关闭后回到 2.x 的"只靠协议"行为，适合
@@ -414,7 +414,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 | 工单账本 / 计划授权 | **可选严格流程**：工具都在（`ledger: true`），但 `requireMandate` / `requireTicket` **默认关**；打开即回到旧版指挥者的严格流程 |
 | 验收判据 / 落盘证据 / 独立验证 | 并入本模式协议（每个任务都要过） |
 
-**3.0.0 起：六位专家 = 六位专家小组长**（团队模型 L1）。每个任务先 `spawn_teammate` 建一位
+**3.0.0 起：六位专家 = 六位专家小组长**（团队模型 L1）。每个任务先 `subagent` 建一位
 专家小组长、`send_message` 派该任务；专家小组长可以自己执行，也可以把子任务交给下级
 子智能体（`subagent_<id>`）。指挥者**不直接调用** `subagent_<id>` / `subagent` /
 `subagent_fork`——直调会被门禁拒绝（见「3.0.0 团队模型」）。建议的小组长名字：
@@ -468,7 +468,7 @@ preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层。5
 由该任务小组长 `complete`，项目经理只核对）、证据归档。
 最终汇报要列提交分类与短哈希、是否还有未提交内容。
 
-**开局**：按工作纪律优先建 Team（`spawn_teammate`）与共享任务板（`team_task_create`）；
+**开局**：按工作纪律优先建 Team（`subagent`）与共享任务板（`team_task_create`）；
 3.0.0 起每个任务都要先建**专家小组长**再派活（它自己执行或交下级），项目经理不再直接派
 `subagent_<id>`。专家工具默认**异步派发**（立即返回 childId，结算时用「【项目经理·派工完成】」
 通知唤醒**调用它的小组长**），所以派活后不要等——继续推进其它任务或做只读核对。
@@ -562,7 +562,7 @@ skill 注册失败只记 warning。
 0.2.0 参考 [ToxicantX/dsh-multi-model-orchestrator](https://github.com/ToxicantX/dsh-multi-model-orchestrator)
 加了第二条派发通道：**名册里的每个 specialist 是一个独立工具**。
 
-> **3.0.0 起这些专家由小组长使用**：指挥官的通道只剩 Team（`spawn_teammate` 建小组长），
+> **3.0.0 起这些专家由小组长使用**：指挥官的通道只剩 Team（`subagent` 建小组长），
 > 一次性 `subagent_<id>` 归小组长调用；指挥官直调会被门禁拒绝。见「3.0.0 团队模型」。
 
 0.3.0 起**开箱就带一套按主流软件开发生命周期划分的专家**，装好即可派活，不用先配置：
@@ -616,7 +616,7 @@ skill 注册失败只记 warning。
 
 | 通道 | 工具 | 谁用 | 适合 |
 |---|---|---|---|
-| **智能体团队** | `spawn_teammate` / `send_message` / `team_task_*`（`wait_agent` 硬禁用：3.1.0 起无开关、3.2.0 起整条链生效） | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
+| **智能体团队** | `subagent` / `send_message` / `team_task_*`（`wait_agent` 硬禁用：3.1.0 起无开关、3.2.0 起整条链生效） | **指挥官（唯一通道）** | 长期存在的具名小组长、持续对话、共享任务板、后台并行 |
 | **多模型 specialist** | `subagent_<id>`（前台，结果直接返回） | **小组长**（L1） | 独立模型/专门职责、一次性的实现/审查/分析 |
 
 3.0.0 起指挥官的通道只剩 Team：直调 `subagent_<id>` / `subagent` / `subagent_fork` 会被门禁
@@ -636,13 +636,13 @@ skill 注册失败只记 warning。
 | 情况 | 做法 |
 |---|---|
 | 任务落在定位内 | 用对应的小组长，正常派活 |
-| **差距大**（跨领域 / 不同产出 / 另一套技能） | **不要硬派**：先换一个匹配的小组长；没有就**开一个新的小组长**（3.0.0 起"开新子智能体"= `spawn_teammate`） |
+| **差距大**（跨领域 / 不同产出 / 另一套技能） | **不要硬派**：先换一个匹配的小组长；没有就**开一个新的小组长**（3.0.0 起"开新子智能体"= `subagent`） |
 | 一个任务里混着两种定位的工作 | 拆成两个任务，分别派 |
 | 找不到任何匹配定位 | 把任务与候选定位写进正文，问用户 |
 
 **"开一个新的小组长"怎么做**（3.0.0：开新子智能体 = 开新小组长）：
 
-- **`spawn_teammate` 就是入口** — 名字、`description`、`prompt` 都由指挥者写，
+- **`subagent` 就是入口** — 名字、`description`、`prompt` 都由指挥者写，
   所以可以按这次任务的定位新建一个小组长（例：现有 `reviewer-lead` 做代码审查，这次要"依赖
   漏洞扫描" → spawn 一个 `security-lead`，把定位写进它的 description 与 prompt）。
 - **名册不能由指挥者改**（那是用户在设置页配的，决定小组长能派哪些 `subagent_<id>`）。
@@ -759,30 +759,66 @@ specialist 跑在**自己的独立 preset** 里（`commander-specialist-<id>-<ha
 身份判别的三个证据都来自 `childSessionMeta()`：`header.parentSession`、
 `header.origin === 'subagent'`、`header.delegationDepth > 0`。
 
-## 依赖：智能体团队
+## 依赖：智能体团队（0.2.2-rc.2 口径；6.0.0 起**默认开、不可关**）
 
-3.0.0 起 Team 是**指挥官唯一的天然通道**：没有它就建不出小组长，三层指挥链退化为协议
-（见「已知边界」）。
+3.0.0 起 Team 是**指挥官唯一的天然通道**：没有它就建不出小组长，三层指挥链只剩协议文本。
 
-Team 通道用的是 `@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」）
-提供的九个 Team 工具：`spawn_teammate`、`send_message`、`wait_agent`、`list_agents`、
-`interrupt_agent`、`team_task_create/list/get/update`。其中 `wait_agent` 在 3.1.0 起硬禁用
-（无开关）、**3.2.0 起整条链生效**（指挥官、小组长、子智能体都不许等，见「禁止等待子智能体」
-一节）；它仍留在 Team 组合包的工具清单里，但本插件的 preset scope 会确定性拒绝它。
+**6.0.0（DSH 0.2.2-rc.2）起 Team 模型变了**：Team 成员就是**可续做的标准 subagent**，
+Team 专属的 `spawn_teammate` 与 Team 作用域的 `send_message` / `list_agents` /
+`interrupt_agent` 已被移除。现在建人/续做用的是标准工具：
 
-它们注册在每个 Team 成员 agent **自己的 ctx** 上（Lead 是隐式 Team 的 Lead，因此也是成员），
-所以**本插件的 patch 不需要、也不该重复声明它们**。那个组合包同时禁用了旧的
-`tool-subagent*` 控件（0.2.2 起是 `tool-subagent-control` / `tool-subagent` /
-`tool-subagent-fork` 三行；`list-agents` 子路径导出已移除、`list_agents` 并进主入口），
-因此本插件的 preset **有意不镜像** standard 的 delegation 组里那三个 subagent 行——
-重新声明它们会让指挥者同时拿到两套 `send_message` / `list_agents` / `interrupt_agent`。
+| 动作 | 工具（rc.2） |
+|---|---|
+| 建小组长（不继承对话） | `subagent({ name, description, prompt })` → 返回 `{ kind:'activation', name }` |
+| 建小组长（继承已完成轮次） | `subagent_fork({ description, prompt })` |
+| 续做 / 追加指令 | `send_message({ agent, message })`（`agent` 用 `list_agents` 里的名字） |
+| 看整棵树 | `list_agents({})`（无参） |
+| 纠偏 | `interrupt_agent({ agent })` |
+| 共享任务板 | `team_task_create` / `list` / `get` / `update`（四个，来自 base 的 `tool-agent-team`） |
 
-preset 里只保留 `workflow-ptc` + `tool-workflow` 作为互补的编排通道（一次性扇出多个 fresh
-子代理）。
+`wait_agent` 在 3.1.0 起硬禁用（无开关）、**3.2.0 起整条链生效**（指挥官、小组长、子智能体
+都不许等，见「禁止等待子智能体」一节）；它现在是标准 subagent 控制工具，但本插件的 preset
+scope 会确定性拒绝它。
+
+`agent-team` / `tool-agent-team` 已**并入 base bundle**（`@deepseek-ai/dsh-agent-team` /
+`@deepseek-ai/dsh-tool-agent-team`），Web 的 base 层没有禁用它们，所以四个任务工具不需要在
+preset 里声明。`agent-team` 只接受 `maxTasks` / `defaultEnabled` 两个键（旧键
+`maxMembers` / `maxMessageBytes` / `disposalTimeoutMs` 会抛 `TEAM_INVALID_CONFIG`）。
+
+本插件的 `delegation` 组镜像 standard 的五行：`tool-subagent-control`（**不写 config** →
+插件默认 `interrupt: true`，指挥官需要 `interrupt_agent` 纠偏）、`tool-subagent`（spawn，
+`maxDepth: 2`）、`tool-subagent-fork`（fork，`maxDepth: 2`）、`workflow-ptc`、
+`tool-workflow`。
+
+### 团队默认启用且不可关闭（用户 2026-11-12 硬要求）
+
+rc.2 的 Team 模式是**按根会话选择**（`team/mode` 事件），新会话默认关闭；关掉时四个
+`team_task_*` 工具连 schema 都不出现。而本模式的三层指挥链完全建立在 Team 上，所以：
+
+- **创建即开启**：profile 顶层的 `commander-mode` 行在 `agent/created` 里，对**根 agent** 且
+  **当前 preset** 是 `commander` 的会话调用 `agentTeams.setEnabled(agent, true)`。当前 preset
+  优先读 `agentPresets.presetForSession()` 的投影、回退 `session.header.agentPreset`——头里是
+  **创建时**的 preset，切模式只 append `agent-preset/selected`，只看头会漏掉真实路径；
+- **切到指挥官即开启**：rc.2 的 web 流程是「先建默认会话、再在输入框里切模式」，切模式走
+  `agentPresets.select(liveAgent, 'commander')`——它把新 preset 重挂到**同一个活 agent** 上，
+  **不会**产生新的 `agent/created`。所以还要监听 `session/event` 的 `agent-preset/selected`；
+- **被关掉即重开**：监听 `session/event` 的 `team/mode`，指挥官会话出现 `enabled: false` 时
+  **立刻重开**并记日志（只在当前确实是关的时候动作，避免事件循环）；
+- **没有任何"关闭团队"的配置项** —— 这是硬约束，不是可调选项。实现见 `lib/team-mode.js`。
+
+> 实现细节（沙箱实测踩出来的坑）：在 `session/event` 观察者里**同步**调 `setEnabled()` 会被
+> Session 的重入保护拒绝——`session append cannot reenter while another append is being published`
+> （观察者是在那条事件的 append 发布过程中被调用的）。所以写操作要 `deferToNextTask()` 推迟到
+> 下一个宏任务；推迟后 `team/mode {enabled:true}` 正常落盘（实测：切到指挥者模式 → 会话日志出现
+> `team/mode` 事件）。
+
+`agentTeams` 是 base bundle 自带的服务，本插件把它当**硬依赖**：读不到时记 `error` 日志
+（不静默降级），因为那种部署里指挥者模式根本无法工作。
 
 > **specialist 工具与 Team 工具为什么不冲突**：specialist 工具是本插件用
-> `ctx.tools.register()` 注册的 `subagent_<id>`，工具名与 Team 的九个工具完全不同；
-> 它也不声明 `tool-subagent` 那一族随附控件，所以两套通道可以并存。
+> `ctx.tools.register()` 注册的 `subagent_<id>`，是**名册生成的一次性专家工具**；建小组长
+> 的 `subagent` / `subagent_fork` 是另一族工具名，两套通道可以并存（门禁把 `subagent_<id>`
+> 留给小组长，把 `subagent` / `subagent_fork` 留给指挥官建人）。
 
 ## 共享任务板投影（1.2.0）
 
@@ -817,7 +853,7 @@ Team 通道：owner 由插件自动绑定
 | 工单状态 | 任务 status | 说明 |
 |---|---|---|
 | `open` | `pending` | 无 owner |
-| `working`（Team 通道） | `in_progress` | `spawn_teammate` 结算后 owner = 队友 |
+| `working`（Team 通道） | `in_progress` | `subagent` 结算后 owner = 队友 |
 | `working`（specialist / worker） | `pending` | 一次性执行者不是 Team 成员，板上无主 |
 | `waiting` / `review` / `blocked` / `failed` | 保持原 status | 板上无法表达，真实状态见 `[commander:status=...]` |
 | `done` | `completed` | pending 时 Lead 先 claim 再 complete |
@@ -830,7 +866,7 @@ Team 通道：owner 由插件自动绑定
 2. 任务板只有 4 个状态，`review / blocked / failed` 以描述 marker 与「指挥者·工单看板」为准。
 3. **改进度用 `commander_ticket_update`**；直接改投影任务会被下次同步覆盖。
 
-**Team 通道自动绑定（D）**：`spawn_teammate` 成功后，插件把这张工单的投影任务
+**Team 通道自动绑定（D）**：`subagent` 成功后，插件把这张工单的投影任务
 `reassign` 给该队友（Lead 权限），所以"建板必有主"不再依赖模型自觉。派发门禁额外要求
 Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Teams 时自动跳过）。
 **3.3.0 起缺投影会自愈**：门禁先让插件自己补建（`ensureTeamTask`），补建成功直接放行；
@@ -859,7 +895,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
    `writeScope()` **拒绝绝对路径**——盘符开头（`^[a-z]:`）、前导 `/`、空段 / `.` / `..` 段
    都算非法，直接抛 `TEAM_INVALID_WRITE_SCOPE`；
 3. **投影失败被静默吞掉**（只记 debug）→ 工单没有 `teamTaskId`；
-4. **派发门禁 D-1 拒绝 `spawn_teammate`**，并让模型"更新工单状态（例如 progress）触发投影"；
+4. **派发门禁 D-1 拒绝 `subagent`**，并让模型"更新工单状态（例如 progress）触发投影"；
 5. **但 3.0.0 起指挥官改工单推进状态被层级门禁拒绝** → **两条门禁互相矛盾，Team 通道永久
    不可用**（会话里模型自己写下"门禁自相矛盾形成死锁"）；
 6. **模型退到 Worker Session**，worker 卡在**回合中途**（长时间无事件、没有 `turn/end`）：
@@ -904,7 +940,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 
 1. **派发门禁 D-1 要求任务板投影 ↔ 层级门禁禁止指挥官改工单状态**（投影只能由状态更新触发）
    → Team 通道永久不可用 → **3.3.0 已修**（缺投影时插件自愈补建，见上一节）。
-2. **一次性子智能体派发被层级门禁拦 ↔ 该部署没有 Team 工具**（`spawn_teammate` /
+2. **一次性子智能体派发被层级门禁拦 ↔ 该部署没有 Team 工具**（`subagent` /
    `send_message` 都不在）→ 指挥官既不能自己动手、也不能派活 → **模式死锁**
    → **3.4.0 修**：`evaluateSpecialistDispatch()` 在没有 Team 通道时**降级放行**。
 3. **Mandate 门禁要求"用户确认的计划" ↔ 授权只能由 `ask_user_question` 记录，而该部署
@@ -919,13 +955,13 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
    `false` 时渲染**降级通道段** + 顶部**显式覆盖**；`renderModeOpening()` 收尾句同步；
    项目经理协议追加覆盖段。
 5. **`teamTaskProjection: false` ↔ `requireTeamTask: true`（配置层同冲突）** → 关掉投影后
-   工单不会出现在任务板上，而 D-1 要求 `spawn_teammate` 前工单已有投影 → **Team 通道永远
+   工单不会出现在任务板上，而 D-1 要求 `subagent` 前工单已有投影 → **Team 通道永远
    派不出去**（与 `def6609d` 同形状）→ **3.4.0 修**：`resolveConfig` 在
    `teamTaskProjection === false && requireTeamTask === true` 时**自动把 `requireTeamTask`
    视为 false** 并 warning；同时 `lib/ticket-tools.js` 现在**真的尊重** `teamTaskProjection`
    （关掉时工单工具不再投影——此前只有 `syncTicketMirror` 尊重它，配置与行为不一致）。
 6. **`blockedTools` 把派发工具全禁掉 ↔ 执行边界仍拦 `write`（死锁）** → `canDelegate` 原来
-   只看工具视图有没有派发工具、**不看 `blockedTools`**：用户把 `spawn_teammate` /
+   只看工具视图有没有派发工具、**不看 `blockedTools`**：用户把 `subagent` /
    `send_message` 写进 `blockedTools` 后，会得出"能派活"的假结论 → 执行边界继续拦 `write`，
    而真正能调用的派发工具全被禁 → 既不能动手也不能派活 → **3.4.0 修**：`lib/guard.js` 新增
    `hasUsableDispatchChannel({ availableTools, blocked, delegationHierarchy })`——按"**真的
@@ -965,10 +1001,10 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
 |---|---|---|
 | `confirmPlan` | `true` | 是否强制"规划/拆分完成后先让用户确认"。3.4.0：设成 `false` 时 `requireMandate` 会被自动视为 `false`（否则授权永远记录不到，派发全被拒） |
 | `escalateOnConflict` | `true` | 是否强制"子代理之间有分歧时交回用户" |
-| `maxTeammates` | `16` | 写进协议的建议并行子代理上限（1–16）。3.0.0：8 → 16，与运行时 `subagent.maxActiveSubagents` / `agent-team.maxMembers` 一致；插件不再自己压低 |
+| `maxTeammates` | `16` | 写进协议的建议并行子代理上限（1–16）。3.0.0：8 → 16，与运行时 `subagent.maxActiveSubagents` / `subagent.maxActiveSubagents` 一致；插件不再自己压低 |
 | `delegationHierarchy` | `true` | 3.0.0：三层指挥链的三条确定性门禁（任务板写入 / 工单推进状态 / 子智能体派发）；`false` = 只留协议（2.x 行为） |
 | `syncGuard` | `true` | 结算同步看板（每轮运行时上下文）+ 回合结束前的同步兜底；关掉只去掉这两样，协议里的同步要求仍在 |
-| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束。⚠️ 别把**唯一的派发通道**一起禁掉（`spawn_teammate` / `send_message` / `workflow` 等）；即使禁掉也不会死锁——3.4.0 起"能派活"按真的能调用计算，没有可用通道时执行边界会放行你自己动手 |
+| `blockedTools` | 48 项（本地执行 + 远程 / 桌面 / 浏览器 / 模拟器 / 终端 / worktree，见「执行边界」） | 指挥者不许自己调用的工具；传 `[]` 可只留协议约束。⚠️ 别把**唯一的派发通道**一起禁掉（`subagent` / `send_message` / `workflow` 等）；即使禁掉也不会死锁——3.4.0 起"能派活"按真的能调用计算，没有可用通道时执行边界会放行你自己动手 |
 | `registerSkill` | `true` | 是否把长文协议注册成 `commander-mode` skill |
 | `ledger` | `true` | 工单账本（`commander_ticket_*` + 看板 + 计划授权门禁）；关掉退化为 0.5.0 行为 |
 | `stateDir` | `''` | 账本位置；空 = `<DSH_HOME>/commander/<profile>.json`。相对路径以 `DSH_HOME` 为基准 |
@@ -1019,9 +1055,11 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   协议里剔除（避免点名不存在的工具）；其余 specialist 与整个模式照常工作。
 - **`inactive` ≠ 做完了。** teammate 的 `inactive` 只表示"当前没有轮次在执行"。判断结果
   要看它报回来的内容与验收判据——协议里写明了，但这是模型行为，不是代码保证。
-- **同步看板依赖「智能体团队」。** 没有 `agentTeams` 服务（用户关掉「智能体团队」、或这个
-  部署没装）时，看板与回合同步兜底都**不产生任何文本**，协议自动切到"看一遍状态、不要轮询"
-  的说法；`todo_write` 的计划清单仍会被记录，但没有任务板可对照。
+- **同步看板依赖「智能体团队」。** 6.0.0 起 Team 由本插件**强制开启**，正常不会有"关掉"
+  的状态；只有 `agentTeams` 服务本身缺失（非 base 组合的部署）时，看板与回合同步兜底才
+  **不产生任何文本**，`todo_write` 的计划清单仍会被记录、但没有任务板可对照。
+  成员状态改由 `ctx.subagents.listDescendants()` **异步**读取（rc.2 移除了同步的
+  `listMembers`），看板用的是缓存快照，最多过期十几秒。
 - **同步兜底最多每回合提醒一次。** 模型若坚持不同步，回合会正常结束（不会卡住），下一次
   有新未同步项时才会再提醒。看板只报告**证据充分**的未同步（结算发生在清单更新之后、
   或清单说全完成但板还有未结算任务），读不到的一律按"未知"处理，不误报。
@@ -1033,8 +1071,8 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   10 分钟）每条会话只**强制兜底提醒一次**，之后只留在看板里；团队闲置（最近 3 次派活全是
   一次性 specialist 且有未结算任务）**不拦回合**，只在看板里常驻。阈值都写死在
   `lib/sync.js`（`STALE_OPEN_GRACE_MS`、最近 3 次），有单测覆盖。
-- **派发配比只统计指挥者自己的派活动作。** `spawn_teammate` / `send_message` 记 Team；
-  `subagent_<id>` / `subagent` / `subagent_fork` / `workflow` 记一次性。
+- **派发配比只统计指挥者自己的派活动作。** `subagent` / `subagent_fork` / `send_message`
+  记 Team；`subagent_<id>` / `workflow` 记一次性。
   `wait_agent`（硬禁用：3.1.0 起无开关、3.2.0 起整条链生效）/ `list_agents` / `team_task_*` 不计入（它们是读状态与建板，不是派活）。
   重启会重置计数（账本是进程内的），重启后第一次派发的配比从零开始。
   3.0.0 起指挥官只能走 Team，所以这条配比对它恒为 Team；看板保留它是为了历史会话与
@@ -1058,7 +1096,9 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **进程重启会清空"在飞"表（0.7.0）。** 重启后未结算的 Assignment 不会自动恢复；工单会以
   "派发后没有新回报"出现在看板（停滞提示），需要指挥者只读核对后补派或标记受阻。真正的恢复
   属于 1.0 的 Worker Session。
-- **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束。
+- **`maxAsyncTasks` 只限制一次性 specialist（0.7.0）。** Team 通道不受这个上限约束；
+  真实并行上限是宿主 `subagent.maxActiveSubagents`（rc.2 默认 8），本插件的 `maxTeammates`
+  只是写进协议的建议值（6.0.0 起默认 8）。
 - **完成通知≠验收（0.7.0）。** 通知只把结果与 `STATUS:` 送到眼前；是否完成仍要指挥者按验收
   判据核对，再 `commander_ticket_update`。没有 STATUS 的结算按 progress 记录，不能当完成。
 - **Worker 会话会出现在会话列表（0.8.0；1.0.0 默认开启后更常见）。** 名字是
@@ -1134,7 +1174,7 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   `evaluateSpecialistDispatch` 只对 Lead 生效：小组长 / 子智能体（`isDelegatedAgent` 命中）
   与身份读不出来的调用一律放行（宁可漏拦，不可拦死）。`delegationHierarchy: false` 时三条
   全部关闭，只剩协议约束。**禁止等待门禁不在这一组里**：3.2.0 起它不按身份放行（见下条）。
-- **没有「智能体团队」时三层指挥链退化为协议（3.0.0）。** 没有 `spawn_teammate` /
+- **没有「智能体团队」时三层指挥链退化为协议（3.0.0）。** 没有 `subagent` /
   `send_message` 就建不出小组长：门禁按"宁可漏拦"放行（否则会话死锁），协议里的 Team 通道
   自动降级为"把任务连同验收判据写进正文，请用户决定"。此时"只有小组长改进度"没有执行者，
   规则 4 实际不生效。
@@ -1185,7 +1225,7 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **"能派活"的判据是"真的能调用"，不是"视图里有"（3.4.0）。** 执行边界的 `canDelegate` 由
   `hasUsableDispatchChannel()` 计算：Team / `workflow` / 一次性子智能体都要**没被
   `blockedTools` 禁掉**才算数（一次性子智能体还要求层级门禁关闭或本部署无 Team）。
-  所以把 `spawn_teammate` / `send_message` 写进 `blockedTools` 不会造成死锁——门禁会判定
+  所以把 `subagent` / `send_message` 写进 `blockedTools` 不会造成死锁——门禁会判定
   "没有可用派活通道"，从而放行你自己动手；读不到工具视图时按"有"处理（宁严不漏）。
 
 ## 运维：外部巡检（0.9.0）
@@ -1430,7 +1470,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
       与降级通道段（"一次性子智能体就是**唯一**的派活通道"）；`hasTeamTools: true` 时**不含**
       降级段、仍渲染「通道 B」。
     - `renderModeOpening({ hasTeamTools: false })`：收尾句改成"用一次性子智能体派活"，
-      不再教模型去 `spawn_teammate`。
+      不再教模型去 `subagent`。
     - **执行边界门禁的 `canDelegate === false` 逃生门**方向一致（源码审阅 + 既有用例）：
       没有派发通道时允许指挥官自己动手，避免死锁。
     - **配置层同冲突（`teamTaskProjection`）**：`resolveConfig({ teamTaskProjection: false })`
@@ -1512,7 +1552,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   - `node --test "test/**/*.test.mjs"` → **602 / 602 通过、0 失败**（2.4.1 基线 553，净增 49：
     `team-model` / `guard-hierarchy` / `hierarchy-wiring` 三个新文件 + 既有文件按新契约校准）。
     连跑 3 次稳定。新增覆盖里最关键的三条是：①层级开启时 `write` 的拒绝理由**不得出现
-    `subagent_`**、必须指向 `spawn_teammate`+`send_message`+小组长（P2 回归）；②被层级门禁
+    `subagent_`**、必须指向 `subagent`+`send_message`+小组长（P2 回归）；②被层级门禁
     拒绝的 `subagent_*` 尝试**不计入**派发通道统计（P3 回归）；③`agent.js` 必须把
     `delegationHierarchy` 真的传给 `evaluatePreExecute()`（接线漏传会立刻红）。
   - **真实 Loader（devkit web 沙箱 `commander-web`，本插件 `link:` 安装）**：
@@ -1569,7 +1609,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   （删掉已不存在的 `tool-subagent-list-agents` 禁用行），而本插件 1.2.0 的「工单投影到共享任务板」
   正是依赖 `ctx.agentTeams`。逐项核对 + 真实回合实测结论：**API 未变、无需改代码**。
   - **API 核对**：`TeamService` 公开方法 `createTask` / `getTask` / `listTasks` / `updateTask` /
-    `listMembers` / `spawnTeammate` / `sendMessage` / `waitForChange` / `interrupt` 全在；
+    `listMembers` / `startActivation` / `sendMessage` / `waitForChange` / `interrupt` 全在；
     `lib/team-board-bridge.js` 的 `available()` 要求四方法齐全（`createTask/getTask/listTasks/updateTask`）
     → 通过。`TeamTaskView`（`revision`/`status`/`ready`/`ownerName`/`blockedBy`/`writeScopes`/
     `writeScopeWarnings`）与 `TeamMemberView.status`（`running|inactive|provisioning|failed`）
@@ -1795,8 +1835,8 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
     ① `team_task_create` 建一个未结算任务；② 连续做 3 次**一次性派发**；③ 复述下一步的
     运行时上下文。模型逐字贴出的看板原文：
     ```text
-    【指挥者·同步看板】任务板 0/1 已结算（未结算 1 项：task-1 pending）；计划清单：未建立；团队：**无 teammate**（重启后旧队友不会自动复活，需要人时用 spawn_teammate 补）；派发通道：Team 0 次 / 一次性 specialist 3 次。
-    ⚠️ 最近 3 次派活都走一次性 specialist，而任务板还有 1 项未结算（task-1） → 长任务 / 多阶段工作改用 Team 通道（spawn_teammate + team_task_*，续做用 send_message），一次性 specialist 只用于"前台等一会就拿到结果"的单点任务。
+    【指挥者·同步看板】任务板 0/1 已结算（未结算 1 项：task-1 pending）；计划清单：未建立；团队：**无 teammate**（重启后旧队友不会自动复活，需要人时用 subagent 补）；派发通道：Team 0 次 / 一次性 specialist 3 次。
+    ⚠️ 最近 3 次派活都走一次性 specialist，而任务板还有 1 项未结算（task-1） → 长任务 / 多阶段工作改用 Team 通道（subagent + team_task_*，续做用 send_message），一次性 specialist 只用于"前台等一会就拿到结果"的单点任务。
     ```
     中间轮次的计数依次为 `一次性 specialist 1 次 → 2 次 → 3 次`，第 3 次触发告警 —— 说明
     "派发观测 → 账本 → 看板提示"这条链路在真实运行时是通的。
@@ -1892,6 +1932,40 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **6.0.0** —— **适配 DSH 0.2.2-rc.2 的新 Agent Teams 模型；团队默认开、不可关**
+  （用户 2026-11-12 两次强调：「使用指挥官模式时默认启用智能体团队协作（不可关闭）」）。
+  ① **破坏性：Team 工具语义全换**。rc.2 移除了 \`spawn_teammate\` 与 Team 作用域的
+  \`send_message\` / \`list_agents\` / \`interrupt_agent\`；Team 成员就是**可续做的标准
+  subagent**。本插件把「建小组长」从 \`spawn_teammate\` 改成 \`subagent\` / \`subagent_fork\`
+  （返回值从 \`{ member: { target } }\` 变成 \`{ kind: 'activation', name }\`），续做/纠偏改成标准
+  \`send_message({ agent })\` / \`interrupt_agent({ agent })\`；\`wait_agent\` 仍硬禁用。
+  ② **团队强制开启**：新增 \`lib/team-mode.js\`，profile 顶层的 \`commander-mode\` 行做三件事：
+  \`agent/created\`（根 agent + 当前 preset 是 \`commander\`）、\`session/event\` 的
+  \`agent-preset/selected\`（在输入框里切模式，**不会**产生新的 agent/created）、
+  \`session/event\` 的 \`team/mode {enabled:false}\`（被关掉立刻重开）→ 都调
+  \`agentTeams.setEnabled(agent, true)\`；\`agentTeams\` 缺失时记**显式 error**（硬依赖）。
+  **没有任何关闭团队的配置项**。写操作必须推迟到 append 发布之后（\`deferToNextTask()\`），
+  否则会被 Session 重入保护拒绝。
+  ③ **能力行镜像 preset-standard 23 行口径**：本包取 19 行（排除 persona / planning /
+  tool-plugin-manager / tool-plugin-market），新增 \`tool-office\`；\`delegation\` 组补回
+  \`tool-subagent-control\`（不写 config → \`interrupt: true\`）、\`tool-subagent\`
+  （spawn，\`modelSelection\` + \`modelDiscovery\`，\`maxDepth: 2\`）、\`tool-subagent-fork\`
+  （fork，\`maxDepth: 2\`），保留 \`workflow-ptc\` + \`tool-workflow\`。
+  ④ **门禁收窄**：\`evaluateSpecialistDispatch\` 只拦名册生成的 \`subagent_<id>\`；
+  \`subagent\` / \`subagent_fork\` 是指挥官建小组长的通道，**放行**。删除「部署没有 Team 就
+  降级放行」的分支与协议降级段（rc.2 起 Team 是 base 自带、本模式强制开启，团队能力视为常驻）。
+  ⑤ **成员名册改异步读**：rc.2 移除了同步的 \`agentTeams.listMembers\`，同步看板的成员状态改由
+  \`ctx.subagents.listDescendants()\` 的缓存快照提供；\`team-board-bridge\` 的可用性判据从
+  \`tryMembership\` 改成 \`agentTeams.isEnabled(agent)\`。
+  ⑥ **数字口径**：并行上限改为宿主 \`subagent.maxActiveSubagents\`（rc.2 默认 8），
+  \`maxTeammates\` 建议值默认 16 → 8；三层指挥链靠本 preset 的 delegation 行 \`maxDepth: 2\`
+  保住（L1 小组长 → L2 子智能体）。
+  ⑦ **测试**：638 个既有用例逐条迁移到新语义（不删断言），新增 \`test/team-mode.test.mjs\`
+  （14 条：创建即开启 / 被关即重开 / 非指挥官与子代理不受影响 / 服务缺失显式报错 / 无关闭入口）。
+  ⑧ **用户要做什么**：不需要改配置；Team 在指挥官会话里恒为开启。若你曾手写
+  \`agent-team\` 行的旧键（\`maxMembers\` / \`maxMessageBytes\` / \`disposalTimeoutMs\`），
+  rc.2 会让整行不激活（\`TEAM_INVALID_CONFIG\`），只保留 \`maxTasks\` / \`defaultEnabled\`。
 
 - **5.0.0** —— **两个模式合并成一个：只剩「指挥者模式」**（用户 2026-11-12：「重新进行规划，
   把指挥官模式和项目经理模式改成同一个模式吧，反正是按需加载 专家团和工作流」）。
@@ -2029,7 +2103,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   ① **现象**：会话最后静默挂死；模型自己在会话里写下"门禁自相矛盾形成死锁"。
   ② **根因（六步）**：工单 `scope` 是 Windows 绝对路径 → 投影器原样塞进任务板
   `writeScopes` → 运行时 `writeScope()` 拒绝绝对路径、抛 `TEAM_INVALID_WRITE_SCOPE` →
-  投影失败被静默吞掉（无 `teamTaskId`）→ 派发门禁 D-1 拒绝 `spawn_teammate` 并让模型
+  投影失败被静默吞掉（无 `teamTaskId`）→ 派发门禁 D-1 拒绝 `subagent` 并让模型
   "更新工单状态触发投影"，而 3.0.0 起指挥官改工单推进状态被层级门禁拒绝 → **Team 通道
   永久不可用**；模型退到 Worker Session，worker 卡在回合中途（不 idle、不汇报）→ idle 兜底
   不触发 → 指挥者永远等不到唤醒。
@@ -2095,7 +2169,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   不要压到同一个队友身上排成串行队列；判断标准是依赖关系，不是"省名额"。旧的
   「复用同一个 teammate」保留为"跟进/修正走同一人"，但不再用来压缩并行度。
   **用户要做什么**：重启 DSH（profile patch 要重新合成）。想再提高团队上限就改
-  profile 的 `agent-team.maxMembers`（包支持到 16，更高需要看运行时校验）。
+  profile 的 `subagent.maxActiveSubagents`（包支持到 16，更高需要看运行时校验）。
 - **2.3.0** —— 位置歧义与能力边界（用户 2026-11-09 指出 session-e1618ace 的「低级错误」）：
   ① 工作纪律新增第 6 条「先对齐位置与能力边界，再用『没有』下结论」：先列候选位置
   （App 容器 / 文件 App / iCloud / 本机 / 远程机），先说明自己**读不到**什么，报告"没找到"
@@ -2207,7 +2281,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   （schemaVersion 不变，旧文件读出为 null）。
   ② `commander_ticket_create/update` 变成 async，建单/更新后自动投影并返回 `team_task_id`。
   ③ `agent.js` 在所有工单状态迁移点（派发记账、异步结算、失败回报、worker 回报）同步投影；
-  `spawn_teammate` 结算后把投影任务 `reassign` 给队友（D）。
+  `subagent` 结算后把投影任务 `reassign` 给队友（D）。
   ④ 派发门禁新增 D-1（Team 通道必须有有效投影）/ D-2（要求 `[task:task-N]`，默认关），
   没有 Agent Teams 时整段跳过。
   ⑤ 协议新增「共享任务板是工单的投影」三条（仅装团队时出现）；同步看板过滤投影任务，
