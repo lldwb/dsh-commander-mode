@@ -1,14 +1,16 @@
 # dsh-commander-mode —— bundle patch 层。
 #
-# 这份 patch 声明**两个 agent preset**：指挥者模式（做判断、派活）与项目经理模式
-# （六位开发流程专家 + 按任务形状拆分；六段工作流是可选 skill，不是强制流水线）。在 DSH 里，一个模式**就是**一个 agent
-# preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。两个模式各由
-# **本包自带的等效声明器**（`dsh-commander-mode/preset-commander` /
-# `dsh-commander-mode/preset-project-manager`，实现见 `lib/preset-declaration.js`）注册：
-# 语义等价于随附的 `@deepseek-ai/dsh-agent-preset`（接受
-# `{ id, name, description, order, plugins }` 并调用 `ctx.agentPresets.register()`），
-# 自带一份只是为了组件行标题能显示各自的真实身份（见下）。**两个模式都不依赖随附的
+# 这份 patch 声明**一个 agent preset**：指挥者模式（做判断、派活、按任务形状拆分与验收；
+# 六位开发流程专家与六段工作流都是**按需**的）。在 DSH 里，一个模式**就是**一个 agent
+# preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。本模式由
+# **本包自带的等效声明器**（`dsh-commander-mode/preset-commander`，实现见
+# `lib/preset-declaration.js`）注册：语义等价于随附的 `@deepseek-ai/dsh-agent-preset`
+# （接受 `{ id, name, description, order, plugins }` 并调用 `ctx.agentPresets.register()`），
+# 自带一份只是为了组件行标题能显示真实身份（见下）。**本模式不依赖随附的
 # 「Agent 预设定义」那一行**——禁用 / 缺失它不会让本包的模式消失。
+#
+# 5.0.0：原先的「项目经理模式」已并入本模式。合并理由：两边的差别（专家团、六段工作流）
+# 都是按需能力，不需要用两个模式来表达。
 #
 # ⚠️ preset 是一份**完整组合**，不是全局工具集上的叠加层。
 #
@@ -16,11 +18,11 @@
 # preset 内部**重新声明它要的那些行。所以在桌面版里并不存在一个全局的 `read` 工具：它
 # 之所以在，只是因为 `preset-standard` 把 `tool-fs` 列成了自己的子行。
 #
-# ⚠️ **3.7.0 起本文件不再写 `plugins`**：两个模式的能力行清单与模式行由
+# ⚠️ **3.7.0 起本文件不再写 `plugins`**：能力行清单与模式行由
 # `lib/preset-plugins.js` 从 `lib/capabilities.js`（单一来源）拼装，声明器在 `apply()`
-# 里注入。所以下面两个 preset 行只有 `id / name / description / order`。这样能力行只有
-# 一份，两个模式不可能因为"改了一边没改另一边"而静默漂移（此前这里有两份 ~84 行的
-# 逐字副本，靠测试比对防漂移）。清单镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式
+# 里注入。所以下面的 preset 行只有 `id / name / description / order`。这样能力行只有
+# 一份，不会因为"改了一边没改另一边"而静默漂移（此前这里有两份 ~84 行的逐字副本，
+# 靠测试比对防漂移）。清单镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式
 # 的表现等于「标准模式 + 本插件 + 指挥者门禁」。已核对到 **DSH 0.2.2-rc.1**（对照
 # `packages/bundle/web-app/presets/standard.patch.yml`）：随附 `standard` 顶层声明 22 行，
 # 本包声明其中 18 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
@@ -78,36 +80,22 @@
 #
 # 显示文案：输入框渲染的是 `preset.name ?? preset.id`，而自己起了名的声明就自己拥有
 # 文案 —— 只有那四个随附 preset（它们不发布 name）才会被翻译。所以下面这些字符串是原样
-# 显示的。`order` 决定菜单排序；随附 preset 用的是 1..4，本包用 7（指挥者）/ 8（项目经理）。
+# 显示的。`order` 决定菜单排序；随附 preset 用的是 1..4，本包用 7。
 #
 # 层序提醒：所有 bundle patch 先跑，然后是 profile 自己的 cordis.patch.yml，最后是
 # `--patch` 覆盖层。按 id 定向的 patch 会**整块替换** `config` 且从不深合并，所以 profile
-# 层若要覆盖下面这个 preset，必须重述 `id`、`name`、`description`、`order` 以及整个
-# `plugins` 列表。
+# 层若要覆盖下面这个 preset，必须重述 `id`、`name`、`description`、`order`。
+# （`plugins` 由 `lib/preset-plugins.js` 注入，YAML 覆盖它不会生效。）
 #
-# ## 本 patch 插入三行，不是一个
+# ## 本 patch 插入两行
 #
 # 1. `commander-mode`（`dsh-commander-mode/host`）—— **profile 顶层配置行**。它持有
 #    `Config`、提供 `commanderSettings` 服务、关掉自动设置页，**不注册任何工具**，所以不会
 #    把能力泄漏到别的模式里。
 # 2. `preset-commander` —— 模式声明行，里面的 `commander-mode-agent` 子行才是
-#    「指挥者协议 + 门禁 + specialist 安装」。
-# 3. `preset-project-manager` —— 第二份模式声明行：能力行与指挥者**逐字一致**（只有
-#    `skill-filesystem` 多一个 `customSkillDirs`，加载本包 `skills/` 目录），再加两行
-#    `project-manager-agent`（项目经理协议 + 门禁 + 专家安装）与 `project-dev-workflow`
-#    （可选工作流手册，只注册 skill）。
-#    继承关系：**没有继承**。两个模式是**并列的完整 preset**（preset 是完整组合，不是
-#    叠加层，没法真的"继承"），关系是**共享同一批模块**：能力行清单
-#    （`lib/capabilities.js` 单一来源，两个 preset 由 `lib/preset-plugins.js` 拼装）、
-#    专家名册、执行 / 等待门禁、工作纪律都复用 `lib/` 里的同一份代码；各自只加自己的协议行
-#    （`commander-mode-agent` / `project-manager-agent`），项目经理再多一行
-#    `project-dev-workflow`。两个 preset 各由本包自带的声明器注册，**不经过**随附的
-#    「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）。详见 README「两个模式的关系」一节。
-#
-# ⚠️ 两份 preset 共用同一份专家名册，而 `agentPresets.register()` 对 preset id 是全局唯一
-# 的：两个模式都会急切挂载，后挂载的那一行会收到 `Duplicate agent preset`。项目经理行
-# 对此有明确处理——检测到重复说明 preset 已由另一行注册好，它只补 `subagent_<id>` 工具，
-# 不会因此丢掉专家通道（见 `project-manager.js` 的模块注释）。
+#    「指挥者协议 + 门禁 + specialist 安装」，另加 `project-dev-workflow`（可选工作流手册，
+#    只注册 skill、按需加载）。两行都由 `lib/preset-plugins.js` 从
+#    `lib/capabilities.js` 单一来源拼装，本文件不重述。
 #
 # 为什么必须拆开：preset 子行是运行时挂载的 fiber，**不在 Loader 的 entry 树里**，而设置页
 # 读的就是那棵树。把 `Config` 放在 preset 子行上，设置命名空间不可达、设置页卡片静默消失
@@ -268,31 +256,19 @@
         maxSpecialists: 20
 
     # ---- 模式行（agent preset）-----------------------------------------------
+    # 5.0.0 起只有**一个**模式：「项目经理模式」已并入指挥者模式（专家团与六段工作流
+    # 都是按需的，不需要第二个模式）。组合 = 能力行 + 指挥者模式行（协议 / 门禁 /
+    # 专家安装）+ 可选工作流组件（`project-dev-workflow`，只注册 skill）。
     - id: preset-commander
       # 本包自带的等效声明器（子路径模块）：只为了让插件页组件行标题显示「指挥者模式」。
       # 组件行标题按「模块名」解析 locale（declaredRows → metaOf(row.name)），
-      # 两个 preset 若都用随附的 @deepseek-ai/dsh-agent-preset，两行标题会一模一样。
+      # 用随附的 @deepseek-ai/dsh-agent-preset 时标题会显示成通用的「Agent 预设定义」。
       # 语义与随附声明器一致（见 lib/preset-declaration.js）。
       name: 'dsh-commander-mode/preset-commander'
       config:
         id: commander
         name: 指挥者模式
-        description: 接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。
+        description: 接单、按任务形状拆分、派给小组长并逐项验收；自己不执行操作。专家团与六段工作流都是按需的（工作流用 skill 加载），不需要第二个模式。
         order: 7
-        # 能力行 + 模式行由 lib/preset-plugins.js 从 lib/capabilities.js 单一来源拼装，
-        # 这里**不再重述**（3.7.0 前这里有一份 ~84 行的能力行副本）。
-
-    # ---- 模式行（agent preset）：项目经理模式 -------------------------------
-    # 与 preset-commander 的区别：指挥者解决"谁来做"，项目经理解决"按任务形状怎么拆、
-    # 每段怎么验收"。能力行与指挥者模式**逐字相同**（同一份 `lib/capabilities.js` 拼装，
-    # 除 skill-filesystem 多一个 customSkillDirs）；多出来的两行是模式协议与可选工作流手册。
-    - id: preset-project-manager
-      # 同上：本包自带的等效声明器，标题显示「项目经理模式」。
-      name: 'dsh-commander-mode/preset-project-manager'
-      config:
-        id: project-manager
-        name: 项目经理模式
-        description: 用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）作为专家小组长，按任务形状拆分与派单、逐项验收，只编排不自己写代码；六段工作流可选（按需 skill 加载）。
-        order: 8
-        # 同上：能力行 + 项目经理协议行 + 可选工作流行由 lib/preset-plugins.js 拼装；
-        # 与指挥者模式唯一的能力行差异是 skill-filesystem 多 customSkillDirs。
+        # 能力行 + 模式行 + 可选工作流行由 lib/preset-plugins.js 从 lib/capabilities.js
+        # 单一来源拼装，这里**不再重述**（3.7.0 前这里有一份 ~84 行的能力行副本）。
