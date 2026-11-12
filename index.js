@@ -105,6 +105,12 @@ export function apply(ctx, config) {
 
   // ①.6 发布 Worker Session 执行器（0.8.0+，opt-in）：每工单独立 Session + 目录。
   //
+  //     ⚠️ 7.0.0 起**Worker Session 通道下线**（用户硬要求「不能另辟蹊径开子智能体」，
+  //     口径明确「连 Worker Session 一起禁」）。`lib/config.js` 的 `resolveConfig()` 把
+  //     `workerSessions` **恒读成 false**，所以下面这段**永远不会执行** —— 保留它只为
+  //     兼容旧账本数据（升级前已存在的 worker `execution` 记录仍需能被读出来）与将来复用，
+  //     不再有任何运行路径会提供 `commanderWorkers` 服务或注册 `commander_worker_*` 工具。
+  //
   //     依赖宿主的 sessionController / workspaceRegistry / agents，但**不用 ctx.inject**：
   //     这些服务可能在 apply 之后才就绪，而服务内部每次都按需 ctx.get。这样：
   //     - 桌面/Web profile 里正常可用；

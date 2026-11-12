@@ -83,6 +83,22 @@
 # `list_agents` / `team_task_list` 读状态 + `send_message` 追问；
 # `list_agents` / `team_task_list` / `send_message` 这类工具不受影响。
 #
+# ## 派发通道硬门禁（7.0.0，用户硬要求，不可配置、无开关）
+#
+# 用户原话：「不能出现这种另辟蹊径开子智能体的方法，需要把这种指挥官->小组长->小组长的
+# 手下 这种分发没问题」，口径明确：**连 Worker Session 一起禁**。所以本插件在
+# `tools/pre-execute` 上**先于层级门禁、无条件**拒绝指挥官调用：
+#
+#   - `workflow`（一次性扇出）；
+#   - 名册生成的一次性专家工具 `subagent_<id>`；
+#   - 所有 `commander_worker_*`（Worker Session，且这些工具**不再注册**）。
+#
+# 唯一允许的通道：`subagent` / `subagent_fork` 建小组长 + `send_message` 派活
+# + `team_task_*` 管板 + `list_agents` 读状态；`interrupt_agent` 纠偏。
+# **小组长 / 子智能体不受限**（L1→L2 是用户明确认可的链路）。
+# `delegationHierarchy: false` 也**不能**放开这条门禁（它不是层级门禁的可选子集）。
+# 实现见 `lib/guard.js` 的 `evaluateCommanderChannels()`。
+#
 # 显示文案：输入框渲染的是 `preset.name ?? preset.id`，而自己起了名的声明就自己拥有
 # 文案 —— 只有那四个随附 preset（它们不发布 name）才会被翻译。所以下面这些字符串是原样
 # 显示的。`order` 决定菜单排序；随附 preset 用的是 1..4，本包用 7。
@@ -222,18 +238,21 @@
         asyncDelegation: true
         # 同一会话同时在飞的一次性 specialist 上限（1–16）。3.0.0：8 → 16（规则 2）。
         maxAsyncTasks: 16
-        # ---- 0.8.0 / 1.0.0 Worker Session ------------------------
-        # 每张工单一个独立 DSH Session + 独立目录。0.8.0 曾默认关闭；0.9.1 真机 Web E2E
-        # 跑通全链路后，1.0.0 起默认开启。不想要就在 profile patch 里显式写 false——
-        # 关闭后不注册 commander_worker_* 四个工具，派工语义回到 0.7（specialist / Team）。
+        # ---- 0.8.0 / 1.0.0 Worker Session（7.0.0 起废弃） ----------------
+        # ⚠️ 7.0.0 起 Worker Session 通道下线：用户硬要求「不能另辟蹊径开子智能体」，
+        # 口径明确「连 Worker Session 一起禁」。`lib/config.js` 的 `resolveConfig()` 把它
+        # **恒读成 false** —— 即使这里写着 true 也不生效（不注册 commander_worker_* 工具、
+        # 不提供 commanderWorkers 服务）。字段保留只为兼容旧 profile 配置（按 id 定向的
+        # patch 会整块替换 config，删键会让已有配置报未知键）。下面四个 workRoot / maxWorkers /
+        # prepareCommand / workerPermission 同样废弃（保留字段，读取值不再被使用）。
         workerSessions: true
-        # Worker 工作目录根；空 = <DSH_HOME>/commander/work。
+        # Worker 工作目录根；空 = <DSH_HOME>/commander/work。（7.0.0 废弃）
         workRoot: ''
-        # 每个指挥者会话同时最多几个 Worker Session（1–12）。2.4.0：3 → 6。
+        # 每个指挥者会话同时最多几个 Worker Session（1–12）。（7.0.0 废弃）
         maxWorkers: 6
-        # 建 worker 目录后执行一次的 prepare 命令（可选；可用 DSH_COMMANDER_* 环境变量）。
+        # 建 worker 目录后执行一次的 prepare 命令。（7.0.0 废弃）
         prepareCommand: ''
-        # Worker Session 的权限预设（默认 danger-full-access；目录不是安全边界）。
+        # Worker Session 的权限预设。（7.0.0 废弃）
         workerPermission: danger-full-access
         # 派发后多久没有新回报算"疑似停滞"（只进看板，不自动处理）。
         ticketStallMs: 600000

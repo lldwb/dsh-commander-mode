@@ -7,13 +7,16 @@
  * 与侦察（只读），然后规划与拆分，**停下来让用户确认计划**，再把执行派给子代理；
  * 自己不动手写文件、不跑命令，遇到分歧或不确定就回头问用户。
  *
- * ## 两种派发通道
+ * ## 派发通道（7.0.0：指挥官只有一条）
  *
- * 1. **多模型 specialist 名册**：用户在「设置 → 插件 → 指挥者模式」里配置任意多个
- *    specialist，每个绑定自己的 provider / model / 职责 / 人设。每个 specialist 暴露成
- *    一个前台工具 `subagent_<id>`。见 `lib/specialists.js`。
- * 2. **智能体团队**（Agent Teams）：`subagent` / `send_message` / `wait_agent` /
- *    `team_task_*`，适合需要长期存在、可对话、可共享任务板的具名队友。
+ * 1. **建小组长**（唯一通道）：`subagent` / `subagent_fork` 建人 + `send_message` 派活/续做
+ *    + `team_task_*` 管板 + `list_agents` 读状态；`interrupt_agent` 纠偏。
+ * 2. **小组长的通道**（L1→L2）：名册生成的 `subagent_<id>` 一次性专家、`workflow` 扇出、
+ *    再开下级 —— 由**小组长自己**调用，指挥官调用会被硬门禁拒绝。
+ *
+ * 7.0.0 起 `workflow` / 名册一次性专家 / Worker Session 都不是指挥官的通道（用户硬要求
+ * 「不能另辟蹊径开子智能体」，口径明确「连 Worker Session 一起禁」）。见 `lib/guard.js`
+ * 的 `evaluateCommanderChannels()`。
  *
  * ## 本行不持有配置
  *
@@ -42,6 +45,22 @@
  * `commander_ticket_update` 的六态回报、以及 `subagent_<id>` / `subagent` / `subagent_fork`
  * —— 它们都属于小组长。拒绝理由按 agent 实际可用的工具生成，读不到身份一律放行。
  * 判定逻辑在 `lib/guard.js`，这里只负责接线与顺序。
+ *
+ * ## 7.0.0：派发通道硬门禁（用户硬要求，不可配置、无开关）
+ *
+ * 用户 2026-11-12 原话：「不能出现这种另辟蹊径开子智能体的方法，需要把这种指挥官->小组长->
+ * 小组长的手下 这种分发没问题」，口径明确「连 Worker Session 一起禁」。所以：
+ *
+ * - 指挥官的**唯一**派发通道是「建小组长」：`subagent` / `subagent_fork` 建人、
+ *   `send_message` 派活/续做、`team_task_*` 管板、`list_agents` 读状态、`interrupt_agent` 纠偏；
+ * - `workflow`、名册生成的一次性专家（`subagent_<id>`）、`commander_worker_*` 对指挥官
+ *   **一律拒绝**（`evaluateCommanderChannels`，在层级门禁**之前无条件**执行，
+ *   `delegationHierarchy: false` 也拦）；
+ * - **不再注册**四个 `commander_worker_*` 工具（Worker Session 通道下线，见文末注释）；
+ * - 小组长 / 子智能体不受限：它们派自己的手下（含 `workflow` / 名册专家）是 L1→L2。
+ *
+ * 拒绝理由带「需要小组长 / 小组长失败」的恢复阶梯（建人 → 冷恢复 → 纠偏或换人接管 →
+ * blocked 上报），并明确「任何一步都不许换通道」。
  *
  * ## 结算同步（0.4.0）
  *
@@ -85,8 +104,8 @@ import {
   DELEGATION_TOOLS,
   agentToolNames,
   evaluateBoardWrite,
+  evaluateCommanderChannels,
   evaluatePreExecute,
-  evaluateSpecialistDispatch,
   evaluateTicketWrite,
   evaluateWaitForbidden,
   hasUsableDispatchChannel,
@@ -109,7 +128,6 @@ import {
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
-import { buildWorkerTools } from './lib/worker-tools.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
   findPlanQuestion,
@@ -748,6 +766,11 @@ export function apply(ctx) {
       // 所以"从工具结果里解析 STATUS 回报"只适用于同步结算的通道：名册一次性专家与 workflow。
       // ⚠️ 用 isSpecialistDispatchTool() 而不是 startsWith('subagent_')：`subagent_fork`
       // 也以该前缀开头，但它是 Team 通道的建人工具（后台 activation），不是一次性专家。
+      //
+      // 7.0.0：Worker Session 通道下线；名册一次性专家与 workflow 对**指挥官**也已被硬门禁
+      // 关闭（`evaluateCommanderChannels`），所以本观察器对新会话不再触发。保留它是为了
+      // **兼容旧账本数据**：升级前已在飞的派发 / 旧会话的回报仍需能被记账，且小组长侧
+      // 的同步结算路径在语义上没有变化。
       const isSpecialist = isSpecialistDispatchTool(toolName);
       const isWorkflow = toolName === 'workflow';
       if (!isSpecialist && !isWorkflow) return;
@@ -857,7 +880,7 @@ export function apply(ctx) {
       ledger.recordReport(ticketId, sessionId, {
         status: 'failed',
         summary: `派发失败（${toolName}）：${message}`,
-        question: '这一步要重试、换通道（specialist/Team/Worker），还是先核对产物？',
+        question: '这一步要重试、换一个小组长重派，还是先核对产物？',
       });
       syncTicketMirror(exec.agent, ticketId);
     } catch (error) {
@@ -1115,21 +1138,19 @@ export function apply(ctx) {
   const inspectAgentTools = (agent) => {
     const availableTools = agentToolNames(agent);
     if (availableTools === undefined) return { availableTools, canDelegate: undefined };
-    // 3.4.0：不能只看"视图里有"——用户可能把派发工具写进 `blockedTools`，
-    // 或层级门禁关掉了 `subagent_*`。按"真的能调用"算，否则会得出"能派活"的
-    // 假结论：执行边界继续拦 write，而真正能调用的派发工具全被禁 → 死锁。
+    // 3.4.0：不能只看"视图里有"——用户可能把派发工具写进 `blockedTools`。
+    // 7.0.0：指挥官的通道只剩建小组长（`subagent` / `subagent_fork` / `send_message`）；
+    // `workflow` / 名册专家 / Worker Session 都是硬门禁拒绝，不算通道（否则会误判死锁）。
     let blocked = [];
-    let delegationHierarchy = true;
     try {
       const options = readOptions();
       blocked = Array.isArray(options.blockedTools) ? options.blockedTools : [];
-      delegationHierarchy = options.delegationHierarchy !== false;
     } catch {
       // 读不到配置时按默认（有派活通道）处理，宁可漏拦。
     }
     return {
       availableTools,
-      canDelegate: hasUsableDispatchChannel({ availableTools, blocked, delegationHierarchy }),
+      canDelegate: hasUsableDispatchChannel({ availableTools, blocked }),
     };
   };
 
@@ -1138,12 +1159,14 @@ export function apply(ctx) {
    *
    * 用名字先做一次廉价过滤：绝大多数工具调用不该为了判定去读一次工具视图。
    *
+   * 7.0.0：`subagent_<id>` 已从这份清单移出 —— 它改由**无条件**的
+   * `evaluateCommanderChannels()` 硬门禁处理（不再受 `delegationHierarchy` 控制）。
+   *
    * @param {string} toolName - 工具名。
-   * @returns {boolean} 是否需要跑 `evaluateBoardWrite` / `evaluateTicketWrite` / `evaluateSpecialistDispatch`。
+   * @returns {boolean} 是否需要跑 `evaluateBoardWrite` / `evaluateTicketWrite`。
    */
   const isHierarchyGatedTool = (toolName) => toolName === 'team_task_update'
-    || toolName === 'commander_ticket_update'
-    || isSpecialistDispatchTool(toolName);
+    || toolName === 'commander_ticket_update';
 
   // 3.3.0：监听器改成 async —— 派发门禁需要 await「补建任务板投影」（自愈）。
   // 事件本身是 waterfall（返回 Promise<PreToolDecision>），异步监听器是受支持的。
@@ -1151,12 +1174,28 @@ export function apply(ctx) {
     try {
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
 
-      // 3.0.0 三层指挥链门禁：任务板进展/排期、工单推进状态、子智能体派发都归小组长。
-      // 只对指挥官本人生效（三条门禁内部按 isDelegatedAgent 放行子级），受
+      // ---------------------------------------------------------------- 7.0.0 ---
+      // 派发通道**硬门禁**（用户硬要求，不可配置、无开关）：指挥官只能建小组长。
+      // 在**所有其它判定之前**无条件执行 —— 它不属于 `delegationHierarchy` 的可选子集：
+      // 关掉层级门禁也不能让指挥官用 workflow / 一次性专家 / Worker Session 绕开小组长层。
+      // 只拦指挥官本人（`isDelegatedAgent` 命中即放行：小组长派自己的手下是 L1→L2）。
+      // 拒绝理由按 agent 实际拥有的工具生成，并带「需要小组长 / 小组长失败」的恢复阶梯。
+      const channelDecision = evaluateCommanderChannels({
+        agent: exec?.agent,
+        name: toolName,
+        availableTools: agentToolNames(exec?.agent),
+      });
+      if (channelDecision !== undefined) {
+        ctx.logger?.info?.('commander-mode: 拒绝指挥官换派发通道（%s）', toolName);
+        return channelDecision;
+      }
+
+      // 3.0.0 三层指挥链门禁：任务板进展/排期、工单推进状态都归小组长。
+      // 只对指挥官本人生效（门禁内部按 isDelegatedAgent 放行子级），受
       // `delegationHierarchy` 控制（false = 只留协议约束，回到 2.x 行为）。
-      // ⚠️ 必须在 `observeDelegation` **之前**判定：被拒的 `subagent_*` 尝试不能进入派发
-      // 通道统计，否则看板会把"被门禁拒掉的一次性派发"误报成"派活全走一次性 specialist"。
-      // 三条都排在"记 Assignment"之前，避免"先记账、再拒绝"留下幽灵派发。
+      // ⚠️ 必须在 `observeDelegation` **之前**判定：被拒的派发尝试不能进入派发通道统计，
+      // 否则看板会把"被门禁拒掉的一次性派发"误报成"派活全走一次性 specialist"。
+      // 两条都排在"记 Assignment"之前，避免"先记账、再拒绝"留下幽灵派发。
       if (readOptions().delegationHierarchy !== false && isHierarchyGatedTool(toolName)) {
         const hierarchyAgent = exec?.agent;
         // 拒绝理由必须按 agent **实际拥有**的工具生成，否则会点名一个它没有的工具。
@@ -1172,14 +1211,9 @@ export function apply(ctx) {
             name: toolName,
             args: exec?.arguments,
             availableTools: hierarchyTools,
-          })
-          ?? evaluateSpecialistDispatch({
-            agent: hierarchyAgent,
-            name: toolName,
-            availableTools: hierarchyTools,
           });
         if (hierarchyDecision !== undefined) {
-          ctx.logger?.info?.('commander-mode: 拒绝指挥官自己写团队进度 / 派子智能体（%s）', toolName);
+          ctx.logger?.info?.('commander-mode: 拒绝指挥官自己写团队进度（%s）', toolName);
           return hierarchyDecision;
         }
       }
@@ -1198,9 +1232,6 @@ export function apply(ctx) {
           blocked: blockedSet,
           canDelegate,
           availableTools,
-          // 3.0.0：层级门禁开启时，执行边界的拒因必须优先给 Team 通道，
-          // 不能教指挥官去调 subagent_<id>（会被层级门禁当场拒绝）。
-          delegationHierarchy: readOptions().delegationHierarchy !== false,
         });
         if (decision !== undefined) {
           ctx.logger?.info?.('commander-mode: 拒绝指挥者自己调用 %s（已要求改为派发）', toolName);
@@ -1417,17 +1448,19 @@ export function apply(ctx) {
   // ------------------------------------------------------------ 工单工具 ---
 
   // 0.6.0：把工单账本暴露成三个模型可见工具。注册失败只损失工单通道，不影响模式本身。
+  //
+  // 7.0.0：**Worker Session 通道下线**（用户硬要求「不能另辟蹊径开子智能体」，
+  // 口径明确「连 Worker Session 一起禁」）。所以这里**不再注册**四个
+  // `commander_worker_*` 工具 —— 即使 profile patch 里仍写着 `workerSessions: true`
+  // （`lib/config.js` 的 `readOptions()` 会强制把它读成 false，只为兼容旧配置不报错）。
+  // `lib/worker-tools.js` / `lib/worker-sessions.js` 保留在仓库里，仅为兼容旧账本数据
+  // （旧工单的 `execution` 字段仍需能被读出来 / 归档），不再被任何运行路径注册。
   if (typeof ctx.inject === 'function' && readOptions().ledger !== false) {
     ctx.inject(['tools'], (toolCtx) => {
       try {
         toolCtx.effect(() => {
           const disposers = [];
-          const definitions = [
-            ...buildTicketTools({ getLedger, getOptions: readOptions, getTeamBridge: () => teamBridge }),
-            ...(readOptions().workerSessions === true
-              ? buildWorkerTools({ getWorkers: () => getService('commanderWorkers') })
-              : []),
-          ];
+          const definitions = buildTicketTools({ getLedger, getOptions: readOptions, getTeamBridge: () => teamBridge });
           for (const definition of definitions) {
             try {
               disposers.push(toolCtx.tools.register(definition));
