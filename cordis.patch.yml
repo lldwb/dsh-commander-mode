@@ -14,12 +14,17 @@
 #
 # `@deepseek-ai/dsh-web-app` 把它随附的每一个能力行都设成 `disabled: true`，然后在**每个
 # preset 内部**重新声明它要的那些行。所以在桌面版里并不存在一个全局的 `read` 工具：它
-# 之所以在，只是因为 `preset-standard` 把 `tool-fs` 列成了自己的子行。因此下面的
-# `CAPABILITIES` 块镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式的表现等于
-# 「标准模式 + 本插件 + 指挥者门禁」。已核对到 **DSH 0.2.2-rc.1**（对照
+# 之所以在，只是因为 `preset-standard` 把 `tool-fs` 列成了自己的子行。
+#
+# ⚠️ **3.7.0 起本文件不再写 `plugins`**：两个模式的能力行清单与模式行由
+# `lib/preset-plugins.js` 从 `lib/capabilities.js`（单一来源）拼装，声明器在 `apply()`
+# 里注入。所以下面两个 preset 行只有 `id / name / description / order`。这样能力行只有
+# 一份，两个模式不可能因为"改了一边没改另一边"而静默漂移（此前这里有两份 ~84 行的
+# 逐字副本，靠测试比对防漂移）。清单镜像了 `@deepseek-ai/dsh-preset-standard`，好让本模式
+# 的表现等于「标准模式 + 本插件 + 指挥者门禁」。已核对到 **DSH 0.2.2-rc.1**（对照
 # `packages/bundle/web-app/presets/standard.patch.yml`）：随附 `standard` 顶层声明 22 行，
-# 本块声明其中 18 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
-# 组的内部构成（见下）。0.2.1-alpha.1 起 standard 新增 `time-context` 与 `tool-schedule`
+# 本包声明其中 18 行，除 `delegation` 组外每一行都逐字节相同 —— 差异是 `delegation`
+# 组的内部构成（见 `lib/capabilities.js`）。0.2.1-alpha.1 起 standard 新增 `time-context` 与 `tool-schedule`
 # （0.2.1-rc.1 起再新增 `tool-plugin-market`），本次把前两者补进能力块、第三者列入排除。
 #
 # 故意**不**从 preset-standard 镜像的东西：
@@ -87,14 +92,14 @@
 #    把能力泄漏到别的模式里。
 # 2. `preset-commander` —— 模式声明行，里面的 `commander-mode-agent` 子行才是
 #    「指挥者协议 + 门禁 + specialist 安装」。
-# 3. `preset-project-manager` —— 第二份模式声明行：能力行与指挥者**逐字节一致**（只有
+# 3. `preset-project-manager` —— 第二份模式声明行：能力行与指挥者**逐字一致**（只有
 #    `skill-filesystem` 多一个 `customSkillDirs`，加载本包 `skills/` 目录），再加两行
 #    `project-manager-agent`（项目经理协议 + 门禁 + 专家安装）与 `project-dev-workflow`
-#    （六段流水线执行手册）。
+#    （可选工作流手册，只注册 skill）。
 #    继承关系：**没有继承**。两个模式是**并列的完整 preset**（preset 是完整组合，不是
-#    叠加层，没法真的"继承"），关系是**共享同一批模块**：能力行清单（本文件的
-#    CAPABILITIES 块，两份逐字节一致，由 `test/capabilities.test.mjs` 防漂移）、专家名册、
-#    执行 / 等待门禁、工作纪律都复用 `lib/` 里的同一份代码；各自只加自己的协议行
+#    叠加层，没法真的"继承"），关系是**共享同一批模块**：能力行清单
+#    （`lib/capabilities.js` 单一来源，两个 preset 由 `lib/preset-plugins.js` 拼装）、
+#    专家名册、执行 / 等待门禁、工作纪律都复用 `lib/` 里的同一份代码；各自只加自己的协议行
 #    （`commander-mode-agent` / `project-manager-agent`），项目经理再多一行
 #    `project-dev-workflow`。两个 preset 各由本包自带的声明器注册，**不经过**随附的
 #    「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）。详见 README「两个模式的关系」一节。
@@ -274,104 +279,13 @@
         name: 指挥者模式
         description: 接单、分析、规划与拆分，把执行全部派给子代理；自己不执行操作，规划与分歧都交回用户用选择工具确认。
         order: 7
-        plugins:
-          # ---- CAPABILITIES (mirrors @deepseek-ai/dsh-preset-standard) ----------
-          # 从工作区加载 AGENTS.md —— 指挥者要靠工作区约定才知道"派出去的活"该守什么规矩。
-          - id: agent-instructions
-            name: '@deepseek-ai/dsh-agent-instructions'
-            config:
-              maxBytes: 65536
-          # 0.2.1-alpha.1 起 standard 自带的时间上下文（每轮注入当前时间/时区）。
-          - id: time-context
-            name: '@deepseek-ai/dsh-time-context'
-          - id: tool-bash
-            name: '@deepseek-ai/dsh-tool-bash'
-            disabled: !!js process.platform === 'win32'
-          - id: tool-pwsh
-            name: '@deepseek-ai/dsh-tool-pwsh'
-            disabled: !!js process.platform !== 'win32'
-          # read / glob / grep —— 指挥者只读侦察的手段；write / edit 也在这一行里，
-          # 由 lib/guard.js 的门禁对指挥者拒掉，而子代理照常可用。
-          - id: tool-fs
-            name: '@deepseek-ai/dsh-tool-fs'
-            config:
-              # 逐字镜像 0.2.2 preset-standard：applyPatch 默认 false（不提供 apply_patch）。
-              applyPatch: false
-          - id: tool-fs-search
-            name: '@deepseek-ai/dsh-tool-fs-search'
-            config:
-              sampleOverCapGlobResults: false
-          - id: tool-jobs
-            name: '@deepseek-ai/dsh-tool-jobs'
-          # 0.2.1-alpha.1 起 standard 自带的定时任务能力（RRULE）。
-          - id: tool-schedule
-            name: '@deepseek-ai/dsh-tool-schedule'
-          - id: skill-filesystem
-            name: '@deepseek-ai/dsh-skill-filesystem'
-          - id: tool-skill
-            name: '@deepseek-ai/dsh-tool-skill'
-          - id: command-goal
-            name: '@deepseek-ai/dsh-command-goal'
-          - id: tool-goal
-            name: '@deepseek-ai/dsh-tool-goal'
-          - id: compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-              toolResultPruner: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
-              - id: command-compact
-                name: '@deepseek-ai/dsh-command-compact'
-              - id: tool-result-pruner
-                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
-                config:
-                  thresholdChars: 8192
-                  headChars: 4096
-                  tailChars: 1024
-          # 与 Team 工具互补的编排通道：一次性扇出多个 fresh 子代理。
-          # （旧的 tool-subagent* 四个行**有意不在这里** —— 见文件头。）
-          - id: delegation
-            name: cordis:group
-            group: true
-            isolate:
-              workflowEngine: true
-            config:
-              - id: workflow-ptc
-                name: '@deepseek-ai/dsh-workflow-ptc'
-                config:
-                  provider: spawn
-              - id: tool-workflow
-                name: '@deepseek-ai/dsh-tool-workflow'
-          # 本模式的两次"必须问用户"都靠它：规划确认与分歧上报。
-          - id: tool-ask-user
-            name: '@deepseek-ai/dsh-tool-ask-user'
-          # 规划与进度板。
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: true
-              searchTimeoutMs: 60000
-          - id: present
-            name: '@deepseek-ai/dsh-tool-present'
-          # ---- end CAPABILITIES ----------------------------------------------
-          # 模式行：协议 + 门禁 + specialist 安装。它**不持有配置**（配置在顶层的
-          # `commander-mode` 行），只通过 `commanderSettings` 服务读配置。
-          # preset 子行不在 Loader 树里、也不需要被 client-modules 扫描，所以用子路径
-          # 出口没问题。
-          - id: commander-mode-agent
-            name: 'dsh-commander-mode/agent'
+        # 能力行 + 模式行由 lib/preset-plugins.js 从 lib/capabilities.js 单一来源拼装，
+        # 这里**不再重述**（3.7.0 前这里有一份 ~84 行的能力行副本）。
 
     # ---- 模式行（agent preset）：项目经理模式 -------------------------------
-    # 与 preset-commander 的区别：指挥者解决"谁来做"，项目经理解决"按什么顺序做、
-    # 每段怎么验收"。能力行与指挥者模式**逐字节相同**（除 skill-filesystem 多一个
-    # customSkillDirs）；多出来的两行是模式协议与流水线执行手册。
+    # 与 preset-commander 的区别：指挥者解决"谁来做"，项目经理解决"按任务形状怎么拆、
+    # 每段怎么验收"。能力行与指挥者模式**逐字相同**（同一份 `lib/capabilities.js` 拼装，
+    # 除 skill-filesystem 多一个 customSkillDirs）；多出来的两行是模式协议与可选工作流手册。
     - id: preset-project-manager
       # 同上：本包自带的等效声明器，标题显示「项目经理模式」。
       name: 'dsh-commander-mode/preset-project-manager'
@@ -380,108 +294,5 @@
         name: 项目经理模式
         description: 用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）作为专家小组长，按任务形状拆分与派单、逐项验收，只编排不自己写代码；六段工作流可选（按需 skill 加载）。
         order: 8
-        plugins:
-          # ---- CAPABILITIES (mirrors @deepseek-ai/dsh-preset-standard) ----------
-          # 从工作区加载 AGENTS.md —— 指挥者要靠工作区约定才知道"派出去的活"该守什么规矩。
-          - id: agent-instructions
-            name: '@deepseek-ai/dsh-agent-instructions'
-            config:
-              maxBytes: 65536
-          # 0.2.1-alpha.1 起 standard 自带的时间上下文（每轮注入当前时间/时区）。
-          - id: time-context
-            name: '@deepseek-ai/dsh-time-context'
-          - id: tool-bash
-            name: '@deepseek-ai/dsh-tool-bash'
-            disabled: !!js process.platform === 'win32'
-          - id: tool-pwsh
-            name: '@deepseek-ai/dsh-tool-pwsh'
-            disabled: !!js process.platform !== 'win32'
-          # read / glob / grep —— 指挥者只读侦察的手段；write / edit 也在这一行里，
-          # 由 lib/guard.js 的门禁对指挥者拒掉，而子代理照常可用。
-          - id: tool-fs
-            name: '@deepseek-ai/dsh-tool-fs'
-            config:
-              # 逐字镜像 0.2.2 preset-standard：applyPatch 默认 false（不提供 apply_patch）。
-              applyPatch: false
-          - id: tool-fs-search
-            name: '@deepseek-ai/dsh-tool-fs-search'
-            config:
-              sampleOverCapGlobResults: false
-          - id: tool-jobs
-            name: '@deepseek-ai/dsh-tool-jobs'
-          # 0.2.1-alpha.1 起 standard 自带的定时任务能力（RRULE）。
-          - id: tool-schedule
-            name: '@deepseek-ai/dsh-tool-schedule'
-          - id: skill-filesystem
-            name: '@deepseek-ai/dsh-skill-filesystem'
-            # 项目经理模式额外加载本包 `skills/` 目录（19 个已吸纳的方法 skill）。
-            # 只加在这一份：指挥者模式保持 1.x 的能力与文本不变。目录由本包提供，
-            # 按包名定位包目录（createRequire(baseUrl)），不写死任何绝对路径。
-            config:
-              customSkillDirs:
-                - !!js >-
-                  process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-commander-mode/package.json')), 'skills')
-          - id: tool-skill
-            name: '@deepseek-ai/dsh-tool-skill'
-          - id: command-goal
-            name: '@deepseek-ai/dsh-command-goal'
-          - id: tool-goal
-            name: '@deepseek-ai/dsh-tool-goal'
-          - id: compaction
-            name: cordis:group
-            group: true
-            isolate:
-              compaction: true
-              toolResultPruner: true
-            config:
-              - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
-              - id: command-compact
-                name: '@deepseek-ai/dsh-command-compact'
-              - id: tool-result-pruner
-                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
-                config:
-                  thresholdChars: 8192
-                  headChars: 4096
-                  tailChars: 1024
-          # 与 Team 工具互补的编排通道：一次性扇出多个 fresh 子代理。
-          # （旧的 tool-subagent* 四个行**有意不在这里** —— 见文件头。）
-          - id: delegation
-            name: cordis:group
-            group: true
-            isolate:
-              workflowEngine: true
-            config:
-              - id: workflow-ptc
-                name: '@deepseek-ai/dsh-workflow-ptc'
-                config:
-                  provider: spawn
-              - id: tool-workflow
-                name: '@deepseek-ai/dsh-tool-workflow'
-          # 本模式的两次"必须问用户"都靠它：规划确认与分歧上报。
-          - id: tool-ask-user
-            name: '@deepseek-ai/dsh-tool-ask-user'
-          # 规划与进度板。
-          - id: tool-todo
-            name: '@deepseek-ai/dsh-tool-todo'
-            config:
-              allowParallelInProgress: true
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: true
-              searchTimeoutMs: 60000
-          - id: present
-            name: '@deepseek-ai/dsh-tool-present'
-          # ---- end CAPABILITIES ----------------------------------------------
-          # 项目经理模式的两行：
-          # 1. `project-manager-agent` —— 项目经理协议（角色 / 按任务形状拆分 / 验收 / 等待纪律）
-          #    + 门禁接线 + 六位专家小组长的工具安装。它**不预设流水线**。
-          # 2. `project-dev-workflow` —— 可选的六段工作流**执行手册组件**：3.6.0 起它只注册
-          #    一个 skill（`project-dev-workflow`），**不再注入常驻 prompt**；项目经理与
-          #    专家小组长都可以用 `skill` 工具按需加载、只取其中一段。发版打包、交接、
-          #    单点修复这类任务不需要它。
-          - id: project-manager-agent
-            name: 'dsh-commander-mode/project-manager'
-          - id: project-dev-workflow
-            name: 'dsh-commander-mode/workflow'
+        # 同上：能力行 + 项目经理协议行 + 可选工作流行由 lib/preset-plugins.js 拼装；
+        # 与指挥者模式唯一的能力行差异是 skill-filesystem 多 customSkillDirs。
