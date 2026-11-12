@@ -28,8 +28,7 @@ import {
   declarePreset,
 } from '../lib/preset-declaration.js';
 import { CAPABILITY_ROWS } from '../lib/capabilities.js';
-import { apply as applyCommander, name as commanderName } from '../preset-commander.js';
-import { apply as applyManager, name as managerName, packageSkillsDir } from '../preset-project-manager.js';
+import { apply as applyCommander, name as commanderName, packageSkillsDir } from '../preset-commander.js';
 
 /**
  * 最小 ctx 替身：记录 effect / register / warn。
@@ -95,50 +94,39 @@ test('Config：id 必填，plugins 可选（3.7.0 起由声明模块注入）', 
 
 // ---------------------------------------------------------------- 注册 ---
 
-test('两个模块各自注入自己的 plugins（能力行 + 自己的模式行）', async () => {
-  for (const [apply, expectedId, expectedLabel, modeRowIds] of [
-    [applyCommander, 'commander', 'preset-commander', ['commander-mode-agent']],
-    [applyManager, 'project-manager', 'preset-project-manager', ['project-manager-agent', 'project-dev-workflow']],
-  ]) {
-    const { ctx, record } = makeCtx();
-    const config = sampleConfig(expectedId);
-    await apply(ctx, config);
-    assert.equal(record.registrations.length, 1, `${expectedLabel}: 应注册一次`);
-    const definition = record.registrations[0];
-    assert.equal(definition.id, expectedId);
-    assert.equal(definition.order, config.order);
-    assert.equal(definition.name, config.name);
-    // plugins 不再来自 YAML，而是由 lib/preset-plugins.js 拼装：
-    // 能力行（18）+ 该模式自己的模式行。
-    assert.equal(definition.plugins.length, CAPABILITY_ROWS.length + modeRowIds.length, `${expectedLabel}: 行数不对`);
-    assert.deepEqual(
-      definition.plugins.slice(-modeRowIds.length).map((entry) => entry.id),
-      modeRowIds,
-      `${expectedLabel}: 模式行应在最后`,
-    );
-    assert.equal(record.disposers.length, 1, `${expectedLabel}: 应挂一个 effect`);
-    assert.equal(record.disposers[0].label, `${expectedLabel}: preset ${expectedId}`);
-  }
+test('5.0.0：声明模块注入 plugins（能力行 + 模式行 + 可选工作流行）', async () => {
+  const { ctx, record } = makeCtx();
+  const config = sampleConfig('commander');
+  await applyCommander(ctx, config);
+  assert.equal(record.registrations.length, 1, '应注册一次');
+  const definition = record.registrations[0];
+  assert.equal(definition.id, 'commander');
+  assert.equal(definition.order, config.order);
+  assert.equal(definition.name, config.name);
+  // plugins 不再来自 YAML，而是由 lib/preset-plugins.js 拼装：
+  // 能力行（18）+ 模式行 + 可选工作流行。
+  assert.equal(definition.plugins.length, CAPABILITY_ROWS.length + 2, '行数不对');
+  assert.deepEqual(
+    definition.plugins.slice(-2).map((entry) => entry.id),
+    ['commander-mode-agent', 'project-dev-workflow'],
+    '模式行与工作流行应在最后',
+  );
+  assert.equal(record.disposers.length, 1, '应挂一个 effect');
+  assert.equal(record.disposers[0].label, 'preset-commander: preset commander');
 });
 
-test('项目经理模式的 skill-filesystem 带本包 skills/ 目录；指挥者不带', async () => {
+test('5.0.0：统一模式的 skill-filesystem 带本包 skills/ 目录', async () => {
   const skillsDir = packageSkillsDir();
-  assert.ok(typeof skillsDir === 'string' && skillsDir.endsWith('skills\\') || skillsDir.endsWith('skills/'), `skills 目录应存在：${skillsDir}`);
+  assert.ok(typeof skillsDir === 'string' && (skillsDir.endsWith('skills\\') || skillsDir.endsWith('skills/')), `skills 目录应存在：${skillsDir}`);
 
-  const commander = makeCtx();
-  await applyCommander(commander.ctx, sampleConfig('commander'));
-  const commanderSkillFs = commander.record.registrations[0].plugins.find((entry) => entry.id === 'skill-filesystem');
-  assert.equal(commanderSkillFs.config, undefined, '指挥者模式不应加载本包 skills/（保持 1.x 行为）');
-
-  const manager = makeCtx();
-  await applyManager(manager.ctx, sampleConfig('project-manager'));
-  const managerSkillFs = manager.record.registrations[0].plugins.find((entry) => entry.id === 'skill-filesystem');
-  assert.deepEqual(managerSkillFs.config, { customSkillDirs: [skillsDir] });
+  const { ctx, record } = makeCtx();
+  await applyCommander(ctx, sampleConfig('commander'));
+  const skillFs = record.registrations[0].plugins.find((entry) => entry.id === 'skill-filesystem');
+  assert.deepEqual(skillFs.config, { customSkillDirs: [skillsDir] });
 });
 
 test('插件名稳定（Loader 诊断与测试都依赖它）', () => {
   assert.equal(commanderName, 'preset-commander-declaration');
-  assert.equal(managerName, 'preset-project-manager-declaration');
 });
 
 test('3.7.0：cordis.patch.yml 里两个 preset 的 config 能通过声明器 schema', () => {
@@ -154,7 +142,6 @@ test('3.7.0：cordis.patch.yml 里两个 preset 的 config 能通过声明器 sc
   };
   for (const [presetId, expectedId] of [
     ['preset-commander', 'commander'],
-    ['preset-project-manager', 'project-manager'],
   ]) {
     const block = blockOf(presetId);
     /** 取 `config:` 下 8 空格缩进的标量值。 */

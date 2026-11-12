@@ -17,7 +17,7 @@ import test from 'node:test';
 
 import { SKILL_NAME, apply, name as pluginName } from '../workflow.js';
 import { WORKFLOW_PROTOCOL, WORKFLOW_SKILLS, WORKFLOW_STAGES } from '../lib/workflow.js';
-import { leaderNameForSpecialist } from '../lib/project-manager.js';
+import { leaderNameForSpecialist } from '../lib/workflow.js';
 import { makeCtx, makeSettings, defaultRoster } from './helpers.mjs';
 
 /** 19 个已吸纳 skill 的期望清单（与任务书一致；改名/增删都要同步改这里与协议正文）。 */
@@ -46,9 +46,11 @@ const EXPECTED_SKILLS = [
 
 // ---------------------------------------------------------------- 协议文本 ---
 
-test('协议定位：可选执行手册（不是强制流程），供项目经理与专家小组长按需加载', () => {
+test('协议定位：可选执行手册（不是强制流程），供指挥者与专家小组长按需加载', () => {
   assert.ok(WORKFLOW_PROTOCOL.startsWith('# 项目开发工作流'), WORKFLOW_PROTOCOL.slice(0, 120));
-  assert.ok(WORKFLOW_PROTOCOL.includes('项目经理模式'));
+  // 5.0.0：不再有「项目经理模式」，手册由指挥者模式按需加载。
+  assert.ok(WORKFLOW_PROTOCOL.includes('指挥者模式'));
+  assert.ok(!WORKFLOW_PROTOCOL.includes('项目经理模式'), '手册不应再提已并入的项目经理模式');
   assert.match(WORKFLOW_PROTOCOL, /架构 → 实现 → 审查 → 测试 → 安全 → 文档/u);
   // 3.6.0：必须是"可选"，不能再写成硬门禁 / 必须走完。
   for (const phrase of ['可选执行手册', '不是强制流程', '不是门禁', '推荐顺序', '按需加载', '只读对应那一段']) {

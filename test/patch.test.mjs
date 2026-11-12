@@ -1,7 +1,7 @@
 /**
  * bundle patch 测试。
  *
- * 这些是对 `cordis.patch.yml` 的结构性断言 —— Loader 正是读这个文件来合成这两个模式。
+ * 这些是对 `cordis.patch.yml` 的结构性断言 —— Loader 正是读这个文件来合成这个模式。
  * 它们之所以存在，是因为一个随附 bug 没有任何单元测试能抓住：一个 preset 只声明了
  * 自己插件、没声明能力行，而 `@deepseek-ai/dsh-web-app` 把能力行全局禁用了，于是那个
  * 模式下的会话**没有文件系统、没有 shell、也没有 AGENTS.md**。
@@ -11,8 +11,8 @@
  * 能力行与模式行改由 `lib/preset-plugins.js` 从 `lib/capabilities.js` 拼装（单一来源），
  * `cordis.patch.yml` 不再写 `plugins`。所以本文件现在断言的是：
  *
- * 1. patch 只插入三行（配置行 + 两个模式声明行），能力行 / 模式行都不在 YAML；
- * 2. 两个模式声明行仍写全 `id / name / description / order`（Loader 与插件页读它们）；
+ * 1. patch 只插入两行（配置行 + 唯一的模式声明行），能力行 / 模式行都不在 YAML；
+ * 2. 模式声明行仍写全 `id / name / description / order`（Loader 与插件页读它们）；
  * 3. 能力行本身的关键契约（tool-fs config、两个 group 的 isolate、shell 互斥、
  *    不含旧 subagent 控件）—— 这些现在查 JS 清单，与 `capabilities.test.mjs` 互补；
  * 4. 配置行的位置与命名约束（必须是 profile 顶层、裸包名）。
@@ -30,7 +30,7 @@ const PATCH = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), '
 const LINES = PATCH.split('\n');
 
 /** 两个 preset（顺序 = patch 里的声明顺序）。 */
-const PRESETS = ['preset-commander', 'preset-project-manager'];
+const PRESETS = ['preset-commander'];
 
 /** 文件里所有行 id，含嵌套 group 的子行。 */
 function allRowIds() {
@@ -53,13 +53,13 @@ function presetBlock(presetId) {
 
 // ---------------------------------------------------------------- 能力行 ---
 
-test('3.7.0：patch 只插入三行（配置行 + 两个模式声明行），能力行不在 YAML', () => {
+test('3.7.0：patch 只插入两行（配置行 + 模式声明行），能力行不在 YAML', () => {
   // 能力行改由 lib/preset-plugins.js 从 lib/capabilities.js 拼装（单一来源）。
   // 这条断言防止有人把能力行块复制回 YAML —— 那样单一来源就又变成两份。
-  assert.deepEqual(allRowIds().sort(), ['commander-mode', 'preset-commander', 'preset-project-manager']);
+  assert.deepEqual(allRowIds().sort(), ['commander-mode', 'preset-commander']);
 });
 
-test('3.7.0：两个模式声明行不再写 plugins，只留声明元数据', () => {
+test('3.7.0：模式声明行不再写 plugins，只留声明元数据', () => {
   for (const presetId of PRESETS) {
     const block = presetBlock(presetId);
     assert.ok(!/^\s{6}plugins:/mu.test(block), `${presetId} 不应再声明 plugins`);
@@ -70,7 +70,7 @@ test('3.7.0：两个模式声明行不再写 plugins，只留声明元数据', (
   }
 });
 
-test('3.7.0：两个模式的能力行由同一份 JS 清单拼装（不再靠 YAML 逐字节比对）', () => {
+test('3.7.0：能力行由同一份 JS 清单拼装（不再靠 YAML 逐字节比对）', () => {
   // 旧的"两份 CAPABILITIES 块逐字节一致"断言已随 YAML 块一起删除；现在由
   // lib/preset-plugins.js 的单一来源保证，测试在 capabilities.test.mjs 里钉住。
   assert.ok(!PATCH.includes('# ---- CAPABILITIES'), 'YAML 不应再有 CAPABILITIES 块');
@@ -140,24 +140,16 @@ test('preset-commander 声明正确', () => {
   assert.match(PATCH, /config:\n\s+id: commander\n\s+name: 指挥者模式/u);
   assert.match(PATCH, /order: 7/u);
   // 显示名与描述是自命名的，不会进翻译表，所以必须直接写中文。
-  assert.match(PATCH, /description: .*子代理/u);
-});
-
-test('preset-project-manager 声明正确（id / 显示名 / 描述 / order 8）', () => {
-  assert.match(PATCH, /- id: preset-project-manager\n(?:\s+#.*\n)*\s+name: 'dsh-commander-mode\/preset-project-manager'/u);
-  assert.match(PATCH, /config:\n\s+id: project-manager\n\s+name: 项目经理模式/u);
-  assert.match(PATCH, /order: 8/u);
-  // 3.6.0 起描述要写清"六位专家 + 按任务形状拆分 + 六段可选"，不能再写"带门禁流水线"。
-  assert.match(PATCH, /description: 用六位开发流程专家/u);
-  assert.match(PATCH, /按任务形状拆分与派单/u);
-  assert.match(PATCH, /六段工作流可选/u);
-  assert.ok(!/跑一条带门禁的项目流水线/u.test(PATCH), 'preset 描述不应再写强制流水线');
+  // 5.0.0：描述要写清"按任务形状拆分 + 专家团/工作流按需"，且不能再写第二个模式。
+  assert.match(PATCH, /description: .*按任务形状拆分/u);
+  assert.match(PATCH, /description: .*按需/u);
+  assert.ok(!/项目经理模式：/u.test(PATCH), 'preset 描述不应再介绍第二个模式');
 });
 
 test('3.7.0：模式行由 JS 拼装，YAML 里不再有它们的 id', () => {
   // 模式行（commander-mode-agent / project-manager-agent / project-dev-workflow）
   // 改由 lib/preset-plugins.js 注入；YAML 里出现它们就意味着又回到"两份"。
-  for (const id of ['commander-mode-agent', 'project-manager-agent', 'project-dev-workflow']) {
+  for (const id of ['commander-mode-agent', 'project-dev-workflow']) {
     assert.ok(!allRowIds().includes(id), `YAML 不应再声明模式行 ${id}`);
   }
   // 但 patch 注释要说明它们从哪来（否则下一个人会以为是漏写了）。
@@ -297,7 +289,7 @@ test('3.6.0：所有 locale JSON 可解析，且中英键完全一致', () => {
   // 3.5.0 发布时踩过：改 `locale/en.json` 的描述时写进了未转义的双引号
   // （`... the bundled "Agent preset definition".)`），文件变成非法 JSON，而当时没有任何
   // 测试解析 locale —— 插件页读不到描述，但测试全绿。这条守卫把这类事故挡在提交前。
-  const dirs = ['locale', 'preset-commander/locale', 'preset-project-manager/locale'];
+  const dirs = ['locale', 'preset-commander/locale'];
   /** 递归收集一个对象的所有键路径（只用于比对中英是否同构）。 */
   const keyPaths = (value, prefix = '') => {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return [prefix];

@@ -23,8 +23,11 @@ import {
   ESCALATION_TRIGGERS,
   FLOW_STEPS,
   SKILL_NAME,
+  TASK_SHAPE_RULES,
   TICKET_RULES,
+  TICKET_RULES_OPTIONAL,
   TEAM_BOARD_RULES,
+  VERIFICATION_RULES,
   WORKER_RULES,
   renderCommanderSection,
   renderModeOpening,
@@ -37,8 +40,9 @@ import {
   TEAM_MODEL_BRIEF,
   TEAM_MODEL_RULES,
 } from '../lib/team-model.js';
+import { PIPELINE_SPECIALISTS, PIPELINE_STAGES, leaderNameForSpecialist } from '../lib/workflow.js';
 
-/** `TEAM_MODEL` 拼进 H1 文档时降一级标题（与 lib/protocol.js / lib/project-manager.js 同一约定）。 */
+/** `TEAM_MODEL` 拼进 H1 文档时降一级标题（与 lib/protocol.js 同一约定）。 */
 const TEAM_MODEL_AS_SECTION = TEAM_MODEL.replace(/^# /u, '## ');
 
 const SECTION = renderCommanderSection();
@@ -721,14 +725,16 @@ test('紧凑版长度受控：每轮注入，必须短于长文', () => {
   //   "不做就会当场跑偏"的动作级规则，必须留在 section 里，不能只搬进长文。
   //   实测：默认 8313 字符 / 124 行，启用名册 9554 字符 / 152 行，开场 8467 / 130。
   // 上限的作用是防"把细节都塞进 section"，不是精确配额：超了就说明该搬到长文了。
-  const CHAR_BUDGET = 10_000;
+  // 5.0.0：合并「项目经理模式」后新增两节（按任务形状拆 + 验收与收口），
+  // 实测默认 9983 / 名册 11308 / 开场 10137 字符 —— 预算提到 12000。
+  const CHAR_BUDGET = 12_000;
   for (const [label, text] of [
     ['默认 section', SECTION],
     ['启用名册 section', ROSTER_SECTION],
     ['开场', OPENING],
   ]) {
     const lines = text.split('\n').length;
-    assert.ok(lines <= 160, `${label} 有 ${lines} 行，超过 160 行上限`);
+    assert.ok(lines <= 180, `${label} 有 ${lines} 行，超过 180 行上限`);
     assert.ok(text.length <= CHAR_BUDGET, `${label} 有 ${text.length} 字符，超过 ${CHAR_BUDGET} 字符上限`);
   }
   // 细节应该在 skill 长文里，而不是把 section 撑大。
@@ -748,13 +754,30 @@ test('renderCommanderSection 向后兼容：不传 options 与传空对象等价
 
 // ---------------------------------------------------------------- 0.6.0 工单 ---
 
-test('0.6.0：默认 section 带工单与计划授权契约（固定检查）', () => {
+test('0.6.0 / 5.0.0：默认 section 带「按需工单」契约（不再强制每次派活建单）', () => {
   assert.ok(SECTION.includes('### 工单与计划授权（0.6.0，确定性门禁）'), SECTION);
-  for (const phrase of [PLAN_QUESTION_ID, PLAN_CONFIRM_LABEL, 'commander_ticket_create', 'commander_ticket_update', '[ticket:t-N]', 'STATUS:']) {
-    assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
+  // 默认（requireMandate / requireTicket 都关）→ 渲染 TICKET_RULES_OPTIONAL。
+  for (const rule of TICKET_RULES_OPTIONAL) {
+    assert.ok(SECTION.includes(rule.title), `section 缺少按需工单规则：${rule.title}`);
   }
-  for (const rule of TICKET_RULES) {
-    assert.ok(SECTION.includes(rule.title), `section 缺少规则：${rule.title}`);
+  assert.ok(SECTION.includes('工单账本是可选工具'), '要写明工单是按需的');
+  assert.ok(SECTION.includes('commander_ticket_create'), '工具名仍要在场（它存在，只是不强制）');
+  // 默认不该出现"每次派发都带工单"的强制口径。
+  assert.ok(!SECTION.includes('每次派发都带工单'), '默认不应强制每单工单');
+  assert.ok(!SECTION.includes('先建工单再派活'), '默认不应强制先建工单');
+});
+
+test('0.6.0：严格流程（requireMandate / requireTicket 打开）→ 渲染强制工单规则', () => {
+  // 5.0.0：合并后默认按需；显式打开严格流程时协议必须回到旧口径，否则门禁与文本打架。
+  for (const options of [{ requireMandate: true }, { requireTicket: true }, { requireMandate: true, requireTicket: true }]) {
+    const text = renderCommanderSection(options);
+    for (const rule of TICKET_RULES) {
+      assert.ok(text.includes(rule.title), `${JSON.stringify(options)} 缺少强制规则：${rule.title}`);
+    }
+    for (const phrase of [PLAN_QUESTION_ID, PLAN_CONFIRM_LABEL, '[ticket:t-N]']) {
+      assert.ok(text.includes(phrase), `${JSON.stringify(options)} 缺少：${phrase}`);
+    }
+    assert.ok(!text.includes('工单账本是可选工具'), `${JSON.stringify(options)} 不应再写"可选"`);
   }
 });
 
@@ -768,9 +791,57 @@ test('0.6.0：ledger:false 时不出现工单契约或工单工具名', () => {
 
 test('0.6.0：工单规则不提到具体 specialist 工具名（空名册也安全）', () => {
   // 与 0.2 的教训一致：协议里点名一个当前不存在的工具，模型会当场卡住。
-  const joined = TICKET_RULES.map((rule) => `${rule.title}${rule.detail}`).join('');
-  assert.ok(!/subagent_/u.test(joined), '工单规则不应出现 subagent_ 工具名');
-  assert.ok(!/specialist/iu.test(joined), '工单规则不应出现 specialist');
+  for (const rules of [TICKET_RULES, TICKET_RULES_OPTIONAL]) {
+    const joined = rules.map((rule) => `${rule.title}${rule.detail}`).join('');
+    assert.ok(!/subagent_/u.test(joined), '工单规则不应出现 subagent_ 工具名');
+    assert.ok(!/specialist/iu.test(joined), '工单规则不应出现 specialist');
+  }
+});
+
+// ------------------------------------------------ 5.0.0 合并：按形状拆 / 验收 ---
+
+test('5.0.0：section 说明「项目经理模式」已并入，专家团与工作流按需', () => {
+  assert.ok(SECTION.includes('「项目经理模式」已并入本模式'), '要写明合并');
+  assert.ok(SECTION.includes('project-dev-workflow'), '要给出按需加载工作流的 skill 名');
+  assert.ok(SECTION.includes('按需'), '要写明专家团与工作流是按需的');
+});
+
+test('5.0.0：section 带「按任务形状拆工作」（六段是可选项，不套模板）', () => {
+  assert.ok(SECTION.includes('### 按任务形状拆工作'), SECTION);
+  for (const rule of TASK_SHAPE_RULES) {
+    assert.ok(SECTION.includes(rule.title), `section 缺少拆解规则：${rule.title}`);
+  }
+  for (const phrase of ['不要按"六段"套模板', '不为了走流程制造依赖', '推荐顺序，不是门禁']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
+  }
+  // 典型形状要举例，否则模型仍会套模板。
+  for (const phrase of ['打安装包', '交接', '单点缺陷', '排障', '从零开发']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少任务形状示例：${phrase}`);
+  }
+  // 硬要求仍在。
+  for (const phrase of ['可观察的验收判据', '落盘证据', '独立于实现者']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少硬要求：${phrase}`);
+  }
+});
+
+test('5.0.0：section 带「验收与收口」（每任务三件事 + 验收门禁）', () => {
+  assert.ok(SECTION.includes('### 验收与收口'), SECTION);
+  for (const rule of VERIFICATION_RULES) {
+    assert.ok(SECTION.includes(rule.title), `section 缺少验收规则：${rule.title}`);
+  }
+  for (const phrase of ['未提交视为该任务未完成', '任务板结算由 owner 小组长做', '验收门禁', '亲自核对证据', '经验教训']) {
+    assert.ok(SECTION.includes(phrase), `section 缺少：${phrase}`);
+  }
+});
+
+test('5.0.0：六位专家与六段工作流仍然在场（可选，但名册要对得上）', () => {
+  for (const specialist of PIPELINE_SPECIALISTS) {
+    assert.ok(SECTION.includes(specialist.id), `section 缺专家 id：${specialist.id}`);
+    assert.ok(SECTION.includes(leaderNameForSpecialist(specialist.id)), `section 缺小组长建议名：${specialist.lead}`);
+  }
+  for (const stage of PIPELINE_STAGES) {
+    assert.ok(SECTION.includes(stage), `section 缺六段阶段名：${stage}`);
+  }
 });
 
 test('0.7.0：默认 section 带异步派工契约（完成通知唤醒、不要轮询）', () => {

@@ -29,11 +29,9 @@ import {
   toEntry,
 } from '../lib/capabilities.js';
 import {
-  COMMANDER_MODE_ROWS,
-  PROJECT_MANAGER_MODE_ROWS,
+  MODE_ROWS,
   capabilityPartOf,
   commanderPresetPlugins,
-  projectManagerPresetPlugins,
 } from '../lib/preset-plugins.js';
 
 const PATCH = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
@@ -65,108 +63,79 @@ test('3.7.0：YAML 里不再出现任何能力行 id（能力行只在 lib/capab
   const declared = PATCH.split('\n')
     .map((line) => /^\s*- id: (.+?)\s*$/u.exec(line)?.[1])
     .filter((id) => id !== undefined);
-  // patch 只插入三行：配置行 + 两个模式声明行。
-  assert.deepEqual(declared.sort(), ['commander-mode', 'preset-commander', 'preset-project-manager']);
+  // 5.0.0：patch 只插入两行 —— 配置行 + 唯一的模式声明行。
+  assert.deepEqual(declared.sort(), ['commander-mode', 'preset-commander']);
   for (const id of allCapabilityRowIds()) {
     assert.ok(!declared.includes(id), `YAML 不应再声明能力行 ${id}`);
   }
 });
 
-test('3.7.0：两个模式声明行只留声明元数据（id / name / description / order）', () => {
-  for (const [presetId, expected] of [
-    ['preset-commander', { id: 'commander', order: '7' }],
-    ['preset-project-manager', { id: 'project-manager', order: '8' }],
-  ]) {
-    const block = presetBlock(presetId);
-    assert.match(block, new RegExp(`\\n {8}id: ${expected.id}\\n`, 'u'), `${presetId} 缺 config.id`);
-    assert.match(block, new RegExp(`\\n {8}order: ${expected.order}\\n`, 'u'), `${presetId} 缺 order`);
-    assert.match(block, /\n {8}name: .+\n/u, `${presetId} 缺显示名`);
-    assert.match(block, /\n {8}description: .+\n/u, `${presetId} 缺描述`);
-  }
+test('3.7.0：模式声明行只留声明元数据（id / name / description / order）', () => {
+  const block = presetBlock('preset-commander');
+  assert.match(block, /\n {8}id: commander\n/u, 'preset-commander 缺 config.id');
+  assert.match(block, /\n {8}order: 7\n/u, 'preset-commander 缺 order');
+  assert.match(block, /\n {8}name: .+\n/u, 'preset-commander 缺显示名');
+  assert.match(block, /\n {8}description: .+\n/u, 'preset-commander 缺描述');
 });
 
 // ------------------------------------------------ 单一来源拼装 ---
 
-test('commanderPresetPlugins = 能力行 + 指挥者模式行', () => {
+test('5.0.0：commanderPresetPlugins = 能力行 + 模式行 + 可选工作流行', () => {
   const plugins = commanderPresetPlugins();
-  assert.equal(plugins.length, CAPABILITY_ROWS.length + COMMANDER_MODE_ROWS.length);
+  assert.equal(plugins.length, CAPABILITY_ROWS.length + MODE_ROWS.length);
   assert.deepEqual(plugins.slice(0, CAPABILITY_ROWS.length), CAPABILITY_ROWS.map((row) => toEntry(row)));
-  assert.deepEqual(plugins.slice(CAPABILITY_ROWS.length), [{ id: 'commander-mode-agent', name: 'dsh-commander-mode/agent' }]);
+  assert.deepEqual(plugins.slice(CAPABILITY_ROWS.length).map((entry) => entry.id), [
+    'commander-mode-agent',
+    'project-dev-workflow',
+  ]);
+  assert.deepEqual(plugins.slice(CAPABILITY_ROWS.length).map((entry) => entry.name), [
+    'dsh-commander-mode/agent',
+    'dsh-commander-mode/workflow',
+  ]);
   for (const entry of plugins) {
     assert.ok(typeof entry.id === 'string' && entry.id !== '', '每个 entry 都要有 id');
     assert.ok(typeof entry.name === 'string' && entry.name !== '', '每个 entry 都要有 name');
   }
 });
 
-test('projectManagerPresetPlugins = 能力行 + 项目经理协议行 + 可选工作流行', () => {
-  const plugins = projectManagerPresetPlugins();
-  assert.equal(plugins.length, CAPABILITY_ROWS.length + PROJECT_MANAGER_MODE_ROWS.length);
-  assert.deepEqual(
-    plugins.slice(CAPABILITY_ROWS.length).map((entry) => entry.id),
-    ['project-manager-agent', 'project-dev-workflow'],
-  );
-  assert.deepEqual(
-    plugins.slice(CAPABILITY_ROWS.length).map((entry) => entry.name),
-    ['dsh-commander-mode/project-manager', 'dsh-commander-mode/workflow'],
-  );
+test('5.0.0：能力行部分逐字来自 lib/capabilities.js（没有第二份）', () => {
+  const parts = capabilityPartOf(commanderPresetPlugins(), MODE_ROWS);
+  assert.equal(parts.length, CAPABILITY_ROWS.length);
+  assert.deepEqual(parts, CAPABILITY_ROWS.map((row) => toEntry(row)));
 });
 
-test('两个 preset 的能力行逐字相同（唯一差异是 PM 的 customSkillDirs）', () => {
-  // 这是 2.0.0 以来最关键的约束：能力行来自同一份清单，谁都不许私改。现在它由
-  // "同一份 JS 常量"保证，测试钉住"确实没有第二份"。
-  const commander = capabilityPartOf(commanderPresetPlugins(), COMMANDER_MODE_ROWS);
-  const manager = capabilityPartOf(projectManagerPresetPlugins(), PROJECT_MANAGER_MODE_ROWS);
-  assert.equal(commander.length, manager.length, '两个模式的能力行数量不一致');
-
-  for (let index = 0; index < commander.length; index += 1) {
-    const left = commander[index];
-    const right = manager[index];
-    assert.equal(left.id, right.id, `第 ${index + 1} 行 id 不一致`);
-    assert.equal(left.name, right.name, `第 ${index + 1} 行 name 不一致`);
-    assert.equal(left.group, right.group, `第 ${index + 1} 行 group 不一致`);
-    assert.deepEqual(left.isolate, right.isolate, `第 ${index + 1} 行 isolate 不一致`);
-    assert.equal(left.disabled, right.disabled, `第 ${index + 1} 行 disabled 不一致`);
-    if (left.id === 'skill-filesystem') continue; // 唯一允许的差异，下面单独断言
-    assert.deepEqual(left.config, right.config, `第 ${index + 1} 行 config 不一致`);
-  }
-});
-
-test('只有项目经理模式的 skill-filesystem 带 customSkillDirs（指挥者保持 1.x 行为）', () => {
-  const commander = capabilityPartOf(commanderPresetPlugins(), COMMANDER_MODE_ROWS);
-  const manager = capabilityPartOf(projectManagerPresetPlugins({ skillDirs: ['/pkg/skills'] }), PROJECT_MANAGER_MODE_ROWS);
-  assert.equal(commander.find((entry) => entry.id === 'skill-filesystem').config, undefined, '指挥者不应加载本包 skills/');
-  assert.deepEqual(manager.find((entry) => entry.id === 'skill-filesystem').config, { customSkillDirs: ['/pkg/skills'] });
+test('5.0.0：skill-filesystem 的 customSkillDirs 只在传 skillDirs 时注入', () => {
+  // 统一模式要加载本包 skills/ 目录（六段工作流手册引用的 20 个方法 skill）。
+  const withDirs = commanderPresetPlugins({ skillDirs: ['/pkg/skills'] });
+  assert.deepEqual(withDirs.find((entry) => entry.id === 'skill-filesystem').config, { customSkillDirs: ['/pkg/skills'] });
   // 空数组 / 非字符串项等价于"不加载"（避免给 skill-filesystem 一个坏路径）。
   for (const skillDirs of [undefined, [], [''], [null], 'nope']) {
-    const plugins = projectManagerPresetPlugins({ skillDirs });
-    assert.equal(plugins.find((entry) => entry.id === 'skill-filesystem').config, undefined, `skillDirs=${JSON.stringify(skillDirs)} 不应注入`);
+    const plugins = commanderPresetPlugins({ skillDirs });
+    assert.equal(
+      plugins.find((entry) => entry.id === 'skill-filesystem').config,
+      undefined,
+      `skillDirs=${JSON.stringify(skillDirs)} 不应注入`,
+    );
   }
 });
 
-test('模式行不串味：两个 preset 各只带自己的模式行', () => {
-  const commander = commanderPresetPlugins().map((entry) => entry.id);
-  const manager = projectManagerPresetPlugins().map((entry) => entry.id);
-  assert.ok(commander.includes('commander-mode-agent'));
-  assert.ok(!commander.includes('project-manager-agent'), '指挥者模式不得挂项目经理协议');
-  assert.ok(!commander.includes('project-dev-workflow'), '指挥者模式不得挂工作流手册');
-  assert.ok(manager.includes('project-manager-agent'));
-  assert.ok(manager.includes('project-dev-workflow'));
-  assert.ok(!manager.includes('commander-mode-agent'), '项目经理模式不得挂指挥者协议');
-});
-
-test('两个 builder 每次返回独立的数组与对象（注册之间不串改）', () => {
+test('5.0.0：builder 每次返回独立的数组与对象（注册之间不串改）', () => {
   const first = commanderPresetPlugins();
   first[0].config.maxBytes = 1;
   first.push({ id: 'junk', name: 'junk' });
 
   const second = commanderPresetPlugins();
-  assert.equal(second.length, CAPABILITY_ROWS.length + 1);
+  assert.equal(second.length, CAPABILITY_ROWS.length + MODE_ROWS.length);
   assert.equal(second[0].config.maxBytes, 65536);
+});
 
-  const managerFirst = projectManagerPresetPlugins({ skillDirs: ['/a'] });
-  managerFirst[0].config = { mutated: true };
-  const managerSecond = projectManagerPresetPlugins({ skillDirs: ['/a'] });
-  assert.deepEqual(managerSecond[0].config, { maxBytes: 65536 });
+test('5.0.0：模式行只在 preset 里，不在能力清单里', () => {
+  // 能力清单是 specialist preset 也用的集合：`commander-mode-agent` 混进去会让
+  // specialist 也挂上指挥者协议（子代理拒绝动手）。
+  const ids = allCapabilityRowIds();
+  for (const row of MODE_ROWS) {
+    assert.ok(!ids.includes(row.id), `能力清单不得包含模式行 ${row.id}`);
+  }
 });
 
 // ------------------------------------------------ 能力清单本身 ---

@@ -315,8 +315,9 @@ test('resolveConfig 把配置解析成协议渲染用的 options', () => {
       maxSpecialists: 20,
       ledger: true,
       stateDir: '',
-      requireMandate: true,
-      requireTicket: true,
+      // 5.0.0：合并成单模式后，计划授权与每单工单是可选严格流程，默认关闭。
+      requireMandate: false,
+      requireTicket: false,
       teamTaskProjection: true,
       requireTeamTask: true,
       requireTeamTaskMarker: false,
@@ -388,10 +389,9 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     maxSpecialists: 3,
     ledger: true,
     stateDir: '',
-    // 3.4.0：confirmPlan=false（解引用后）会自动把 requireMandate 视为 false ——
-    // 关掉计划确认后无法记录计划授权，再要求授权会让所有派发被永久拒绝。
+    // 5.0.0：requireMandate / requireTicket 默认关闭（按需严格流程），所以这里保持 false。
     requireMandate: false,
-    requireTicket: true,
+    requireTicket: false,
     teamTaskProjection: true,
     requireTeamTask: true,
     requireTeamTaskMarker: false,
@@ -407,10 +407,8 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
     eventInbox: true,
     eventPollMs: 15000,
   });
-  // 解引用本身仍然正确（没有"漏解引用"的告警），但会多一条 confirmPlan/requireMandate 冲突告警。
-  assert.equal(warnings.length, 1, `只应有冲突告警：${JSON.stringify(warnings)}`);
-  assert.match(warnings[0], /confirmPlan: false 与 requireMandate: true 冲突/u);
-  assert.match(warnings[0], /已自动把 requireMandate 视为 false/u);
+  // 5.0.0：requireMandate 默认就是 false，所以 confirmPlan=false 不再构成冲突，没有告警。
+  assert.equal(warnings.length, 0, `不应有冲突告警：${JSON.stringify(warnings)}`);
 });
 
 // --------------------------------- 3.4.0 confirmPlan / requireMandate 冲突 ---
@@ -419,8 +417,17 @@ test('resolveConfig 解引用所有 volatile 字段', () => {
 // 而 Mandate 只能从它的 post-execute 结果记录 → 永远没有授权，所有派发被永久拒绝。
 // 两者是同一个决策的两面：关掉确认时自动关掉授权要求，并给一条告警说明原因。
 
-test('3.4.0：confirmPlan:false 自动把 requireMandate 视为 false（并告警）', () => {
+test('5.0.0：confirmPlan:false 且 requireMandate 默认关 → 无需告警（本来就不要求授权）', () => {
   const { options, warnings } = resolveConfig({ confirmPlan: false });
+  assert.equal(options.confirmPlan, false);
+  assert.equal(options.requireMandate, false, '5.0.0 起默认就不要求计划授权');
+  assert.deepEqual(warnings, [], '默认已是 false，不构成冲突');
+});
+
+test('3.4.0：显式 requireMandate:true + confirmPlan:false → 仍自动降级并告警', () => {
+  // 严格流程的用户可能显式打开 requireMandate；关掉计划确认后它无法记录授权，
+  // 所以仍要自动降级（这是 3.4.0 的死锁修复，5.0.0 保留）。
+  const { options, warnings } = resolveConfig({ confirmPlan: false, requireMandate: true });
   assert.equal(options.confirmPlan, false);
   assert.equal(options.requireMandate, false, '关掉计划确认后不能再要求计划授权');
   const conflict = warnings.filter((line) => line.includes('requireMandate'));
@@ -436,15 +443,15 @@ test('3.4.0：显式 requireMandate:false + confirmPlan:false → 无告警（�
   assert.deepEqual(warnings, [], '用户显式关掉两者不是冲突，不应告警');
 });
 
-test('3.4.0：confirmPlan:true + requireMandate:true（默认）→ 都开启且无告警', () => {
+test('5.0.0：默认 confirmPlan 开、requireMandate 关；显式打开 requireMandate 仍生效', () => {
   const explicit = resolveConfig({ confirmPlan: true, requireMandate: true });
   assert.equal(explicit.options.confirmPlan, true);
   assert.equal(explicit.options.requireMandate, true);
   assert.deepEqual(explicit.warnings, []);
-  // 默认（不传）同样如此。
+  // 5.0.0 默认：计划确认仍在（协议要求），但计划授权门禁默认关（按需严格流程）。
   const defaults = resolveConfig({});
   assert.equal(defaults.options.confirmPlan, true);
-  assert.equal(defaults.options.requireMandate, true);
+  assert.equal(defaults.options.requireMandate, false);
   assert.deepEqual(defaults.warnings, []);
   // 只关 requireMandate（保留 confirmPlan）→ 合法，无告警。
   const mandateOnly = resolveConfig({ requireMandate: false });
@@ -488,7 +495,8 @@ test('3.4.0：默认（不传）→ teamTaskProjection 与 requireTeamTask 都�
   assert.equal(noRequire.options.requireTeamTask, false);
   assert.deepEqual(noRequire.warnings, []);
   // 两个独立冲突同时触发时，各有一条告警（不是互相吞掉）。
-  const both = resolveConfig({ confirmPlan: false, teamTaskProjection: false });
+  // 5.0.0：requireMandate 默认关，所以这里显式打开它才会触发第一条冲突。
+  const both = resolveConfig({ confirmPlan: false, requireMandate: true, teamTaskProjection: false });
   assert.equal(both.warnings.filter((line) => line.includes('requireMandate')).length, 1);
   assert.equal(both.warnings.filter((line) => line.includes('requireTeamTask')).length, 1);
   assert.equal(both.options.requireMandate, false);
@@ -505,11 +513,12 @@ test('resolveConfig 不快照名册 —— 名册只能由 specialists.js 实时
 
 // ---------------------------------------------------------------- 0.6.0 工单 ---
 
-test('0.6.0 默认：账本与计划授权/工单门禁默认开启', () => {
+test('5.0.0 默认：账本开，但计划授权 / 每单工单门禁默认关（按需严格流程）', () => {
   const config = Config();
   assert.equal(config.ledger, true);
-  assert.equal(config.requireMandate, true);
-  assert.equal(config.requireTicket, true);
+  // 5.0.0：合并成单模式后，工单工具仍在，但"每次派活先拿授权 / 带工单"是可选严格流程。
+  assert.equal(config.requireMandate, false);
+  assert.equal(config.requireTicket, false);
   assert.equal(config.asyncDelegation, true);
   // 3.0.0：8 → 16（规则 2，与运行时并行上限对齐）。
   assert.equal(config.maxAsyncTasks, 16);
