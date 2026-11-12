@@ -1381,7 +1381,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   - **locale 事故修复 + 守卫**：3.5.0 的 `locale/en.json` 因未转义双引号成为非法 JSON
     （已实测 `JSON.parse` 抛错并修复）；新增测试「所有 locale JSON 可解析，且中英键完全一致」
     （遍历 `locale/`、`preset-commander/locale/`、`preset-project-manager/locale/`）。
-  - **`node --test "test/**/*.test.mjs"`** → **658 / 658 通过、0 失败**。
+  - **`node --test "test/**/*.test.mjs"`** → **659 / 659 通过、0 失败**。
 - **3.5.0 第二十三轮（小组长交下级判据 + 过期继承叙事纠正）**：
   - **判据三处落地**（源码审阅 + 文本断言，非 mock）：
     - `lib/team-model.js` 的 `leader-may-execute` 规则正文：含「什么时候该交下级」判据、
@@ -1900,7 +1900,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   ⑤ **修掉一个 3.5.0 引入的发布事故**：`locale/en.json` 在 3.5.0 改描述时写进了未转义的
   双引号，文件变成**非法 JSON**（插件页读不到描述），当时没有测试解析 locale。现已修正，
   并新增守卫测试「所有 locale JSON 可解析 + 中英键完全一致」。
-  ⑥ **测试**：658 / 658 通过（新增/改写覆盖：PM 协议「按任务形状拆分、不再强制流水线」、
+  ⑥ **测试**：659 / 659 通过（新增/改写覆盖：PM 协议「按任务形状拆分、不再强制流水线」、
   工作流组件「不再注册 section、只注册 skill、描述含可选/按需」、locale JSON 守卫）。
   **用户要做什么**：重新安装 / 重启桌面版。行为变化：PM 不再默认带六段流水线；需要时让它
   用 `skill` 加载 `project-dev-workflow`（或直接说"按六段工作流做"）。无配置变更。
