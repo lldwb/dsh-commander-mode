@@ -1363,7 +1363,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 ### 验证过什么
 
 - **4.0.0 第二十五轮（preset 组合搬进 JS，能力行只剩一份）**：
-  - **YAML 体积实测**：`cordis.patch.yml` 487 → 291 行（删除两份能力行块共 196 行），
+  - **YAML 体积实测**：`cordis.patch.yml` 487 → 299 行（删除两份能力行块共 196 行），
     文件里 `- id:` 只剩三条：`commander-mode` / `preset-commander` / `preset-project-manager`；
     不再有 `plugins:` 键、不再有 `CAPABILITIES` 标记。
   - **拼装结果实测（真实模块、非 mock）**：`commanderPresetPlugins()` → **19 行**
@@ -1905,7 +1905,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   ② **改动后**：新增 `lib/preset-plugins.js`（`commanderPresetPlugins()` /
   `projectManagerPresetPlugins()`），从 `lib/capabilities.js` 单一来源拼装；
   `preset-commander.js` / `preset-project-manager.js` 在 `apply()` 里注入 `plugins`。
-  `cordis.patch.yml` 只保留 `id / name / description / order`（**-196 行**，487 → 291）。
+  `cordis.patch.yml` 只保留 `id / name / description / order`（**-196 行**，487 → 299）。
   声明器的 `Config.plugins` 改为**可选**（YAML 不写它也必须能过 schema）。
   ③ **为什么安全**：preset 子行是运行时挂载的 fiber，`plugins` 本来就不进 Loader entry 树
   （settings 页读的是那棵树，所以配置行才必须留顶层）。也就是说 YAML 里的 `plugins` 只是
