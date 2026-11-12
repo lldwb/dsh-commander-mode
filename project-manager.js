@@ -4,8 +4,10 @@
  * ## 它是什么
  *
  * 一个按会话生效的 agent preset 子行：把会话的 agent 变成**项目经理**。它不写业务代码，
- * 而是用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条**带门禁的
- * 六段流水线**：每段有输入、产出、验收判据与返工规则，未通过不许进入下一段。
+ * 而是带六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）作为按专长分工的队伍，
+ * **按任务形状拆分与派单**，并对每个任务做验收。六段工作流（架构 → 实现 → 审查 → 测试 →
+ * 安全 → 文档）是**可选项**：由 `dsh-commander-mode/workflow` 组件以 skill 形式提供，
+ * 需要时按需加载（3.6.0 起不再常驻注入，也不再强制走完）。
  *
  * 3.0.0 起这六位是**专家小组长**（`spawn_teammate` 建出的 L1 队友）：每段由项目经理
  * 建一位小组长并 `send_message` 派单，小组长可以自己执行，也可以把子任务交给下级
@@ -13,7 +15,8 @@
  * 与指挥官协议共用同一份（两个模式是**并列的完整 preset**，不是派生关系）。
  *
  * 与「指挥者模式」的区别：指挥者模式解决「谁来做」（不自己动手、把活派出去）；
- * 项目经理模式解决「按什么顺序做、每段怎么验收」（流水线 + 阶段门禁 + 技能方法）。
+ * 项目经理模式解决「怎么拆分、怎么派、每段怎么验收」（按任务形状拆分 + 验收门禁 + 技能方法；
+ * 六段工作流是可选项）。
  *
  * ## 与指挥者模式的关系：并列，不继承
  *
@@ -30,10 +33,10 @@
  *   `preset-project-manager.js`，实现见 `lib/preset-declaration.js`），**不经过**随附的
  *   「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）——那一行被禁用 / 缺失
  *   **不会**影响本包的两个模式。
- * - **本行新增**：六段流水线协议（`lib/project-manager.js`）与门禁接线、项目开发工作流组件
- *   （`dsh-commander-mode/workflow`）、本包 `skills/` 目录的加载；不含工单账本、
- *   不含 Mandate/dispatch-gate（那是指挥者模式的派活记账，PM 的进度权威是共享任务板 +
- *   每段落盘证据）。
+ * - **本行新增**：项目经理协议（`lib/project-manager.js`）与门禁接线；六段工作流是
+ *   可选组件（`dsh-commander-mode/workflow`，skill 按需加载），不是本行强制的流程；
+ *   不含工单账本、不含 Mandate/dispatch-gate（那是指挥者模式的派活记账，PM 的进度权威是
+ *   共享任务板 + 每个任务落盘证据）。
  *
  * ## 三样东西挂在 preset scope 上
  *
@@ -104,7 +107,7 @@ export const SECTION_NAME = 'project-manager:mode';
 export const SKILL_NAME = 'project-manager';
 
 /** skill 描述。 */
-export const SKILL_DESCRIPTION = '项目经理模式：用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条带门禁的项目流水线，只编排与验收、不自己写业务代码。';
+export const SKILL_DESCRIPTION = '项目经理模式：带六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）按任务形状拆分与派单，只编排与验收、不自己写业务代码；六段工作流可选（按需 skill 加载）。';
 
 /** skill 的 `whenToUse` 行。 */
 export const SKILL_WHEN_TO_USE = '当一个项目要从架构一路做到文档、需要按阶段派工并逐段验收时；也用于"你当项目经理，安排六位专家把这件事做完"这类请求。';
@@ -203,7 +206,7 @@ export function apply(ctx) {
           '',
           '> ⚠️ **本部署没有智能体团队**：上文提到的 `spawn_teammate` / `send_message` / `wait_agent` /',
           '> `team_task_*` / `list_agents` / `interrupt_agent` **都不存在**，专家小组长这一层建不起来。',
-          '> 改用一次性子智能体派每段任务：`subagent_architect` / `subagent_implementer` / `subagent_reviewer` /',
+          '> 改用一次性子智能体派任务：`subagent_architect` / `subagent_implementer` / `subagent_reviewer` /',
           '> `subagent_tester` / `subagent_security-auditor` / `subagent_doc-writer`（前台调用、结果直接返回；',
           '> 由你自己承担拆解、验收与核对）。仍然**不要自己写业务代码**。',
         ].join('\n');
@@ -346,8 +349,8 @@ export function apply(ctx) {
                     '',
                     text,
                     '',
-                    '下一步：按该段的验收判据核对产物与证据（文件、命令输出、测试结果）；通过就把该段任务结算（`team_task_update` `complete`，带 revision）并向项目经理回报结论，不通过就打回返工（同一问题连续两次换人 / 回架构段）。',
-                    '等待其它下级时用 ≤60000ms 的短等待；不要长等，也不要轮询。',
+                    '下一步：按该任务的验收判据核对产物与证据（文件、命令输出、测试结果）；通过就把该任务结算（`team_task_update` `complete`，带 revision）并向项目经理回报结论，不通过就打回返工（同一问题连续两次换人 / 重新拆分）。',
+                    '不要等待：`wait_agent` 整条链硬禁用，靠完成通知与读状态推进（`list_agents` / `team_task_list`）。',
                   ].join('\n'),
                   `派工完成：${toolName}`,
                 );
@@ -557,5 +560,5 @@ export function apply(ctx) {
     });
   }
 
-  ctx.logger?.info?.('project-manager: 模式行就绪（六段流水线 / 六位专家小组长 / 门禁）');
+  ctx.logger?.info?.('project-manager: 模式行就绪（按任务拆分 / 六位专家小组长 / 门禁）');
 }

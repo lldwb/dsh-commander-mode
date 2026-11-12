@@ -1,7 +1,7 @@
 # dsh-commander-mode —— bundle patch 层。
 #
 # 这份 patch 声明**两个 agent preset**：指挥者模式（做判断、派活）与项目经理模式
-# （六位开发流程专家 + 六段带门禁的流水线）。在 DSH 里，一个模式**就是**一个 agent
+# （六位开发流程专家 + 按任务形状拆分；六段工作流是可选 skill，不是强制流水线）。在 DSH 里，一个模式**就是**一个 agent
 # preset —— 一份具名的子插件行清单，挂进该 preset 自己隔离的 scope 里。两个模式各由
 # **本包自带的等效声明器**（`dsh-commander-mode/preset-commander` /
 # `dsh-commander-mode/preset-project-manager`，实现见 `lib/preset-declaration.js`）注册：
@@ -378,7 +378,7 @@
       config:
         id: project-manager
         name: 项目经理模式
-        description: 用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）跑一条带门禁的项目流水线，只编排与验收、不自己写代码。
+        description: 用六位开发流程专家（架构 / 实现 / 审查 / 测试 / 安全 / 文档）作为专家小组长，按任务形状拆分与派单、逐项验收，只编排不自己写代码；六段工作流可选（按需 skill 加载）。
         order: 8
         plugins:
           # ---- CAPABILITIES (mirrors @deepseek-ai/dsh-preset-standard) ----------
@@ -474,8 +474,13 @@
           - id: present
             name: '@deepseek-ai/dsh-tool-present'
           # ---- end CAPABILITIES ----------------------------------------------
-          # 项目经理模式的两行：项目经理协议（角色 / 六段流水线门禁 / 等待纪律）与
-          # 项目开发工作流（每段的必做动作、落盘产物、验收判据、返工与 skill 归位）。
+          # 项目经理模式的两行：
+          # 1. `project-manager-agent` —— 项目经理协议（角色 / 按任务形状拆分 / 验收 / 等待纪律）
+          #    + 门禁接线 + 六位专家小组长的工具安装。它**不预设流水线**。
+          # 2. `project-dev-workflow` —— 可选的六段工作流**执行手册组件**：3.6.0 起它只注册
+          #    一个 skill（`project-dev-workflow`），**不再注入常驻 prompt**；项目经理与
+          #    专家小组长都可以用 `skill` 工具按需加载、只取其中一段。发版打包、交接、
+          #    单点修复这类任务不需要它。
           - id: project-manager-agent
             name: 'dsh-commander-mode/project-manager'
           - id: project-dev-workflow
