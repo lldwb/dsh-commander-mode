@@ -1,11 +1,13 @@
 # dsh-commander-mode
 
-DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者接单、分析、规划与拆分，
-把执行全部派给**小组长**（自己不执行操作，规划与分歧都交回用户确认）；项目经理带六位
-开发流程专家（3.0.0 起是**专家小组长**）**按任务形状拆分与派单**——六段工作流
-（架构 → 实现 → 审查 → 测试 → 安全 → 文档）是**可选项**，需要完整交付链时按需加载。
+DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者接单、分析、按任务形状拆分，
+把执行全部派给**小组长**（自己不执行操作，规划与分歧都交回用户确认），并逐项验收。
+六位开发流程专家（3.0.0 起是**专家小组长**）与六段工作流（架构 → 实现 → 审查 → 测试 →
+安全 → 文档）都是**按需**的：专家团按任务形状选人，工作流用 `skill` 按需加载。
 
-**一句话**：你只做判断，小组长做执行（它也可以再交子智能体）；要有人替你拆分、派活与逐项验收，就用项目经理模式——流程按任务形状定，不套模板。
+**一句话**：你只做判断，小组长做执行（它也可以再交子智能体）；需要有人替你拆分、派活与逐项验收，就用这个模式——流程按任务形状定，不套模板。
+
+> **5.0.0：原「项目经理模式」已并入本模式。** 两边的差别（专家团、六段工作流）本来就都是按需能力，不需要用两个模式来表达。现在只有一个模式、一个 preset，切换成本为零。
 
 - **指挥者不执行**：`write` / `edit` / `pwsh` 这类调用会被**确定性拒绝**并附上纠正指令
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
@@ -50,19 +52,16 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
   自动同步；走 Team 通道派发后，投影任务的 owner 会**自动绑定**到那个队友。你在
   Agent Teams 面板里看到的板就是工单的进度，不需要模型自觉去建。没有 Agent Teams 的
   部署行为与 1.1.x 完全一致。
-- **项目经理模式（2.0.0）**：第二个 agent preset，与指挥者模式**并列**（见下文「两个模式的
-  关系」一节）：两者是完整独立的 preset，共享同一份能力行清单、专家名册、执行 / 禁止等待
-  门禁与工作纪律模块，各自只加自己的协议行。它不写业务代码，而是带**六位开发流程专家**
-  （架构 / 实现 / 审查 / 测试 / 安全 / 文档）**按任务形状拆分与派单**：每个任务都有可观察的
-  验收判据、完成必须有落盘证据；需要独立审查 / 独立测试的换人做；每个任务结束做 git
-  分类提交（未提交视为该任务未完成）。与指挥者模式的区别：指挥者解决「谁来做」，
-  项目经理解决「怎么拆分、怎么派、每段怎么验收」。**3.6.0 起六段工作流是可选项，不是
-  每单必走的流水线**——交接、发版打包、单点修复、排障各有自己的拆法。
+- **按任务形状拆分（3.6.0；5.0.0 并入本模式）**：不预设流水线——先判断"这次要交付什么、
+  需要哪些能力、任务之间有没有真实依赖"，再拆任务。交接 / 发版打包 / 单点修复 / 排障各有
+  自己的拆法；从零开发或大改造才值得按可选六段工作流推进。每个任务都有可观察的验收判据、
+  完成必须有落盘证据；需要独立审查 / 独立测试的换人做；每个任务结束做 git 分类提交
+  （未提交视为该任务未完成）。
 - **项目开发工作流（2.0.0；3.6.0 起按需）**：可选执行手册组件（`dsh-commander-mode/workflow`）：
   六段每段的必做动作、必须落盘的产物、验收判据、失败返工、对应专家与团队用法，并给出本包
   `skills/` 目录里 **20 个方法 skill** 的阶段归位（先加载方法再动手；其中
   `file-location-alignment` 专门治"位置歧义 / 用缺失否定用户"）。**3.6.0 起它只注册
-  skill（`project-dev-workflow`），不再每轮注入**：项目经理与专家小组长都可以按需加载、
+  skill（`project-dev-workflow`），不再每轮注入**：指挥者与专家小组长都可以按需加载、
   只取其中一段。它明确一条边界：**skill 是工作方法，不替代验收证据**。
 - **禁止等待子智能体（3.1.0 起无开关；3.2.0 起整条链生效）**：`wait_agent` 被**硬禁用**——
   没有 `maxWaitMs`、也没有任何配置项能放开（连"短等"也不行）；3.2.0 起**不按身份放行**，
@@ -73,25 +72,25 @@ DeepSeek Harness（dsh）的**指挥者模式 + 项目经理模式**：指挥者
 ```text
 30 秒上手
 1) 插件页安装本包，重启桌面版
-2) 新建会话，模式菜单选「指挥者模式」或「项目经理模式」
-3) 指挥者：把任务丢给它 → 只读侦察 → 计划 → 你确认 → 建工单 → 派给小组长 → 汇总验收
-   项目经理：给一个项目目标 → 它建 Team/任务板 → 按架构→实现→审查→测试→安全→文档
-             逐段派给六位专家小组长，每段验收 + git 分类提交，最后写经验教训
+2) 新建会话，模式菜单选「指挥者模式」（现在只有一个模式）
+3) 把任务丢给它 → 只读侦察 → 按任务形状拆 → 你确认 → 建 Team/任务板 → 派给小组长 → 逐项验收
+   - 需要完整交付链（从零开发 / 大改造）时，让它用 skill 加载 project-dev-workflow 按六段推进
+   - 发版打包 / 交接 / 单点修复 / 排障不需要六段，按对应形状拆即可
    （想调专家？设置 → 插件 → 指挥者专家名册：增删、改定位、绑模型、一键恢复预置）
 ```
 
 - 仓库：<https://github.com/lldwb/dsh-commander-mode>（公开）
 - 许可：[MIT](./LICENSE)
-- 形态：**配置行**（profile 顶层，裸包名 `dsh-commander-mode`）+ **两个 agent preset**
-  （指挥者模式 `dsh-commander-mode/agent`、项目经理模式 `dsh-commander-mode/project-manager`
-  + 工作流组件 `dsh-commander-mode/workflow`）+ 设置页（Client 半）
+- 形态：**配置行**（profile 顶层，裸包名 `dsh-commander-mode`）+ **一个 agent preset**
+  （指挥者模式：`dsh-commander-mode/agent` + 可选工作流组件 `dsh-commander-mode/workflow`）
+  + 设置页（Client 半）
 - 依赖：`@deepseek-ai/schemastery`（声明 `Config` 所需，装进本包 `node_modules`）、
   `@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」，可选但推荐）
-- 前置条件：两个模式由**本包自带的声明器**注册（`dsh-commander-mode/preset-commander` /
-  `dsh-commander-mode/preset-project-manager`，实现见 `lib/preset-declaration.js`，语义等价于
-  随附的 `@deepseek-ai/dsh-agent-preset`）。它们只依赖随附的 `agentPresets` 服务（agent preset
-  注册表）；**随附的「Agent 预设定义」（`@deepseek-ai/dsh-agent-preset`）那一行与本包两个模式
-  无关**——禁用 / 缺失它不会让两个模式消失（2.1.0 起自带声明器，2.0.x 时才是依赖）。
+- 前置条件：本模式由**本包自带的声明器**注册（`dsh-commander-mode/preset-commander`，
+  实现见 `lib/preset-declaration.js`，语义等价于随附的 `@deepseek-ai/dsh-agent-preset`）。
+  它只依赖随附的 `agentPresets` 服务（agent preset 注册表）；**随附的「Agent 预设定义」
+  （`@deepseek-ai/dsh-agent-preset`）那一行与本模式无关**——禁用 / 缺失它不会让模式消失
+  （2.1.0 起自带声明器，2.0.x 时才是依赖）。
 
 > **为什么拆成两行**：preset 子行是运行时挂载的 Cordis fiber，**不在 Loader 的 entry 树里**，
 > 而设置页的 `Config.listConfigs` 与 `settings.describe()` 读的都是那棵树。把 `Config`
@@ -317,7 +316,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 
 ## 3.0.0 团队模型：指挥官 → 小组长 → 子智能体
 
-3.0.0 起，两个模式都按**三层指挥链**工作。2.x 只有两层（指挥者 → 子代理），指挥者可以绕过
+3.0.0 起，本模式按**三层指挥链**工作。2.x 只有两层（指挥者 → 子代理），指挥者可以绕过
 队友直接派一次性 specialist；3.0.0 把中间那层固定下来：**指挥官只和小组长打交道**。
 
 ### 三层职责
@@ -339,7 +338,7 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 3. **一项任务下发给一个小组长**：小组长可以自己执行，也可以交给下级子智能体执行。
 4. **只有小组长可以修改智能体团队的任务进展并做排期**（`claim` / `release` / `complete` /
    `reopen` / `set_dependencies`）；指挥官只建任务、`reassign` 指派 owner、读板与验收。
-5. **项目经理模式 = 指挥官模式的特化版**：改指挥官模式即可，不要在两处各写一份。
+5. **只有一个模式（5.0.0）**：原「项目经理模式」已并入，协议正文只有 `lib/protocol.js` 一份。
 
 这五条在实现里落成 `lib/team-model.js` 的**七条规则**（hierarchy / runtime-limits /
 one-team-one-task / continuous-intake / ambiguity-chain / leader-owns-board /
@@ -388,7 +387,7 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
    `commander_ticket_update` 的 `progress` / `waiting` / `ready` / `blocked` / `failed` 只允许
    小组长做。指挥官只做：`team_task_create` 建任务、`team_task_update` `action:"reassign"`
    指派 owner、`team_task_list` / `team_task_get` 读板，以及验收后的工单 `done` / `cancelled`。
-3. **项目经理模式的六位专家改为「专家小组长」**：每一段先 `spawn_teammate` 建一位专家小组长
+3. **六位专家改为「专家小组长」**：每个任务先 `spawn_teammate` 建一位专家小组长
    （如 `architect-lead`），再 `send_message` 派该段任务；专家小组长可以自己执行，也可以把
    子任务交给下级 `subagent_<id>`。项目经理**不直接调** `subagent_<id>`。
 4. **新配置 `delegationHierarchy`**（默认 `true`）：关闭后回到 2.x 的"只靠协议"行为，适合
@@ -398,60 +397,50 @@ leader-may-execute）；指挥官协议与项目经理协议都拼接同一份�
 `claim` / `complete`、直接调 `subagent_<id>`）会收到拒绝与纠正指令，按拒因改走小组长即可；
 确实要回退硬门禁就设 `delegationHierarchy: false`。
 
-## 项目经理模式（2.0.0）
+## 指挥者模式（含项目经理职责，5.0.0 合并）
 
-输入框模式菜单里的第二个模式（`preset.project-manager`，`order: 8`）。它和指挥者模式
-**同源但不同职责**：
+输入框模式菜单里**唯一**的模式（`preset.commander`，`order: 7`）。它同时承担原先两个模式的
+职责：既回答「**谁来做**」（接单、拆解、派活、验收），也回答「**怎么拆分、每段怎么验收**」。
 
-| | 指挥者模式 | 项目经理模式 |
-|---|---|---|
-| 回答的问题 | **谁来做**：接单、拆解、派活、验收 | **怎么拆分、怎么派、每段怎么验收** |
-| 专家名册 | 六位开发流程专家（3.0.0 起是专家小组长） | **同一份名册**，按任务形状派给对应专家小组长（不是每单都派满六位） |
-| 流程 | 规划 → 用户确认 → 派发 → 汇总 | **按任务形状拆**：交接 / 发版 / 单点修复 / 排障各自一种拆法；从零开发或大改造可选六段工作流（按需 skill 加载） |
-| 工单账本 / 计划授权 | 有（`commander_ticket_*` + Mandate 门禁） | **没有**（进度权威是共享任务板 + 每个任务落盘证据） |
-| 质量门禁 | 不自己执行操作 | 不自己写业务代码 + **每个任务有可观察的验收判据、完成必须有落盘证据**（审查 / 测试 / 安全按任务需要，不是每单必走） |
-| 收尾 | 汇总验收 | 汇总验收 + **必须写经验教训（含模式本身的问题）** |
+**5.0.0：六段工作流不再是模式差异。** 3.6.0 起六段流水线已降级为可选 skill（真实会话
+`session-137678b5` 里，"读交接文档 + 打安装包发版"被拆成六段串行，架构段先开工）；
+5.0.0 又把「按任务形状拆分」「验收与收口」两节并入本模式的协议。于是原先的
+「项目经理模式」只剩一个空壳——它的独有能力都已按需化，所以合并成同一个模式：
 
-**3.6.0 起：六段流水线是可选项，不是模具。** 3.5.0 及以前协议写着"六段每段都必须走完、
-顺序固定、安全审计与文档不得省略"，于是连"读交接文档 + 打安装包发版"也被拆成六段串行
-（真实会话 `session-137678b5`：六张任务 `blocked_by` 串成一条链，架构段先开工）。现在
-项目经理先判断任务形状（交付物是什么、需要哪些能力、哪些有真实依赖），再拆任务；六段
-工作流由 `dsh-commander-mode/workflow` 组件以 **skill** 形式提供，项目经理与专家小组长
-都可以用 `skill` 工具**按需加载、只取其中一段**。
+| 原先的区别 | 现在 |
+|---|---|
+| 专家团 | **按需**：六位专家是名册里的专家小组长，按任务形状选用，不是每单派满 |
+| 六段工作流 | **按需**：`skill` 加载 `project-dev-workflow`，可只取其中一段，不是每单必走 |
+| 工单账本 / 计划授权 | **可选严格流程**：工具都在（`ledger: true`），但 `requireMandate` / `requireTicket` **默认关**；打开即回到旧版指挥者的严格流程 |
+| 验收判据 / 落盘证据 / 独立验证 | 并入本模式协议（每个任务都要过） |
 
 **3.0.0 起：六位专家 = 六位专家小组长**（团队模型 L1）。每个任务先 `spawn_teammate` 建一位
 专家小组长、`send_message` 派该任务；专家小组长可以自己执行，也可以把子任务交给下级
-子智能体（`subagent_<id>`）。项目经理**不直接调用** `subagent_<id>` / `subagent` /
+子智能体（`subagent_<id>`）。指挥者**不直接调用** `subagent_<id>` / `subagent` /
 `subagent_fork`——直调会被门禁拒绝（见「3.0.0 团队模型」）。建议的小组长名字：
 `architect-lead`、`implementer-lead`、`reviewer-lead`、`tester-lead`、`security-lead`、
 `doc-writer-lead`（`security-auditor` 的小组长名是 `security-lead`）。
 
-### 两个模式的关系：并列，不继承
+### 一个模式的内部结构
 
-preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层，所以两个模式之间**没有"继承"**
-这回事。它们是两个**并列的完整 preset**：各自重述自己需要的每一行，共享同一批模块。
+preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层。5.0.0 起只有一个 preset，
+它的 `plugins` 由 `lib/preset-plugins.js` 从 `lib/capabilities.js` 单一来源拼装
+（能力行 18 行 + 模式行 + 可选工作流行，共 20 行）：
 
-| 关系 | 内容 | 落在哪 |
+| 组成 | 内容 | 落在哪 |
 |---|---|---|
-| **共享（同一份代码 / 同一份清单）** | ① 能力行清单**只有一份**（`lib/capabilities.js`），两个 preset 的 `plugins` 由 `lib/preset-plugins.js` 拼装——3.7.0 起 `cordis.patch.yml` 不再写能力行（此前是两份 ~84 行逐字副本 + 测试防漂移）；两个模式唯一允许的差异是 `skill-filesystem` 多一个 `customSkillDirs`（运行时行数：指挥者 19 行 / 项目经理 20 行，均含模式行）；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 禁止等待门禁 `evaluateWaitForbidden()`（3.1.0 起硬禁用、无开关；3.2.0 起整条链生效）；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `lib/capabilities.js`、`lib/preset-plugins.js`、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
-| **各自声明** | 两个模式各由**本包自带的声明器**注册（`preset-commander` / `preset-project-manager` 两个子路径模块，实现见 `lib/preset-declaration.js`）：语义等价于随附的 `@deepseek-ai/dsh-agent-preset`（接受 `{ id, name, description, order, plugins }` 并调用 `agentPresets.register()`），`order` 决定模式菜单排序（指挥者 7、项目经理 8）。`plugins` 由声明模块注入，YAML 只给 `id / name / description / order`。**两个模式都不依赖随附的「Agent 预设定义」那一行**——禁用 / 缺失它不会让本包的模式消失（2.0.x 时代才是依赖，2.1.0 起自带声明器） | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `lib/preset-plugins.js` + `preset-commander.js` / `preset-project-manager.js` |
-| **项目经理模式独有** | 按任务形状拆分的协议（验收判据 / 落盘证据 / 独立验证要求、经验教训要求）、可选六段工作流组件（`dsh-commander-mode/workflow`，**只注册 skill、按需加载**）、本包 `skills/` 目录的加载（`skill-filesystem.config.customSkillDirs`，只在 PM 模式） | `project-manager.js`、`lib/project-manager.js`、`workflow.js`、`lib/workflow.js` |
-| **指挥者模式独有** | 指挥者协议与派发门禁（工单账本 `commander_ticket_*`、计划授权 Mandate、dispatch-gate）、异步 specialist 派工的记账。**项目经理模式故意不带这些**：它的进度权威是**共享任务板 + 每段落盘证据**，再叠一层工单只会让两套状态互相打架 | `agent.js`、`lib/protocol.js`、`lib/tickets.js`、`lib/ledger.js` |
-
-一句话：**两个模式是同级的两份完整组合，共享能力与门禁的实现，各自只加自己的协议行。**
-指挥者解决「谁来做、怎么派、怎么拦」，项目经理解决「按什么顺序做、每段拿什么证据验收」；
-出问题时按这个分工定位——协议不对查各自那一层，门禁不生效查 `lib/guard.js`，
-能力行缺失查 `lib/capabilities.js`。
+| **能力行** | 与 `@deepseek-ai/dsh-preset-standard` 对齐的 18 行（读 / 写 / shell / skill / 压缩 / 编排 …），**只有一份**（3.7.0 起 `cordis.patch.yml` 不再写它） | `lib/capabilities.js`、`lib/preset-plugins.js` |
+| **模式行** | 指挥者协议 + 门禁 + 专家安装（`commander-mode-agent`） | `agent.js`、`lib/protocol.js` |
+| **可选工作流** | 只注册 skill `project-dev-workflow`（按需加载，不注入常驻 prompt） | `workflow.js`、`lib/workflow.js` |
+| **配置行** | profile 顶层行（`commander-mode`）：`Config`、`commanderSettings` 服务、设置页 | `index.js`、`lib/config.js`、`client.js` |
 
 > 为什么声明器要自带一份：插件页「包含的组件」每一行的标题由**该行的模块名**决定
 > （Host 的 `declaredRows()` 调 `pluginPackages.metaOf(row.name, base)` 读该模块的
-> `locale/*.json`）。两个模式若都写成 `name: '@deepseek-ai/dsh-agent-preset'`，两行解析到
-> 同一个模块、只能拿到同一份 locale，标题就都是「Agent 预设定义」，分不清谁是谁。
-> 改用两个子路径模块后，每行有自己的 locale/icon，标题显示**「指挥者模式」/「项目经理模式」**
-> ——即它们的真实身份。语义与随附声明器一致（`register(config)` + 卸载释放），
-> 差异只有「不设 `EntryGroup`」这一点，见「已知边界」。
+> `locale/*.json`）。用随附的 `@deepseek-ai/dsh-agent-preset` 时标题会显示成通用的
+> 「Agent 预设定义」。自带一份后标题显示**「指挥者模式」**。语义与随附声明器一致
+> （`register(config)` + 卸载释放），差异只有「不设 `EntryGroup`」这一点，见「已知边界」。
 
-**按任务形状拆分（3.6.0 起，不再预设流水线）**：项目经理先判断"这次要交付什么、需要哪些
+**按任务形状拆分（3.6.0 起，不再预设流水线）**：指挥者先判断"这次要交付什么、需要哪些
 能力、任务之间有没有真实依赖"，再拆任务。常见形状：
 
 - **打安装包 / 发版 / 出交付物** → 一位发布小组长（加载 `app-packaging` 方法）+ 必要时一位
@@ -497,18 +486,16 @@ preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层，�
 - 收尾必须写经验教训，并额外回答「这个模式本身哪一步形式化了、哪一步产物无法验收、
   哪条纪律没被协议覆盖」。
 
-**与指挥者模式共用专家名册的边界**：两个模式都会被急切挂载，而 `agentPresets.register()`
-对 preset id 是全局唯一的。项目经理行对此有明确处理——检测到 `Duplicate agent preset`
-说明专家 preset 已由指挥者行建好，项目经理行**只补 `subagent_<id>` 工具**，不会因此丢掉
-专家通道（见 `project-manager.js` 的模块注释）。代价是：专家 preset 的生命周期归先注册的
-那一行，插件重载时两个模式会一起释放。
+**专家名册只有一份（5.0.0）**：六位专家小组长共用同一个 `commanderSettings` 服务，
+名册改动对新会话生效；当前会话保持启动时的名册。专家 preset 的 id 由
+`specialistPresetId()` 复算，重复注册时只补 `subagent_<id>` 工具，不会丢掉专家通道。
 
 ## 项目开发工作流（2.0.0；3.6.0 起拆成按需组件）
 
-项目经理模式里的第二个组件（`dsh-commander-mode/workflow`）。**3.6.0 起它只注册一个
+本模式附带的可选组件（`dsh-commander-mode/workflow`）。**3.6.0 起它只注册一个
 skill（`project-dev-workflow`），不再注入常驻 prompt section**：3.5.0 及以前它带着
-`order: 640` 的 section 每轮注入项目经理模式，配合协议里"六段必须走完"的写法，把发版打包、
-交接这类任务也逼成六段串行。现在它是**可选执行手册**：项目经理与专家小组长都可以用
+`order: 640` 的 section 每轮注入模式，配合协议里"六段必须走完"的写法，把发版打包、
+交接这类任务也逼成六段串行。现在它是**可选执行手册**：指挥者与专家小组长都可以用
 `skill` 工具按需加载，**也可以只读需要的那一段**；不加载也能正常干活。
 
 手册内容：每段的**目的 / 必做动作 / 必须落盘的产物 / 验收判据 / 失败返工规则 /
@@ -516,11 +503,10 @@ skill（`project-dev-workflow`），不再注入常驻 prompt section**：3.5.0 
 
 3.0.0 起每段的「对应专家」是**专家小组长**：组件里写清该段用哪位小组长（如 `architect-lead`）、
 它可以把哪些子任务交给下级子智能体（如 `subagent_architect`）、以及**任务板由该段小组长
-结算**（`team_task_update` `complete`）——项目经理只核对 owner 与证据，不自己改状态。
+结算**（`team_task_update` `complete`）——指挥者只核对 owner 与证据，不自己改状态。
 
-它同时是 **20 个方法 skill 的阶段索引**——这些 skill 在本包 `skills/` 目录里，由项目经理
-模式的 `skill-filesystem.config.customSkillDirs` 加载（**只在项目经理模式加载**，指挥者模式
-保持 1.x 的能力与文本不变）：
+它同时是 **20 个方法 skill 的阶段索引**——这些 skill 在本包 `skills/` 目录里，由本模式的
+`skill-filesystem.config.customSkillDirs` 加载：
 
 | 阶段 | 该用哪个 skill |
 |---|---|
@@ -686,19 +672,18 @@ cd <本目录>
 pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/pnpm.mjs install
 ```
 
-装好后在模式菜单里会出现「指挥者模式」（`order: 7`）与「项目经理模式」（`order: 8`）。
+装好后在模式菜单里会出现「指挥者模式」（`order: 7`，5.0.0 起是唯一的模式）。
 模式在**新会话**里选择，已有会话的 preset 在第一轮之前就已绑定。
 
-> **声明方式：本包自带声明器**。两个模式由 `preset-commander` / `preset-project-manager`
-> 两个子路径模块注册（实现见 `lib/preset-declaration.js`，语义等价于随附的
-> `@deepseek-ai/dsh-agent-preset`），它们只依赖随附的 `agentPresets` 服务。
-> **随附的「Agent 预设定义」那一行被禁用 / 缺失时，本包的两个模式照常出现**——
+> **声明方式：本包自带声明器**。模式由 `preset-commander` 子路径模块注册（实现见
+> `lib/preset-declaration.js`，语义等价于随附的 `@deepseek-ai/dsh-agent-preset`），
+> 只依赖随附的 `agentPresets` 服务。
+> **随附的「Agent 预设定义」那一行被禁用 / 缺失时，本包的模式照常出现**——
 > 2.1.0 起就不再依赖它了（2.0.x 时代才是依赖）。
 >
-> **`skills/` 目录**：本包 `skills/` 下的 19 个方法 skill 由项目经理模式的
-> `skill-filesystem.config.customSkillDirs` 加载（按包名定位包目录，不写死绝对路径）；
-> 指挥者模式不加载它们。`dsh plugin add` 用 `link:` 安装，目录随包在工作区里，不需要额外
-> 构建步骤。
+> **`skills/` 目录**：本包 `skills/` 下的 20 个方法 skill 由本模式的
+> `skill-filesystem.config.customSkillDirs` 加载（按包名定位包目录，不写死绝对路径）。
+> `dsh plugin add` 用 `link:` 安装，目录随包在工作区里，不需要额外构建步骤。
 
 ## 它怎么保证"指挥者不执行操作"
 
@@ -737,7 +722,7 @@ pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/
 `android_ui_dump` / `android_ui_wait` / `android_logcat`、`terminal_read` / `terminal_list`、
 `job_output` / `job_list`、以及全部调度工具。
 
-> **为什么补这一刀**：session-a0c0b646（2026-11-09）是项目经理模式，Lead 本地
+> **为什么补这一刀**：session-a0c0b646（2026-11-09）是旧的项目经理模式（现已并入），Lead 本地
 > `write`/`edit`/`pwsh` **0 次**（代码活确实派出去了），但它自己跑了 **51 次 `ssh_exec`**
 > + 2 次 `ssh_upload` + 1 次 `ssh_job`，在远程 PC 上 dir/ver/powershell 一路操作 —— 用户
 > 看到的就是"指挥者亲力亲为"。根因就是判据只盯着本地六个工具。
@@ -945,8 +930,7 @@ Team 通道的工单必须有有效投影（`requireTeamTask`，没有 Agent Tea
    而真正能调用的派发工具全被禁 → 既不能动手也不能派活 → **3.4.0 修**：`lib/guard.js` 新增
    `hasUsableDispatchChannel({ availableTools, blocked, delegationHierarchy })`——按"**真的
    能调用**"算派活通道：Team（未被 block）→ `workflow`（未被 block）→ 一次性子智能体
-   （仅在层级门禁关闭或本部署无 Team 时算，且未被 block）；`agent.js` 与根
-   `project-manager.js` 的执行边界都改用它。
+   （仅在层级门禁关闭或本部署无 Team 时算，且未被 block）；`agent.js` 的执行边界改用它。
 
 ### 降级判据（宁严不漏）
 
@@ -1115,12 +1099,12 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
 - **外部事件的投递是"尽力而为"，不是事务（1.1.0）。** 投递后归档失败时，进程内用事件 id
   去重；跨进程重启后同一个 id 仍可能被投递第二次（至少一次语义），事件正文本身应幂等。
 - **preset 声明器是自带的等效实现（2.1.0）。** 组件行标题由**模块名**决定
-  （`declaredRows` → `metaOf(row.name, base)` 读该模块的 `locale/*.json`），两个模式若共用
-  随附的 `@deepseek-ai/dsh-agent-preset`，两行标题必然同为「Agent 预设定义」。所以本包
+  （`declaredRows` → `metaOf(row.name, base)` 读该模块的 `locale/*.json`），若用随附声明器
+  随附的 `@deepseek-ai/dsh-agent-preset`，标题必然是通用的「Agent 预设定义」。所以本包
   自带一份声明器（`lib/preset-declaration.js`，语义与随附一致：把本行 config 交给
-  `ctx.agentPresets.register()`、卸载时释放），两个行分别是
-  `dsh-commander-mode/preset-commander` 与 `.../preset-project-manager`，各带 locale 与
-  icon，于是标题显示「指挥者模式」/「项目经理模式」。
+  `ctx.agentPresets.register()`、卸载时释放），行是
+  `dsh-commander-mode/preset-commander`，带自己的 locale 与
+  icon，于是标题显示「指挥者模式」。
   代价（有意接受）：本行**没有** `EntryGroup` 标记，因此 Loader 会在加载期递归求值
   `plugins` 里的 `!!js`（子行拿到的是已求值的布尔/字符串，而不是惰性表达式）；
   随附声明器则把它们留给子行自己求值。对本包的能力行（平台二选一、`customSkillDirs`）
@@ -1135,20 +1119,16 @@ profile 层覆盖时注意：按 id 定向的 patch 会**整块替换** `config`
   清单里（那份清单给 `evaluatePreExecute` 用），而是由独立门禁无条件拒绝；因此也不存在
   "DSH 允许 10000–3600000ms"这类下限交叉问题——在这个 preset scope 里这个调用直接不成立。
   传任何 `timeout_ms`（含字符串、缺省）结果都一样：拒绝。
-- **项目经理模式没有工单账本与计划授权门禁（2.0.0）。** 它不注册 `commander_ticket_*`，
-  进度权威是**共享任务板 + 每段落盘证据**。指挥者模式的那套 Mandate/工单门禁只属于指挥者
-  模式，两者不要混用。
-- **两个模式共用同一份专家名册（2.0.0）。** `agentPresets.register()` 对 preset id 全局唯一，
-  两个 preset 急切挂载时后挂载的一行会收到 `Duplicate agent preset`；项目经理行检测到它时
-  **只补 `subagent_<id>` 工具**，不会丢掉专家通道。代价：专家 preset 的生命周期归先注册的
-  那一行（插件重载时两个模式一起释放）；专家名册改动对两个模式同时生效（同一个
-  `commanderSettings` 服务）。
-- **项目经理协议固定点名六位专家小组长（2.0.0；3.0.0 起专家=小组长）。** 协议是静态文本
-  （不像指挥者协议按名册渲染）。若某个部署里 `subagent_<id>` 工具没挂上（名册被清空 / 服务
-  缺失），协议里已经写明降级路径：让专家小组长自己执行，或改用 Team 通道按同样定位新开队友，
-  不要硬调不存在的工具。
-- **`skills/` 目录是项目经理模式专有的（2.0.0）。** 通过 `skill-filesystem.config.customSkillDirs`
-  加载，只加在项目经理 preset 里；目录缺失或 skill 文件损坏时只影响 skill 加载，不影响协议
+- **工单 / 计划授权默认不强制（5.0.0）。** 合并成单模式后，`commander_ticket_*` 与 Mandate
+  门禁的工具都在（`ledger: true`），但 `requireMandate` / `requireTicket` **默认关**：
+  工单是可选记账工具，不是每次派活的门槛。要旧版指挥者的严格流程就把这两个开关打开
+  （协议会同步切回强制口径）。进度权威仍是**共享任务板 + 每个任务落盘证据**。
+- **专家名册只有一份（5.0.0）。** 六位专家小组长共用同一个 `commanderSettings` 服务，
+  名册改动对新会话生效（当前会话保持启动时的名册）。
+- **协议按名册渲染，不点名不存在的工具。** 名册为空 / 服务缺失时协议走降级段：让小组长
+  自己执行，或改用 Team 通道按同样定位新开队友，不要硬调不存在的工具。
+- **`skills/` 目录由本模式加载（5.0.0）。** 通过 `skill-filesystem.config.customSkillDirs`
+  加载本包 20 个方法 skill；目录缺失或 skill 文件损坏时只影响 skill 加载，不影响协议
   section 与门禁。`skill` 只是方法入口，验收仍看产物与证据。
 - **三条「谁来做」门禁只拦指挥官本人（3.0.0）。** `evaluateBoardWrite` / `evaluateTicketWrite` /
   `evaluateSpecialistDispatch` 只对 Lead 生效：小组长 / 子智能体（`isDelegatedAgent` 命中）
@@ -1318,13 +1298,11 @@ node --test "test/**/*.test.mjs"
 |---|---|
 | `index.js` | **配置行**（profile 顶层）：导出 `Config`、提供 `commanderSettings` / `commanderLedger` 服务、关掉自动设置页 |
 | `agent.js` | **指挥者模式行**（preset 内）：协议 section、执行门禁、派发/计划授权门禁、工单工具、skill、specialist 安装与重建 |
-| `project-manager.js` | **项目经理模式行**（preset 内）：项目经理协议 section、六位专家安装（异步通知）、执行门禁 + 禁止等待门禁、skill |
 | `workflow.js` | **项目开发工作流组件**（preset 内）：**只注册 skill**（`project-dev-workflow`，3.6.0 起不再注入常驻 section），手册正文在 `lib/workflow.js` |
-| `lib/project-manager.js` | 项目经理协议文本（按任务形状拆分 + 验收门禁 + 五条纪律，末尾原样拼接 `WORK_DISCIPLINE`；六段工作流只作为可选项引用） |
-| `lib/workflow.js` | 项目开发工作流文本（每段六件套 + 19 个 skill 的阶段索引） |
-| `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 禁止等待 / 禁人日 / git 分类提交 / 经验教训），由两份协议 import 拼接 |
+| `lib/workflow.js` | 项目开发工作流文本（每段六件套 + 20 个 skill 的阶段索引 + 六段角色常量） |
+| `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 禁止等待 / 禁人日 / git 分类提交 / 经验教训），由指挥者协议 import 拼接 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
-| `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill） |
+| `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill；5.0.0 起含「按任务形状拆」「验收与收口」两节） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
 | `lib/tickets.js` | 工单状态机：六态回报 → 工单状态/阶段、停滞判定、计划授权判定、`STATUS:` 解析、工单看板渲染（纯函数） |
 | `lib/ledger.js` | 账本存储层：原子写、损坏备份、schema 清洗、路径解析 |
@@ -1334,11 +1312,11 @@ node --test "test/**/*.test.mjs"
 | `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、拒绝理由 |
 | `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除） |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
-| `lib/capabilities.js` | **能力行唯一真源**（`CAPABILITY_ROWS` + `capabilityEntries()`）：两个模式的 preset 与每个 specialist preset 都从这里展开 |
-| `lib/preset-plugins.js` | 两个模式的**完整 plugins 组合**（能力行 + 各自模式行），由 `preset-commander.js` / `preset-project-manager.js` 在 `apply()` 里注入 |
+| `lib/capabilities.js` | **能力行唯一真源**（`CAPABILITY_ROWS` + `capabilityEntries()`）：模式的 preset 与每个 specialist preset 都从这里展开 |
+| `lib/preset-plugins.js` | 模式的**完整 plugins 组合**（能力行 + 模式行 + 可选工作流行），由 `preset-commander.js` 在 `apply()` 里注入 |
 | `specialist.js` | specialist preset 里的人设行（`dsh-commander-mode/specialist`） |
 | `client.js` | 设置页（手写 ModuleLoader bundle，无构建） |
-| `cordis.patch.yml` | 配置行 + 两个 preset 的**声明元数据**（`id / name / description / order`；`plugins` 由 JS 注入，3.7.0 起） |
+| `cordis.patch.yml` | 配置行 + 唯一 preset 的**声明元数据**（`id / name / description / order`；`plugins` 由 JS 注入，3.7.0 起） |
 
 ### 为什么 specialist 工具是自实现的
 
@@ -1362,6 +1340,25 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **5.0.0 第二十六轮（两个模式合并成一个）**：
+  - **协议实测（真实模块）**：`renderCommanderSection()` 默认 9983 字符 / 141 行、
+    启用名册 11308 / 171 行、开场 10137 / 147 行（预算提到 12000 字符 / 180 行）。
+    含「项目经理模式已并入本模式」「按任务形状拆工作」「验收与收口」三处新内容；
+    六位专家 id（`architect` … `doc-writer`）与六位小组长建议名都在场。
+  - **工单口径按开关渲染**：默认（`requireMandate`/`requireTicket` 均 false）→
+    `TICKET_RULES_OPTIONAL`（"工单账本是可选工具"），不含"每次派发都带工单"；
+    显式打开任一开关 → 严格 `TICKET_RULES`（含 `commander-plan` / `[ticket:t-N]`）；
+    `ledger: false` → 整节消失、不点名 `commander_ticket_*`。
+  - **单一 preset 实测**：`commanderPresetPlugins()` → **20 行**（18 能力 + `commander-mode-agent`
+    + `project-dev-workflow`）；`skill-filesystem` 带本包真实 `skills/` 目录。
+  - **YAML 实测**：`cordis.patch.yml` 只插入两行（`commander-mode` + `preset-commander`），
+    两个 preset 的 config 都能通过 `PresetDeclarationConfig`（等价于真实 Loader 的加载前校验）。
+  - **配置默认值实测**：`resolveConfig({})` → `requireMandate: false` / `requireTicket: false`；
+    显式 `requireMandate: true` 仍生效；`confirmPlan: false + requireMandate: true` 仍会自动
+    降级并告警（3.4.0 的死锁修复保留）。
+  - **`node --test "test/**/*.test.mjs"`** → **637 / 637 通过、0 失败**。
+  - **真实 Loader 回归**：devkit 沙箱装 5.0.0 → `compose` 567 行（比 4.0.0 少 9 行，
+    正好是删掉的第二个 preset 行），exit 0。
 - **4.0.0 第二十五轮（preset 组合搬进 JS，能力行只剩一份）**：
   - **YAML 体积实测**：`cordis.patch.yml` 487 → 299 行（删除两份能力行块共 196 行），
     文件里 `- id:` 只剩三条：`commander-mode` / `preset-commander` / `preset-project-manager`；
@@ -1896,6 +1893,32 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **5.0.0** —— **两个模式合并成一个：只剩「指挥者模式」**（用户 2026-11-12：「重新进行规划，
+  把指挥官模式和项目经理模式改成同一个模式吧，反正是按需加载 专家团和工作流」）。
+  ① **理由**：3.6.0 起六段工作流已是可选 skill、专家团本来就是按需选人，两个模式的差别
+  只剩"有没有工单账本"与两段协议文本——不值得用两个 preset 表达。合并后切换成本为零。
+  ② **协议合并**：`lib/protocol.js` 新增两节——「按任务形状拆工作」（4 条：先判断形状、
+  常见形状的拆法、四条硬要求、六段工作流是可选 skill）与「验收与收口」（5 条：每任务三件事、
+  验收门禁、方向性问题上上报、亲自核对证据、经验教训含模式本身），并在身份段写明
+  「项目经理模式已并入」。`TEAM_MODEL` 仍只拼一份。
+  ③ **模式行合并**：删除 `project-manager.js`（468 行）、`lib/project-manager.js`（101 行）、
+  `preset-project-manager.js` 与 `preset-project-manager/` locale 目录；六段角色常量
+  （`PIPELINE_SPECIALISTS` / `PIPELINE_STAGES` / `leaderNameForSpecialist`）迁到
+  `lib/workflow.js`。`lib/preset-plugins.js` 只剩一个 builder：
+  能力行 + `commander-mode-agent` + `project-dev-workflow`（20 行）。
+  ④ **配置默认值变更**：`requireMandate` / `requireTicket` 默认 **true → false**——
+  工单工具仍在（`ledger: true`），但"每次派活先拿授权 / 带工单"变成**可选严格流程**；
+  协议按开关渲染严格版或按需版 `TICKET_RULES_OPTIONAL`，不会教一个不存在的门禁。
+  ⑤ **`skills/` 目录并入唯一模式**：`preset-commander` 现在也注入
+  `skill-filesystem.config.customSkillDirs`（六段手册引用的 20 个方法 skill）。
+  ⑥ **测试**：删除 `project-manager.test.mjs`（其断言并入 `protocol.test.mjs`：按形状拆、
+  验收与收口、六位专家/六段在场）；`config.test.mjs` 按新默认值改写冲突用例；
+  `hierarchy-wiring.test.mjs` 去掉重复的 PM 接线用例、门禁顺序用例显式打开 requireMandate；
+  `capabilities` / `patch` / `preset-declaration` / `workflow` 同步单模式。
+  全量 **637 / 637 通过、0 失败**。
+  ⑦ **破坏性变更（用户要做什么）**：模式菜单里不再有「项目经理模式」。**已有的项目经理模式
+  会话**升级后找不到该 preset——请新建会话并选「指挥者模式」（它的能力是原来两个模式的并集）。
+  原先在 profile patch 里覆盖 `preset-project-manager` 的，删掉那段覆盖即可。
 - **4.0.0** —— **preset 组合从 YAML 搬进 JS：能力行只剩一份**（用户 2026-11-12：确认要做
   「两份 preset 的 plugins 改成由 `lib/capabilities.js` 拼装，彻底消掉 YAML 重复」）。
   ① **改动前**：同一份能力行存在**三处**——`lib/capabilities.js`（给 specialist 用）+
