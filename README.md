@@ -433,15 +433,15 @@ preset 在 DSH 里是**完整组合**，不是全局工具集上的叠加层，�
 
 | 关系 | 内容 | 落在哪 |
 |---|---|---|
-| **共享（同一份代码 / 同一份清单）** | ① 能力行清单（`CAPABILITIES` 块）两份**逐字节一致**，只多一个 `customSkillDirs`（运行时行数：指挥者 22 行 / 项目经理 23 行），并由 `test/capabilities.test.mjs` 逐行比对防漂移；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 禁止等待门禁 `evaluateWaitForbidden()`（3.1.0 起硬禁用、无开关；3.2.0 起整条链生效）；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `cordis.patch.yml` 的 CAPABILITIES 块、`lib/capabilities.js`、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
-| **各自声明** | 两个模式各由**本包自带的声明器**注册（`preset-commander` / `preset-project-manager` 两个子路径模块，实现见 `lib/preset-declaration.js`）：语义等价于随附的 `@deepseek-ai/dsh-agent-preset`（接受 `{ id, name, description, order, plugins }` 并调用 `agentPresets.register()`），`order` 决定模式菜单排序（指挥者 7、项目经理 8）。**两个模式都不依赖随附的「Agent 预设定义」那一行**——禁用 / 缺失它不会让本包的模式消失（2.0.x 时代才是依赖，2.1.0 起自带声明器） | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `preset-commander.js` / `preset-project-manager.js` |
+| **共享（同一份代码 / 同一份清单）** | ① 能力行清单**只有一份**（`lib/capabilities.js`），两个 preset 的 `plugins` 由 `lib/preset-plugins.js` 拼装——3.7.0 起 `cordis.patch.yml` 不再写能力行（此前是两份 ~84 行逐字副本 + 测试防漂移）；两个模式唯一允许的差异是 `skill-filesystem` 多一个 `customSkillDirs`（运行时行数：指挥者 19 行 / 项目经理 20 行，均含模式行）；② 六位专家的名册与 `subagent_<id>` 工具（同一个 `commanderSettings` 服务）；③ `tools/pre-execute` 执行门禁（经理不写业务代码）；④ 禁止等待门禁 `evaluateWaitForbidden()`（3.1.0 起硬禁用、无开关；3.2.0 起整条链生效）；⑤ 五条工作纪律（`lib/discipline.js` 单一真源）；⑥ 异步派工与「【派工完成】」唤醒 | `lib/capabilities.js`、`lib/preset-plugins.js`、`lib/guard.js`、`lib/discipline.js`、`lib/specialists.js` |
+| **各自声明** | 两个模式各由**本包自带的声明器**注册（`preset-commander` / `preset-project-manager` 两个子路径模块，实现见 `lib/preset-declaration.js`）：语义等价于随附的 `@deepseek-ai/dsh-agent-preset`（接受 `{ id, name, description, order, plugins }` 并调用 `agentPresets.register()`），`order` 决定模式菜单排序（指挥者 7、项目经理 8）。`plugins` 由声明模块注入，YAML 只给 `id / name / description / order`。**两个模式都不依赖随附的「Agent 预设定义」那一行**——禁用 / 缺失它不会让本包的模式消失（2.0.x 时代才是依赖，2.1.0 起自带声明器） | `cordis.patch.yml` 的两行 + `lib/preset-declaration.js` + `lib/preset-plugins.js` + `preset-commander.js` / `preset-project-manager.js` |
 | **项目经理模式独有** | 按任务形状拆分的协议（验收判据 / 落盘证据 / 独立验证要求、经验教训要求）、可选六段工作流组件（`dsh-commander-mode/workflow`，**只注册 skill、按需加载**）、本包 `skills/` 目录的加载（`skill-filesystem.config.customSkillDirs`，只在 PM 模式） | `project-manager.js`、`lib/project-manager.js`、`workflow.js`、`lib/workflow.js` |
 | **指挥者模式独有** | 指挥者协议与派发门禁（工单账本 `commander_ticket_*`、计划授权 Mandate、dispatch-gate）、异步 specialist 派工的记账。**项目经理模式故意不带这些**：它的进度权威是**共享任务板 + 每段落盘证据**，再叠一层工单只会让两套状态互相打架 | `agent.js`、`lib/protocol.js`、`lib/tickets.js`、`lib/ledger.js` |
 
 一句话：**两个模式是同级的两份完整组合，共享能力与门禁的实现，各自只加自己的协议行。**
 指挥者解决「谁来做、怎么派、怎么拦」，项目经理解决「按什么顺序做、每段拿什么证据验收」；
 出问题时按这个分工定位——协议不对查各自那一层，门禁不生效查 `lib/guard.js`，
-能力行缺失查 `CAPABILITIES` 块。
+能力行缺失查 `lib/capabilities.js`。
 
 > 为什么声明器要自带一份：插件页「包含的组件」每一行的标题由**该行的模块名**决定
 > （Host 的 `declaredRows()` 调 `pluginPackages.metaOf(row.name, base)` 读该模块的
@@ -1334,10 +1334,11 @@ node --test "test/**/*.test.mjs"
 | `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、拒绝理由 |
 | `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除） |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现 |
-| `lib/capabilities.js` | specialist preset 的能力行（JS 版，与 `cordis.patch.yml` 逐行对齐，由测试守护） |
+| `lib/capabilities.js` | **能力行唯一真源**（`CAPABILITY_ROWS` + `capabilityEntries()`）：两个模式的 preset 与每个 specialist preset 都从这里展开 |
+| `lib/preset-plugins.js` | 两个模式的**完整 plugins 组合**（能力行 + 各自模式行），由 `preset-commander.js` / `preset-project-manager.js` 在 `apply()` 里注入 |
 | `specialist.js` | specialist preset 里的人设行（`dsh-commander-mode/specialist`） |
 | `client.js` | 设置页（手写 ModuleLoader bundle，无构建） |
-| `cordis.patch.yml` | 配置行 + 两个 preset（`commander` / `project-manager`）的完整组合 |
+| `cordis.patch.yml` | 配置行 + 两个 preset 的**声明元数据**（`id / name / description / order`；`plugins` 由 JS 注入，3.7.0 起） |
 
 ### 为什么 specialist 工具是自实现的
 
@@ -1361,6 +1362,25 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **4.0.0 第二十五轮（preset 组合搬进 JS，能力行只剩一份）**：
+  - **YAML 体积实测**：`cordis.patch.yml` 487 → 291 行（删除两份能力行块共 196 行），
+    文件里 `- id:` 只剩三条：`commander-mode` / `preset-commander` / `preset-project-manager`；
+    不再有 `plugins:` 键、不再有 `CAPABILITIES` 标记。
+  - **拼装结果实测（真实模块、非 mock）**：`commanderPresetPlugins()` → **19 行**
+    （18 能力 + `commander-mode-agent`），`projectManagerPresetPlugins()` → **20 行**
+    （18 能力 + `project-manager-agent` + `project-dev-workflow`）；
+    两者能力行逐字相同，唯一差异是 PM 的 `skill-filesystem.config.customSkillDirs`
+    = 本包真实 `skills/` 绝对路径（`packageSkillsDir()` 实测返回
+    `E:\dsh-plugins\dsh-commander-mode\skills\`）。
+  - **声明器 schema 实测**：`PresetDeclarationConfig({id,name,description,order})` 通过
+    （`plugins` 可选，schemastery 补 `[]`），`plugins: 'nope'` 被拒；
+    `preset-declaration.test.mjs` 逐行解析 YAML 的两个 preset config 跑一遍 schema ——
+    等价于真实 Loader 在 apply 前的校验。
+  - **注入链路实测**：两个声明模块的 `apply()` 各自把 `plugins` 注入后交给
+    `agentPresets.register()`；`ctx.effect` 仍挂一个 disposer、注册失败只 warn（既有断言不变）。
+  - **`node --test "test/**/*.test.mjs"`** → **663 / 663 通过、0 失败**。
+  - **真实 Loader 回归**：devkit 沙箱装 4.0.0 → `compose` 正常合成，两个 preset 行只剩
+    声明元数据（`plugins` 由运行时注入，不再出现在合成树里 —— 这正是本次改动的预期）。
 - **3.6.0 第二十四轮（六段流水线降级为可选组件）**：
   - **病根复现（真实会话 `session-137678b5`）**：任务本身是"读交接文档 + 打安装包发版"，
     PM 却建了六张串行任务（架构 → 实现 → 审查 → 测试 → 安全 → 文档，每张 `blocked_by`
@@ -1876,6 +1896,30 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **4.0.0** —— **preset 组合从 YAML 搬进 JS：能力行只剩一份**（用户 2026-11-12：确认要做
+  「两份 preset 的 plugins 改成由 `lib/capabilities.js` 拼装，彻底消掉 YAML 重复」）。
+  ① **改动前**：同一份能力行存在**三处**——`lib/capabilities.js`（给 specialist 用）+
+  `cordis.patch.yml` 里两份逐字复制的 `CAPABILITIES` 块（各 ~84 行，合计 168 行），靠
+  `test/capabilities.test.mjs` 逐行比对防漂移。漂移的故障是静默的：某个模式少一项能力，
+  另一个看起来完全正常。
+  ② **改动后**：新增 `lib/preset-plugins.js`（`commanderPresetPlugins()` /
+  `projectManagerPresetPlugins()`），从 `lib/capabilities.js` 单一来源拼装；
+  `preset-commander.js` / `preset-project-manager.js` 在 `apply()` 里注入 `plugins`。
+  `cordis.patch.yml` 只保留 `id / name / description / order`（**-196 行**，487 → 291）。
+  声明器的 `Config.plugins` 改为**可选**（YAML 不写它也必须能过 schema）。
+  ③ **为什么安全**：preset 子行是运行时挂载的 fiber，`plugins` 本来就不进 Loader entry 树
+  （settings 页读的是那棵树，所以配置行才必须留顶层）。也就是说 YAML 里的 `plugins` 只是
+  "交给 apply 的数据"，换成本模块返回值不影响加载语义。specialist preset 早就走这条路径。
+  ④ **能力行差异收窄为一条**：两个模式的能力行逐字相同，唯一例外是 PM 的
+  `skill-filesystem.config.customSkillDirs`（本包 `skills/` 目录，按模块位置解析）。
+  ⑤ **测试**：`capabilities.test.mjs` 重写为「YAML 里不再有第二份 + 两个 preset 共享同一份
+  清单 + 模式行不串味」；`patch.test.mjs` 改为断言 patch 只插入三行、能力行契约查 JS 清单；
+  `preset-declaration.test.mjs` 断言模块注入 plugins，并**逐行解析 YAML 的 preset config
+  过一遍 schema**（真实 Loader 在 apply 前做的正是这一步，headless 沙箱绑不了 preset）。
+  ⑥ **破坏性变更（用户要做什么）**：如果你在自己的 profile patch 里按 id 覆盖过
+  `preset-commander` / `preset-project-manager` 并**重述了 `plugins`**，那份 `plugins` 现在
+  会被忽略（以 `lib/capabilities.js` 为准）；删掉它即可，其余字段（`id / name /
+  description / order`）照常生效。正常用户无需任何操作，重装 / 重启即可。
 - **3.6.0** —— **六段流水线降级为可选组件，按需加载**（用户 2026-11-12：项目经理模式
   「不是一定要使用这个工作流，这个工作流拆成一个组件吧，让小组长按需调用」，并给出真实会话
   `session-137678b5`）。
