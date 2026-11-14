@@ -365,9 +365,10 @@ Session）对指挥官一律拒绝。
    `reopen` / `set_dependencies`）；指挥官只建任务、`reassign` 指派 owner、读板与验收。
 5. **只有一个模式（5.0.0）**：原「项目经理模式」已并入，协议正文只有 `lib/protocol.js` 一份。
 
-这五条在实现里落成 `lib/team-model.js` 的**九条规则**（hierarchy / runtime-limits /
+这五条在实现里落成 `lib/team-model.js` 的**十条规则**（hierarchy / runtime-limits /
 one-team-one-task / continuous-intake / ambiguity-chain / leader-owns-board /
-leader-may-execute / **dispatch-channel-hard** / **fanout-owns-fanin**）；指挥者协议拼接这一份
+leader-may-execute / **dispatch-channel-hard** / **fanout-owns-fanin** /
+**child-completion-required**）；指挥者协议拼接这一份
 正文（5.0.0 起只有一个模式），不会出现两套说法。第 8 条是 7.0.0 新增的**派发通道硬规则**：
 指挥官只有一条派发通道（建小组长），并钉死「需要小组长 / 小组长失败」时的唯一恢复阶梯。
 
@@ -377,6 +378,13 @@ leader-may-execute / **dispatch-channel-hard** / **fanout-owns-fanin**）；指�
 判据不是"能不能并行"，而是**产出最后归谁合并**——要合成一份交付物就是一个团队，
 产出彼此独立（不同模块 / 仓库 / 服务，各有独立验收物与 owner）才各建一个小组长；
 审查 / 测试 / 安全这类**独立视角角色**仍然必须并列，不能挂在实现者下面。
+
+第 10 条是 7.2.0 新增的**完成语义规则**（用户 2026-11-14 同一会话后半段要求）：
+**如果小组长的子智能体没有完成任务，不能视作小组长完成任务**——小组长的"完成"只由它的
+下级收尾来证明；子智能体还有 `running`、失败、或产物没回填，它的交付就还缺件，
+只能报 `progress` / `blocked`。`STATUS: progress` ≠ `ready`。7.2.0 起还有确定性门禁兜底
+（`lib/guard.js` 的 `evaluateTicketSettle`）：工单 `done` 时若小组长子树里还有 `running` 的行，
+`commander_ticket_update` 会被直接拒绝并给出纠正阶梯。
 
 ### 运行限制：深度 2 / 并行上限（来自运行时，插件不再压低）
 
@@ -1443,14 +1451,14 @@ node --test "test/**/*.test.mjs"
 | `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 禁止等待 / 禁人日 / git 分类提交 / 经验教训），由指挥者协议 import 拼接 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
 | `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill；5.0.0 起含「按任务形状拆」「验收与收口」两节；**7.0.0 起含 `DISPATCH_CHANNEL_RULES`**——唯一派发通道 + 恢复阶梯） |
-| `lib/team-model.js` | 团队模型的**唯一正文来源**：三层职责 + **九条规则**（7.0.0 新增第 8 条 `dispatch-channel-hard`；7.1.0 新增第 9 条 `fanout-owns-fanin`——同一交付物的并行切片归一个小组长、扇出者负责扇入） |
+| `lib/team-model.js` | 团队模型的**唯一正文来源**：三层职责 + **十条规则**（7.0.0 第 8 条 `dispatch-channel-hard`；7.1.0 第 9 条 `fanout-owns-fanin`——同一交付物的并行切片归一个小组长、扇出者负责扇入；7.2.0 第 10 条 `child-completion-required`——子智能体没干完，小组长就没完成） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
 | `lib/tickets.js` | 工单状态机：六态回报 → 工单状态/阶段、停滞判定、计划授权判定、`STATUS:` 解析、工单看板渲染（纯函数） |
 | `lib/ledger.js` | 账本存储层：原子写、损坏备份、schema 清洗、路径解析 |
 | `lib/ledger-service.js` | `commanderLedger` 服务：会话隔离的工单/授权/派发/回报读写与裁剪 |
 | `lib/dispatch-gate.js` | 派发门禁：没有计划授权 / 不带工单 → 确定性拒绝；子代理/缺服务/身份不明一律放行 |
 | `lib/ticket-tools.js` | 三个工单工具（create / update / list）的 schema、执行与错误文案 |
-| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、**派发通道硬门禁**（`evaluateCommanderChannels` + `COMMANDER_FORBIDDEN_DISPATCH` / `COMMANDER_WORKER_TOOL_PREFIX` / `buildCommanderChannelReason`，7.0.0 无条件、不可配置）、`DELEGATION_TOOLS` / `hasUsableDispatchChannel`（7.0.0 去掉 `workflow`）、拒绝理由 |
+| `lib/guard.js` | 执行边界的纯函数：身份判别、执行门禁、**禁止等待门禁**（`evaluateWaitForbidden`）、**派发通道硬门禁**（`evaluateCommanderChannels` + `COMMANDER_FORBIDDEN_DISPATCH` / `COMMANDER_WORKER_TOOL_PREFIX` / `buildCommanderChannelReason`，7.0.0 无条件、不可配置）、**结算门禁**（`evaluateTicketSettle`，7.2.0：小组长子树里还有 `running` 就拒绝工单 `done`；只认正面证据、读不到放行）、`DELEGATION_TOOLS` / `hasUsableDispatchChannel`（7.0.0 去掉 `workflow`）、拒绝理由 |
 | `lib/config.js` | schemastery `Config`、默认值、宽容读取器（`maxWaitMs` 已于 3.1.0 移除；**7.0.1：五个 Worker 字段仅保留在 schema 兼容旧 patch，`resolveConfig()` 不再输出**） |
 | `lib/specialists.js` | 名册清洗、人设渲染、specialist preset 定义、`subagent_<id>` 工具的自实现（**7.0.0：`startActivation` 的 `prompt` / `parent` / `agentPreset` / `agentOptions` / `maxDepth` 改为顶层字段，修 `spec.parent.id` 崩溃**） |
 | ~~`lib/worker-tools.js` / `lib/worker-sessions.js`~~ | **7.0.1 已删除**（Worker Session 实现约 900 行）：7.0.0 通道下线，7.0.1 移除代码；账本历史 `execution` 字段的只读兼容留在 `lib/ledger.js` / `lib/tickets.js` |
@@ -1494,6 +1502,22 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **7.2.0 第三十轮（完成语义：子未完成 ≠ 父完成）**：
+  - **`node --test "test/**/*.test.mjs"`** → **662 / 662 通过、0 失败**（7.1.0 基线 650，净增 12）。
+  - **门禁单测走真实模块**（`lib/guard.js`，非 mock）：`evaluateTicketSettle` 的 13 条用例
+    覆盖「下级 running 拒绝 / 小组长自己 running 拒绝 / 大小写不敏感 / 多个 running 给总数」
+    「全 inactive 放行 / 六种非 done 状态放行 / 子级调用放行 / `bm-model-lead` 不误伤
+    `bm-model-lead-2` / 空 ref 跳过」「十种读不到降级路径全部放行」。
+  - **渲染层实测**：`renderCommanderSection()` 里 grep 到「下级没干完」「`STATUS: progress`」
+    「`<lead>/<child>`」「结算纪律」；长文 grep 到「第 10 条」「`evaluateTicketSettle`」。
+  - **尺寸**：section 10,736 字符、名册版 section 11,857（都在 12,000 上限内）、
+    长文协议 27,362、`TEAM_MODEL_BRIEF` 5 行 / 594 字符（仍 3–5 行、单行 ≤200）。
+  - **降级契约实测**：`SETTLEMENT_RULES` 里**不点名** `commander_ticket_update`——
+    第一版点了名，`ledger:false` 的既有用例立刻失败（关闭账本后不应出现工单工具名），
+    改成通用措辞后通过。这条是"新规则不能破坏既有降级契约"的实例。
+  - **接线**：`agent.js` 的 `tools/pre-execute`（async）在层级门禁之后调用，
+    只对 `commander_ticket_update` 触发；`sessionIdOf` / `getLedger()` / `getService('subagents')`
+    都来自既有设施，无新依赖、无循环 import（`guard.js` 保持零 import）。
 - **7.1.0 第二十九轮（团队形状规则：扇出者负责扇入）**：
   - **`node --test "test/**/*.test.mjs"`** → **651 / 651 通过、0 失败**（7.0.1 基线 648，净增 3）。
   - **渲染层实测（不是只看源码）**：`renderCommanderSection()` 的输出里 grep 到
@@ -1788,6 +1812,40 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   **根因**：**统计口径与门禁顺序耦合**，但没人把"被拒的尝试"当成一个状态。
   **正确做法**：门禁判定放在观测之前（拒绝即返回、不记账），并加一条"被拒尝试不计入配比"
   的回归测试。**反例**：只看"看板数字变了"，不看数字里混进了什么。
+
+#### 7.2.0 的经验教训（完成语义）
+
+- **现象**：`session-062eb97a` 里小组长报 `STATUS: progress` 并明说「两个子智能体仍在运行」，
+  指挥者把工单结算成 `done`、在汇报里写「✅ 完成」。用户指出后它承认「我把 progress 当成了
+  ready 来结算」。
+  **根因**：**"完成"没有定义，只有"谁可以写状态"的定义**。插件把结算权钉得很死
+  （只有小组长能改进度、指挥官只核对），但没规定「小组长的完成由什么证明」——
+  于是 `done` 是一个**声明**，不是**结论**。只要没有"由什么证明"这一条，
+  权限划得再清楚也挡不住"提前结算"。
+  **正确做法**：把完成定义成**可由下级收尾核对的事实**（子树全 `inactive` + 产物回填），
+  并用门禁兜底（`evaluateTicketSettle`）。**反例**：只在协议里加一句"别提前结算"——
+  这次的事故恰恰发生在协议已经写了"你只核对"之后，缺的不是提醒而是**判据**。
+
+- **现象**：新规则的正文第一版点名了 `commander_ticket_update`，结果 `ledger:false` 的
+  既有用例立刻失败（关闭账本后 section 不应出现工单工具名）。
+  **根因**：`SETTLEMENT_RULES` 是**无条件渲染**的，而它里面的措辞默认了"工单工具存在"。
+  **正确做法**：新规则写进共享正文前，先看它是否被条件渲染；无条件段落只用**通用措辞**
+  （"结算成完成"而不是"调 `commander_ticket_update`"），工具名留给有条件渲染的段落。
+  **反例**：为了"说得更具体"在无条件段落里点名工具 —— 具体性换来的是降级契约被破坏。
+
+- **现象**：加完第 10 条后 section 从 ~10.4k 涨到 12,048，撞上 12,000 上限（既有用例先报的）。
+  **根因**：**section 有预算，但没人替新规则算预算**。规则是"加一条"最自然，
+  而 section 是"每轮都发"的资源。
+  **正确做法**：加规则时先量（`renderCommanderSection().length`），超了就压措辞
+  （这次把 300 字压到 200 字）或与既有规则合并（brief 里「只有小组长能改进展」扩成
+  「结算纪律」，行数不变）。**反例**：把上限调大 —— 那只是把预算问题推给下一次。
+
+- **关于本模式本身**：这次暴露的是**"权限规则"与"完成规则"的混淆**。插件有 10 条规则，
+  其中 5 条在讲"谁能做什么"（派发通道、任务板写入权、工单状态权），只有第 10 条在讲
+  "什么算做完了"。**一个多智能体系统的正确性，一半取决于权限、一半取决于完成语义**，
+  而后者此前完全没有成文规则——只在 `RELIABILITY_RULES` 里有"状态按字面读"与
+  "一个结算不等于全部结算"，两条都在讲**同级**，没有一条讲**父子**。
+  下次设计任何"委派"类机制时，先问两句：「谁有权说完成？」「他说完成时，由什么证明？」
 
 #### 7.1.0 的经验教训（团队形状）
 
@@ -2158,6 +2216,40 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.2.0** —— **完成语义：小组长的子智能体没干完，小组长就不算完成**
+  （用户 2026-11-14 同一会话后半段要求；minor 版本，行为口径变化 + 新增确定性门禁）。
+  ① **背景**：`session-062eb97a` 里 `bm-model-lead`（逆向汇总小组长）报的是
+  `STATUS: progress`，并明确写了「两个子智能体**仍在运行**……它们回报后我会再补一次提交回填
+  最终结果——这是本任务唯一未闭合项」。指挥者仍把它的工单结算成 `done`，在汇报里写
+  「Boardmix 逆向 ✅ 完成」。用户当场指出：「**没有完成啊，逆向汇总的小组长的子智能体还没有
+  完成任务呢**」。指挥者随后承认「我把 `STATUS: progress` 当成了 `ready` 来结算」。
+  ② **根因**：**完成语义没有定义**。插件此前只规定「进度与排期由小组长结算、指挥官只核对」，
+  却没有规定「小组长的完成由什么证明」。于是 `done` 变成一个**声明**而不是**结论**——
+  小组长说"我汇总好了"、指挥官看它交付了文档，就结算了；而它的下级还挂在那棵子树上跑。
+  ③ **新增规则**：`lib/team-model.js` 第 10 条 `child-completion-required`（十条规则）：
+  小组长的"完成"**只由它的下级收尾来证明**；子智能体还有 `running`、失败、或产物没回填，
+  它的交付就还缺件，只能报 `progress` / `blocked` 并写明"还剩谁、卡在哪"；
+  指挥官验收时核对整棵子树（`list_agents` 里 `<lead>/<child>` 前缀必须都已 `inactive`）；
+  **`STATUS: progress` ≠ `ready`**；没有下级的小组长按自身产物验收，不受这条额外约束。
+  ④ **新增确定性门禁**：`lib/guard.js` 的 `evaluateTicketSettle`（7.2.0）——
+  指挥官对工单写 `status:"done"` 时，读这张工单派出去的小组长（`assignments[].ref`），
+  若该子树里还有 `activity === 'running'` 的行，**直接拒绝**并给出纠正阶梯（让它收齐 → 回填 →
+  报 `ready` → 再结算）。**只认正面证据**：没有 ledger / 没有 `subagents` 服务 / 身份不明 /
+  快照抛错 / 工单没派过小组长 → 一律放行（门禁不能卡住收尾）。`cancelled` 不拦（放弃不需要
+  "下级做完"这个前提）；小组长（子级）结算自己的活不归这条管。
+  ⑤ **同步改写**：`lib/protocol.js` 的 `SETTLEMENT_RULES` 新增 `child-completion-gate`
+  （每轮注入的 section 里，**刻意不点名工单工具** —— `ledger:false` 时那个工具不存在，
+  点名会破坏降级契约）；标准流程「监控与核对」「汇总与收尾」补验收动作；
+  `TEAM_MODEL_BRIEF` 的「只有小组长能改进展与排期」一条扩成「结算纪律」（含完成语义，5 行 / 594 字符不变）。
+  ⑥ **用户要做什么**：重新安装 / 重启 DSH 即可，**不需要改任何配置**（新增的是门禁与协议文本，
+  没有新配置项、没有破坏性接口变更）。⚠️ 若你的会话里**真有一张工单的小组长还有下级在跑**，
+  以前能结算的 `done` 现在会被拒绝 —— 这是预期行为：让它收齐再结算，或用 `cancelled` 放弃。
+  ⑦ **测试**：**662 / 662 通过、0 失败**（7.1.0 基线 650，净增 12：新增
+  `test/guard-settle.test.mjs` 13 条——拒绝场景 4（下级 running / 小组长自己 running /
+  大小写 / 多个 running 给总数）、放行场景 5（全 inactive / 六种非 done 状态 / 子级调用 /
+  路径前缀不误伤 / 空 ref）、读不到放行 1（十种降级路径一次覆盖）；`team-model.test.mjs`
+  新增第 10 条规则用例 2 条；规则数 9→10 与 `### 10.` 编号）。
 
 - **7.1.0** —— **团队形状规则：同一交付物的并行切片归一个小组长，扇出者负责扇入**
   （用户 2026-11-14 复盘 `session-062eb97a` 后要求；minor 版本，行为口径变化）。
