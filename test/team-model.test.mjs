@@ -7,7 +7,7 @@
  *
  * 这里钉四类东西：
  *
- * 1. **七条规则的 id 固定**（其它模块与测试按 id 引用，改名等于破坏契约）；
+ * 1. **九条规则的 id 固定**（其它模块与测试按 id 引用，改名等于破坏契约）；
  * 2. **三层层级定义**（level 0/1/2 与各自的职责边界）；
  * 3. **数字口径与运行时一致**（本 preset 的 `maxDepth: 2` / 宿主 `subagent.maxActiveSubagents`
  *    默认 8）—— 模型没法自己读运行时配置，
@@ -25,13 +25,14 @@ import {
   TEAM_MODEL_RULES,
 } from '../lib/team-model.js';
 
-// ---------------------------------------------------------------- 七条规则 ---
+// ---------------------------------------------------------------- 九条规则 ---
 
-test('TEAM_MODEL_RULES 恰好八条，id 固定且顺序稳定', () => {
+test('TEAM_MODEL_RULES 恰好九条，id 固定且顺序稳定', () => {
   // id 是契约：`lib/protocol.js` / 测试都按 id 引用。
   // 顺序不是契约的一部分（正文渲染会编号），但固定顺序能让 diff 可读。
   // 7.0.0 新增第 8 条 `dispatch-channel-hard`（指挥官只有一条派发通道 + 恢复阶梯）。
-  assert.equal(TEAM_MODEL_RULES.length, 8);
+  // 7.1.0 新增第 9 条 `fanout-owns-fanin`（团队形状：扇出者负责扇入，用户 2026-11-14 纠正）。
+  assert.equal(TEAM_MODEL_RULES.length, 9);
   assert.deepEqual(
     TEAM_MODEL_RULES.map((rule) => rule.id),
     [
@@ -43,6 +44,7 @@ test('TEAM_MODEL_RULES 恰好八条，id 固定且顺序稳定', () => {
       'leader-owns-board',
       'leader-may-execute',
       'dispatch-channel-hard',
+      'fanout-owns-fanin',
     ],
   );
 });
@@ -60,7 +62,7 @@ test('每条规则都是 {id,title,detail,why}，且 detail / why 都非空', ()
   }
 });
 
-test('七条规则各自覆盖用户 2026-11-11 的一条要求', () => {
+test('九条规则各自覆盖用户 2026-11-11 / 2026-11-14 的一条要求', () => {
   const byId = new Map(TEAM_MODEL_RULES.map((rule) => [rule.id, rule]));
 
   // 规则 3：三层与职责；最大递归深度 2（小组长 L1、子智能体 L2、L2 不再向下派）。
@@ -141,6 +143,57 @@ test('7.0.0：第 8 条规则钉死「只有一条通道」与「需要小组长
   assert.match(rule.why, /session-2cd6ae3c|session-fb21d6a0/u);
 });
 
+// ------------------------------------------------- 7.1.0 团队形状（扇出者负责扇入） ---
+
+test('7.1.0：第 9 条规则钉死「同一交付物的并行切片归一个小组长」', () => {
+  // 用户 2026-11-14 复盘 session-062eb97a 后的原话：
+  // 「四个小组长 这个操作不对，应该是一个小组长 4 个子智能体，子组长负责汇总合并成
+  //   文档/02-架构设计/Boardmix原生模型参考.md」。
+  // 现场形状：Boardmix 白板逆向按 4 个维度拆开 → 指挥者建 4 个并列小组长各写一章，
+  // 又计划建第 5 个"E 汇总"小组长合并。这条规则必须让模型在建人之前先判"产出归谁合并"。
+  const rule = TEAM_MODEL_RULES.find((entry) => entry.id === 'fanout-owns-fanin');
+  assert.ok(rule, '缺少第 9 条 fanout-owns-fanin');
+  for (const phrase of [
+    '产出最后归谁合并',
+    '同一个任务里的 N 个切片',
+    '1 个小组长',
+    '子智能体',
+    '由它自己合并',
+    '禁止的形状',
+    '第 N+1 个小组长',
+    '二手总结',
+    '一手证据',
+    '独立视角',
+    '扇出者',
+  ]) {
+    assert.ok(rule.detail.includes(phrase), `fanout-owns-fanin 缺：${phrase}`);
+  }
+  // 三个"该开多个并列小组长"的正当情形必须写全，否则模型会把合法的独立工作流也压成一个人。
+  for (const phrase of ['各有独立验收物', '再扇出一层', '审查', '测试', '安全审计']) {
+    assert.ok(rule.detail.includes(phrase), `fanout-owns-fanin 缺正当情形：${phrase}`);
+  }
+  // 汇总责任的方向不能写反：扇出者负责扇入；指挥官扇出小组长时由指挥官集成。
+  assert.match(rule.detail, /汇总责任永远在扇出者身上/u);
+  assert.match(rule.detail, /合并与集成由你在集成阶段做/u);
+  // 为什么里要写清现场（会话 id + 用户原话），改文案时别把依据删掉。
+  assert.match(rule.why, /session-062eb97a/u);
+  assert.match(rule.why, /四个小组长/u);
+  // 成本对比要可核对：1 个小组长 + 4 个子智能体 = 5 个并行名额（宿主默认 8）。
+  assert.match(rule.why, /5 个并行名额/u);
+});
+
+test('7.1.0：前三条规则与第 9 条不打架（切片不算独立工作流 / 不算多个团队）', () => {
+  // 这是本条规则最容易造成的自相矛盾：runtime-limits 说"互不依赖各开一个小组长"、
+  // one-team-one-task 说"大任务拆成多个团队"——如果不在那两条里写明"切片除外"，
+  // 模型读到的就是两条互相支持的"拆成 N 个小组长"的指令。
+  const byId = new Map(TEAM_MODEL_RULES.map((rule) => [rule.id, rule]));
+  assert.match(byId.get('runtime-limits').detail, /同一交付物的几个并行切片不算独立工作流/u);
+  assert.match(byId.get('one-team-one-task').detail, /同一交付物的 N 个并行切片不按这条拆/u);
+  assert.match(byId.get('one-team-one-task').detail, /第 9 条/u);
+  // 正文标题同步（九条规则，不是八条）。
+  assert.ok(TEAM_MODEL.includes('## 九条规则'), 'TEAM_MODEL 的规则小节标题应改成「九条规则」');
+});
+
 // ---------------------------------------------------------------- 三层 ---
 test('HIERARCHY_LEVELS 三层，level 0/1/2 各自职责清晰', () => {
   assert.equal(HIERARCHY_LEVELS.length, 3);
@@ -192,14 +245,14 @@ test('TEAM_MODEL 含三层标题、关键数字与「小组长」口径', () => 
   }
 });
 
-test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：八条规则的标题与「为什么」都在正文里', () => {
+test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：九条规则的标题与「为什么」都在正文里', () => {
   // 渲染而不是手抄，是为了避免"规则改了、正文没改"这种漂移。
   for (const rule of TEAM_MODEL_RULES) {
     assert.ok(TEAM_MODEL.includes(rule.title), `TEAM_MODEL 缺规则标题：${rule.title}`);
     assert.ok(TEAM_MODEL.includes(rule.why), `TEAM_MODEL 缺规则依据（why）：${rule.id}`);
   }
-  // 八条规则按顺序编号成 `### 1. …` … `### 8. …`。
-  for (let index = 1; index <= 8; index += 1) {
+  // 九条规则按顺序编号成 `### 1. …` … `### 9. …`。
+  for (let index = 1; index <= 9; index += 1) {
     assert.ok(TEAM_MODEL.includes(`### ${index}. `), `TEAM_MODEL 缺第 ${index} 条规则编号`);
   }
   // 无 Markdown 表格（与其它 section 的排版约定一致）。
@@ -229,10 +282,10 @@ test('TEAM_MODEL_BRIEF 非空、是短行数组，且每条都是可执行的规
   assert.ok(joined.length <= 1000, `紧凑版合计 ${joined.length} 字符，超过 1000`);
 });
 
-test('TEAM_MODEL_BRIEF 覆盖 3.0.0 的五个动作级口径', () => {
+test('TEAM_MODEL_BRIEF 覆盖 3.0.0 的五个动作级口径（7.1.0 起含团队形状）', () => {
   const joined = TEAM_MODEL_BRIEF.join('\n');
   // 6.0.0：紧凑版口径同步为「本 preset 设 maxDepth: 2」「宿主默认 8」。
-  for (const phrase of ['三层指挥链', 'maxDepth: 2', '默认 8', '只有小组长', '一个团队一个任务', 'subagent']) {
+  for (const phrase of ['三层指挥链', 'maxDepth: 2', '默认 8', '只有小组长', '一个团队一个任务', '团队形状', '扇出者负责扇入', 'subagent']) {
     assert.ok(joined.includes(phrase), `紧凑版缺少：${phrase}`);
   }
   // 紧凑版会被拼进**默认 section**（名册可能为空），所以不能出现名册生成的
