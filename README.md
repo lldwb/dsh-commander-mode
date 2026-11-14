@@ -13,7 +13,11 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
 - **三层指挥链（3.0.0）**：**指挥官 → 小组长 → 子智能体**。指挥官的下一级只有小组长
   （`subagent` / `subagent_fork` 建出的具名子代理）：它自己执行，或把子任务交给下级子智能体。
-  最大递归深度 2、并行上限 16，都来自运行时「子智能体」设置，插件不再自己压低。
+  最大递归深度 2、并行上限取宿主的 `subagent.maxActiveSubagents`（rc.2 默认 8），插件不再自己压低。
+- **团队形状（7.1.0）**：**同一交付物的 N 个并行切片归一个小组长**——由它扇出 N 个子智能体、
+  **自己汇总合并**；不要建 N 个并列小组长再补一个"汇总人"。判据是「产出最后归谁合并」，
+  不是「能不能并行」：产出彼此独立（不同模块 / 仓库 / 服务，各有独立验收物与 owner）才各建一个
+  小组长；审查 / 测试 / 安全这类**独立视角**角色仍必须并列，不能挂在实现者下面。
 - **派发通道（7.0.0：指挥官只剩一条，且是不可配置的硬门禁）**：指挥官唯一能用的派发通道是
   **建小组长**——`subagent` / `subagent_fork` 建人 + `send_message` 派活/续做 + `team_task_*`
   管任务板 + `list_agents` 读状态，`interrupt_agent` 仍可纠偏。`workflow`、名册生成的一次性
@@ -354,28 +358,38 @@ Session）对指挥官一律拒绝。
 1. **持续接单**：主会话作为指挥官持续接收用户输入并调整团队目标，把新内容与已有内容一起
    纳入团队排期；描述不清时由小组长反馈指挥官、指挥官与用户交底后再回给小组长。
    **一个团队一个小任务，多个团队一个大任务。**
-2. **使用运行时的「子智能体」限制**：最大递归深度 2、并行数量上限 16。
+2. **使用运行时的「子智能体」限制**：最大递归深度 2、并行上限取宿主的
+   `subagent.maxActiveSubagents`（rc.2 默认 8）。
 3. **一项任务下发给一个小组长**：小组长可以自己执行，也可以交给下级子智能体执行。
 4. **只有小组长可以修改智能体团队的任务进展并做排期**（`claim` / `release` / `complete` /
    `reopen` / `set_dependencies`）；指挥官只建任务、`reassign` 指派 owner、读板与验收。
 5. **只有一个模式（5.0.0）**：原「项目经理模式」已并入，协议正文只有 `lib/protocol.js` 一份。
 
-这五条在实现里落成 `lib/team-model.js` 的**八条规则**（hierarchy / runtime-limits /
+这五条在实现里落成 `lib/team-model.js` 的**九条规则**（hierarchy / runtime-limits /
 one-team-one-task / continuous-intake / ambiguity-chain / leader-owns-board /
-leader-may-execute / **dispatch-channel-hard**）；指挥者协议拼接这一份正文（5.0.0 起只有
-一个模式），不会出现两套说法。第 8 条是 7.0.0 新增的**派发通道硬规则**：指挥官只有一条
-派发通道（建小组长），并钉死「需要小组长 / 小组长失败」时的唯一恢复阶梯。
+leader-may-execute / **dispatch-channel-hard** / **fanout-owns-fanin**）；指挥者协议拼接这一份
+正文（5.0.0 起只有一个模式），不会出现两套说法。第 8 条是 7.0.0 新增的**派发通道硬规则**：
+指挥官只有一条派发通道（建小组长），并钉死「需要小组长 / 小组长失败」时的唯一恢复阶梯。
 
-### 运行限制：深度 2 / 并行 16（来自运行时，插件不再压低）
+第 9 条是 7.1.0 新增的**团队形状规则**（用户 2026-11-14 复盘 `session-062eb97a` 后要求）：
+**同一交付物的 N 个并行切片归一个小组长，由它扇出 N 个子智能体并自己汇总合并**；
+不要建 N 个并列小组长再补一个"汇总人"（汇总人只有二手总结，判不出一手证据里的矛盾）。
+判据不是"能不能并行"，而是**产出最后归谁合并**——要合成一份交付物就是一个团队，
+产出彼此独立（不同模块 / 仓库 / 服务，各有独立验收物与 owner）才各建一个小组长；
+审查 / 测试 / 安全这类**独立视角角色**仍然必须并列，不能挂在实现者下面。
+
+### 运行限制：深度 2 / 并行上限（来自运行时，插件不再压低）
 
 - **最大递归深度 2**：`subagent.maxDepth = 2`。小组长是 L1、子智能体是 L2；L2 再向下派会被
   运行时拒绝，硬试只是白烧轮次。
-- **并行上限 16**：`subagent.maxActiveSubagents = 16`、`subagent.maxActiveSubagents = 16`。互不依赖
+- **并行上限由宿主决定**：`subagent.maxActiveSubagents`（DSH 0.2.2-rc.2 默认 **8**）。互不依赖
   的工作流各开一个小组长并行推进；**真到上限才排队或复用**，不要因为"怕撞上限"提前串行化。
-- 插件**不再自己压低**这两个数字：`maxTeammates` / `maxAsyncTasks` 的默认值与上限都改成 16，
-  与运行时一致（见「配置」）。2.x 里 `maxTeammates` 默认 4 / 8 的"建议并行度"是历史包袱，
+  ⚠️ "互不依赖"指**产出彼此独立**：同一交付物的并行切片不算独立工作流（见上面的团队形状规则）。
+- 插件**不自己压低**这个数字：`maxTeammates` / `maxAsyncTasks` 是**写进协议的建议值**，
+  真实上限由宿主决定（见「配置」）。2.x 里 `maxTeammates` 默认 4 / 8 的"建议并行度"是历史包袱，
   会让模型提前串行化。
 - 这两个数字写在协议正文里（模型读不到运行时配置）：文本与运行时不一致时以本节口径为准。
+  6.0.0 起正文口径是「`maxDepth: 2` + 宿主 `maxActiveSubagents` 默认 8」，不再写死 16。
 
 ### 确定性门禁：三条「谁来做」+ 一条不可配置的派发通道硬门禁
 
@@ -1429,7 +1443,7 @@ node --test "test/**/*.test.mjs"
 | `lib/discipline.js` | 五条工作纪律的**唯一真源**（Team 优先 / 禁止等待 / 禁人日 / git 分类提交 / 经验教训），由指挥者协议 import 拼接 |
 | `lib/settings-service.js` | 配置行与模式行之间的桥：读配置/名册、广播 volatile 变化 |
 | `lib/protocol.js` | 指挥者协议（紧凑版注入 system prompt，长文注册成 skill；5.0.0 起含「按任务形状拆」「验收与收口」两节；**7.0.0 起含 `DISPATCH_CHANNEL_RULES`**——唯一派发通道 + 恢复阶梯） |
-| `lib/team-model.js` | 团队模型的**唯一正文来源**：三层职责 + **八条规则**（7.0.0 新增第 8 条 `dispatch-channel-hard`） |
+| `lib/team-model.js` | 团队模型的**唯一正文来源**：三层职责 + **九条规则**（7.0.0 新增第 8 条 `dispatch-channel-hard`；7.1.0 新增第 9 条 `fanout-owns-fanin`——同一交付物的并行切片归一个小组长、扇出者负责扇入） |
 | `lib/sync.js` | 结算同步状态机：账本、未同步判定、同步看板与兜底提醒的渲染（纯函数） |
 | `lib/tickets.js` | 工单状态机：六态回报 → 工单状态/阶段、停滞判定、计划授权判定、`STATUS:` 解析、工单看板渲染（纯函数） |
 | `lib/ledger.js` | 账本存储层：原子写、损坏备份、schema 清洗、路径解析 |
@@ -1480,6 +1494,20 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ### 验证过什么
 
+- **7.1.0 第二十九轮（团队形状规则：扇出者负责扇入）**：
+  - **`node --test "test/**/*.test.mjs"`** → **651 / 651 通过、0 失败**（7.0.1 基线 648，净增 3）。
+  - **渲染层实测（不是只看源码）**：`renderCommanderSection()` 的输出里 grep 到
+    「团队形状」「扇出者负责扇入」「N 个切片」「1 个小组长」；`COMMANDER_PROTOCOL` 里 grep 到
+    「同一个任务里的 N 个切片」「禁止的形状」「二手总结」；`WORKFLOW_PROTOCOL` 里 grep 到
+    「合并也由它做」「扇出者负责扇入」。**section 只出现一次团队形状行**（先前 team-model 与
+    discipline 两份紧凑版各写一条，实测重复后删掉 discipline 那条，避免同一段 prompt 里说两遍）。
+  - **尺寸**：section 10,450 字符（每轮注入）、长文协议 26,077 字符、团队模型规则 9 条、
+    `TEAM_MODEL_BRIEF` 5 行 / 507 字符（仍是 3–5 行约束内）。
+  - **交叉一致性断言**：新增用例钉住「`runtime-limits` 含『同一交付物的几个并行切片不算独立工作流』」
+    与「`one-team-one-task` 含『同一交付物的 N 个并行切片不按这条拆』+『第 9 条』」——
+    这是本条规则最容易造成的自相矛盾（前三条会一起支持"拆成 N 个小组长"）。
+  - **文档漂移修正**：README 的「并行上限 16」（3 处）与正文「默认 8」不一致，已统一为
+    宿主 `subagent.maxActiveSubagents`（rc.2 默认 8）。
 - **7.0.1 第二十八轮（删除 Worker Session 死代码）**：
   - **删除范围**：`lib/worker-tools.js`（181 行）、`lib/worker-sessions.js`（727 行）、
     `test/worker-sessions.test.mjs`（约 490 行）整体删除；`index.js` 的 `CommanderWorkers`
@@ -1525,7 +1553,7 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
     身份读不到放行 / `delegationHierarchy:false` 仍 deny / 拒因含五步恢复阶梯且不点名没有的工具）
     与 model-facing 文案扫描（旧口径零残留、三份正文都含「不要换通道 + 恢复阶梯」）；
     既有用例按 7.0.0 契约校准——`hasUsableDispatchChannel` 去 workflow、Worker 工具不再注册、
-    `startActivation` 顶层字段、`DELEGATION_TOOLS` 四项、team-model 八条规则等，逐条注明
+    `startActivation` 顶层字段、`DELEGATION_TOOLS` 四项、team-model 九条规则等，逐条注明
     「7.0.0：用户要求禁止另辟蹊径」，未删除任何断言来"变绿"）。
   - **真实 Loader 回归（devkit headless 沙箱 `commander-700-regress`）**：`create → install`
     （`dsh-commander-mode@7.0.0` 链入）`→ compose`（573 行合成树，`commander-mode` 配置行 +
@@ -2090,6 +2118,37 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.1.0** —— **团队形状规则：同一交付物的并行切片归一个小组长，扇出者负责扇入**
+  （用户 2026-11-14 复盘 `session-062eb97a` 后要求；minor 版本，行为口径变化）。
+  ① **背景**：那个会话里指挥者把 Boardmix 白板逆向按 4 个维度拆开，建了 **4 个并列小组长**
+  各写一章，又计划建第 5 个「E 汇总」小组长合并成一份文档。用户当场纠正：
+  「四个小组长 这个操作不对，应该是一个小组长 4 个子智能体，子组长负责汇总合并成
+  `文档/02-架构设计/Boardmix原生模型参考.md`」。
+  根因不是"拆得太细"，而是**判据用错了**：旧正文写的是「互不依赖、写作用域不重叠 → 各派一个
+  小组长并行」与「大任务拆成多个团队」——4 个维度的章节确实互不依赖、写不同文件，于是被判成
+  4 条工作流。**"能不能并行"不是判据，「产出最后归谁合并」才是。**
+  ② **新增规则**：`lib/team-model.js` 第 9 条 `fanout-owns-fanin`（团队模型从八条变**九条**）：
+  要合成 1 份交付物的 N 份产出 = **一个任务里的 N 个切片** → 建 **1 个小组长**，由它扇出 N 个
+  子智能体，**并由它自己合并汇总**；禁止 N 个并列小组长 + 第 N+1 个汇总人（汇总人只有二手总结，
+  判不出一手证据里的矛盾，还多一层交接）。三个正当的多小组长情形：产出彼此独立且各有独立验收物
+  与 owner、每个切片还要再扇出一层、**独立视角角色**（审查 / 测试 / 安全，必须与被审对象并列）。
+  **汇总责任永远在扇出者身上**：指挥官扇出小组长 → 集成由指挥官做，不再单建汇总小组长。
+  ③ **同步改写（同一口径，五处）**：`lib/team-model.js` 的 `runtime-limits` / `one-team-one-task`
+  补「切片除外」并指向第 9 条（否则前三条会互相支持"拆成 N 个小组长"）；
+  `lib/discipline.js` 工作纪律第 1 条补团队形状四条；`lib/protocol.js` 的 `按复杂度拆分` /
+  `parallel-workstreams` / 规划与拆分（新增「分工形态」判断五步）/ 建板与派发 / 通道 B 五处补口径；
+  `lib/workflow.js` 的架构段与开工前「每一段派出一位专家小组长」补「合并也由它做」；
+  `lib/dispatch-gate.js` 的计划授权拒因把「分工」细化为「分工形态——几个小组长、谁负责合并」；
+  `skills/task-commander/SKILL.md` 的「单元级 1:1」补「同一交付物的 N 个切片是 1 个子任务 + N 个子代理」。
+  ④ **同时修正的文档漂移**：README 里「并行上限 16」与正文「宿主 `subagent.maxActiveSubagents`
+  默认 8」不一致（6.0.0 起正文就是 8），已按运行时口径统一；`maxTeammates` / `maxAsyncTasks`
+  明确写成"写进协议的建议值"。
+  ⑤ **用户要做什么**：重新安装 / 重启 DSH 即可，**不需要改任何配置**（纯协议文本 + 文档，
+  没有新配置项、没有新工具、没有破坏性接口变更）。
+  ⑥ **测试**：**651 / 651 通过、0 失败**（7.0.1 基线 648，净增 3：第 9 条规则的十一条必含短语、
+  三条正当情形与成本对比；新增「前三条规则与第 9 条不打架」的交叉断言；规则数 8→9 与
+  `### 9.` 编号；未删除任何断言来"变绿"）。
 
 - **7.0.1** —— **删除 Worker Session 死代码**（用户 2026-11-12 决策：Worker Session 彻底删除；
   patch 版本，无行为变化）。
