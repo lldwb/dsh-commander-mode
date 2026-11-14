@@ -27,12 +27,13 @@ import {
 
 // ---------------------------------------------------------------- 九条规则 ---
 
-test('TEAM_MODEL_RULES 恰好九条，id 固定且顺序稳定', () => {
+test('TEAM_MODEL_RULES 恰好十条，id 固定且顺序稳定', () => {
   // id 是契约：`lib/protocol.js` / 测试都按 id 引用。
   // 顺序不是契约的一部分（正文渲染会编号），但固定顺序能让 diff 可读。
   // 7.0.0 新增第 8 条 `dispatch-channel-hard`（指挥官只有一条派发通道 + 恢复阶梯）。
   // 7.1.0 新增第 9 条 `fanout-owns-fanin`（团队形状：扇出者负责扇入，用户 2026-11-14 纠正）。
-  assert.equal(TEAM_MODEL_RULES.length, 9);
+  // 7.2.0 新增第 10 条 `child-completion-required`（完成语义：子智能体没干完，小组长就没完成）。
+  assert.equal(TEAM_MODEL_RULES.length, 10);
   assert.deepEqual(
     TEAM_MODEL_RULES.map((rule) => rule.id),
     [
@@ -45,6 +46,7 @@ test('TEAM_MODEL_RULES 恰好九条，id 固定且顺序稳定', () => {
       'leader-may-execute',
       'dispatch-channel-hard',
       'fanout-owns-fanin',
+      'child-completion-required',
     ],
   );
 });
@@ -62,7 +64,7 @@ test('每条规则都是 {id,title,detail,why}，且 detail / why 都非空', ()
   }
 });
 
-test('九条规则各自覆盖用户 2026-11-11 / 2026-11-14 的一条要求', () => {
+test('九条规则各自覆盖用户 2026-11-11 / 2026-11-14 的一条要求（第 10 条另有用例）', () => {
   const byId = new Map(TEAM_MODEL_RULES.map((rule) => [rule.id, rule]));
 
   // 规则 3：三层与职责；最大递归深度 2（小组长 L1、子智能体 L2、L2 不再向下派）。
@@ -190,8 +192,54 @@ test('7.1.0：前三条规则与第 9 条不打架（切片不算独立工作流
   assert.match(byId.get('runtime-limits').detail, /同一交付物的几个并行切片不算独立工作流/u);
   assert.match(byId.get('one-team-one-task').detail, /同一交付物的 N 个并行切片不按这条拆/u);
   assert.match(byId.get('one-team-one-task').detail, /第 9 条/u);
-  // 正文标题同步（九条规则，不是八条）。
-  assert.ok(TEAM_MODEL.includes('## 九条规则'), 'TEAM_MODEL 的规则小节标题应改成「九条规则」');
+  // 正文标题同步（十条规则，不是九条）。
+  assert.ok(TEAM_MODEL.includes('## 十条规则'), 'TEAM_MODEL 的规则小节标题应改成「十条规则」');
+});
+
+// ------------------------------------------------- 7.2.0 完成语义（子未完成 ≠ 父完成） ---
+
+test('7.2.0：第 10 条规则钉死「子智能体没干完，小组长就没完成」', () => {
+  // 用户 2026-11-14 原话：「如果小组长的子智能体没有完成任务，不能视作小组长完成任务」。
+  // 现场：`bm-model-lead` 报 `STATUS: progress` 且明确写「两个子智能体仍在运行」，
+  // 指挥者仍把工单结算成 done，直到用户指出「没有完成啊」。
+  const rule = TEAM_MODEL_RULES.find((entry) => entry.id === 'child-completion-required');
+  assert.ok(rule, '缺少第 10 条 child-completion-required');
+  for (const phrase of [
+    '只由它的下级收尾来证明',
+    'running',
+    '还缺件',
+    'progress',
+    'ready',
+    'blocked',
+    'list_agents',
+    '<lead>/<child>',
+    '视为未完成',
+    '不能结算',
+    'STATUS: progress',
+    '没有下级的小组长',
+  ]) {
+    assert.ok(rule.detail.includes(phrase), `child-completion-required 缺：${phrase}`);
+  }
+  // 方向不能写反：下级没结束 → 父不能报完成（不是"父可以替下级判断完成"）。
+  assert.match(rule.detail, /子智能体只要还有一个\*\*没结束\*\*/u);
+  // 为什么里要写清现场（会话 id + 用户原话），改文案时别把依据删掉。
+  assert.match(rule.why, /session-062eb97a/u);
+  assert.match(rule.why, /没有完成啊/u);
+  // 7.2.0 的确定性门禁也要被正文点名（规则说"有门禁兜底"，实现里真有）。
+  assert.match(rule.why, /evaluateTicketSettle/u);
+});
+
+test('7.2.0：第 10 条与「一个结算不等于全部结算」不冲突（层级不同）', () => {
+  // `settle-isolation` 讲的是**同级** child 之间不能互相推断；第 10 条讲的是**父子**之间
+  // 的完成传递。两条一起读才对：同级不推断，父子必须齐。
+  const rule = TEAM_MODEL_RULES.find((entry) => entry.id === 'child-completion-required');
+  assert.match(rule.detail, /下级/u);
+  assert.match(rule.detail, /小组长的"完成"/u);
+  // 简报里必须有这条的口径（每轮注入）。
+  const joined = TEAM_MODEL_BRIEF.join('\n');
+  for (const phrase of ['结算纪律', '下级没干完', 'progress']) {
+    assert.ok(joined.includes(phrase), `紧凑版缺完成语义：${phrase}`);
+  }
 });
 
 // ---------------------------------------------------------------- 三层 ---
@@ -245,14 +293,14 @@ test('TEAM_MODEL 含三层标题、关键数字与「小组长」口径', () => 
   }
 });
 
-test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：九条规则的标题与「为什么」都在正文里', () => {
+test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：十条规则的标题与「为什么」都在正文里', () => {
   // 渲染而不是手抄，是为了避免"规则改了、正文没改"这种漂移。
   for (const rule of TEAM_MODEL_RULES) {
     assert.ok(TEAM_MODEL.includes(rule.title), `TEAM_MODEL 缺规则标题：${rule.title}`);
     assert.ok(TEAM_MODEL.includes(rule.why), `TEAM_MODEL 缺规则依据（why）：${rule.id}`);
   }
-  // 九条规则按顺序编号成 `### 1. …` … `### 9. …`。
-  for (let index = 1; index <= 9; index += 1) {
+  // 十条规则按顺序编号成 `### 1. …` … `### 10. …`。
+  for (let index = 1; index <= 10; index += 1) {
     assert.ok(TEAM_MODEL.includes(`### ${index}. `), `TEAM_MODEL 缺第 ${index} 条规则编号`);
   }
   // 无 Markdown 表格（与其它 section 的排版约定一致）。

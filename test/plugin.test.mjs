@@ -1452,3 +1452,80 @@ test('3.2.0 整条链：读状态 / 派活工具放行；teammate / subagent / �
     }
   }
 });
+
+// ------------------------------------------------- 7.2.0 结算门禁（接线） ---
+
+test('7.2.0 接线：小组长子树里还有 running → 工单 done 被真实 pre-execute 拒绝', async () => {
+  // 单元测试证明 `evaluateTicketSettle` 的逻辑对；这条证明**它真的被接上了**
+  // （`agent.js` 的 tools/pre-execute → await → 返回 deny），而不是只写在 guard.js 里。
+  // 现场：session-062eb97a 的 `bm-model-lead/u3-field-diff` 仍在 running，工单却被结算了。
+  const ledger = memoryLedger();
+  const ticket = ledger.createTicket({ sessionId: 'session-lead', title: '逆向汇总' });
+  ledger.recordAssignment(ticket.id, 'session-lead', {
+    channel: 'team',
+    toolName: 'subagent',
+    ref: 'bm-model-lead',
+  });
+
+  const { record } = boot({
+    ledger,
+    descendants: [
+      { kind: 'child', id: 's-lead', path: 'bm-model-lead', activity: 'inactive', depth: 1 },
+      { kind: 'child', id: 's-u3', path: 'bm-model-lead/u3-field-diff', activity: 'running', depth: 2 },
+    ],
+  });
+  const listener = preExecute(record);
+  const { next, calls } = spyNext();
+  const decision = await listener({
+    name: 'commander_ticket_update',
+    agent: LEAD,
+    arguments: { ticket: ticket.id, status: 'done' },
+  }, next);
+
+  assert.equal(decision?.kind, 'deny', '下级还在跑时不该允许结算');
+  assert.ok(decision.reason.includes('bm-model-lead/u3-field-diff'), decision.reason);
+  assert.equal(calls.count, 0, '拒绝时不该调用 next');
+});
+
+test('7.2.0 接线：下级全部收尾 → 工单 done 放行（不误伤正常结算）', async () => {
+  const ledger = memoryLedger();
+  const ticket = ledger.createTicket({ sessionId: 'session-lead', title: '逆向汇总' });
+  ledger.recordAssignment(ticket.id, 'session-lead', {
+    channel: 'team',
+    toolName: 'subagent',
+    ref: 'bm-model-lead',
+  });
+
+  const { record } = boot({
+    ledger,
+    descendants: [
+      { kind: 'child', id: 's-lead', path: 'bm-model-lead', activity: 'inactive', depth: 1 },
+      { kind: 'child', id: 's-u3', path: 'bm-model-lead/u3-field-diff', activity: 'inactive', depth: 2 },
+    ],
+  });
+  const listener = preExecute(record);
+  const { next, calls } = spyNext();
+  const decision = await listener({
+    name: 'commander_ticket_update',
+    agent: LEAD,
+    arguments: { ticket: ticket.id, status: 'done' },
+  }, next);
+
+  assert.deepEqual(decision, { kind: 'allow' }, '下级都收尾了就该允许结算');
+  assert.equal(calls.count, 1);
+});
+
+test('7.2.0 接线：没有下级的工单（自己干完的活）照常可以结算', async () => {
+  // 降级路径：这张工单没派过小组长（assignments 为空）→ 门禁不参与，不能卡住收尾。
+  const ledger = memoryLedger();
+  const ticket = ledger.createTicket({ sessionId: 'session-lead', title: '单人活' });
+  const { record } = boot({ ledger, descendants: [] });
+  const listener = preExecute(record);
+  const { next } = spyNext();
+  const decision = await listener({
+    name: 'commander_ticket_update',
+    agent: LEAD,
+    arguments: { ticket: ticket.id, status: 'done' },
+  }, next);
+  assert.deepEqual(decision, { kind: 'allow' });
+});

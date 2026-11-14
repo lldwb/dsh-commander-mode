@@ -108,6 +108,7 @@ import {
   evaluateBoardWrite,
   evaluateCommanderChannels,
   evaluatePreExecute,
+  evaluateTicketSettle,
   evaluateTicketWrite,
   evaluateWaitForbidden,
   hasUsableDispatchChannel,
@@ -1221,6 +1222,28 @@ export function apply(ctx) {
         if (hierarchyDecision !== undefined) {
           ctx.logger?.info?.('commander-mode: 拒绝指挥官自己写团队进度（%s）', toolName);
           return hierarchyDecision;
+        }
+      }
+
+      // 7.2.0 完成语义门禁（用户 2026-11-14 硬要求）：小组长的下级没干完，不能把小组长
+      // 算作完成。`evaluateTicketWrite` 刻意放行 `done`（那是指挥官的验收动作），所以
+      // "验收动作本身是否成立"要在这里单独判：读这张工单派出去的小组长，若它的子树里还有
+      // `running` 的行，就拒绝结算。
+      //
+      // 只认正面证据：读不到 ledger / subagents / 身份一律放行（见 guard.js 的注释）。
+      // 放在层级门禁之后：`done` 本来就不受层级门禁管，两者不重叠。
+      if (toolName === 'commander_ticket_update') {
+        const settleDecision = await evaluateTicketSettle({
+          agent: exec?.agent,
+          name: toolName,
+          args: exec?.arguments,
+          ledger: getLedger(),
+          subagents: getService('subagents'),
+          sessionId: sessionIdOf(exec?.agent),
+        });
+        if (settleDecision !== undefined) {
+          ctx.logger?.info?.('commander-mode: 拒绝在小组长下级未收尾时结算工单');
+          return settleDecision;
         }
       }
 
