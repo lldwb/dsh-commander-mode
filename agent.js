@@ -130,6 +130,7 @@ import {
   renderModeOpening,
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
+import { handleSettlement } from './lib/wake-chain.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
@@ -1049,6 +1050,24 @@ export function apply(ctx) {
       },
     });
   }
+
+  // 7.5.0 通知链兜底（用户 2026-11-15 定：要通知链，不要轮询）：
+  // 子智能体结算时，若它的父级是**小组长**（depth ≥ 1），补一条 `steer` 唤醒。
+  // 原因见 `lib/wake-chain.js`：父级激活已结算时 DSH 走 `followup`（排队但不唤醒），
+  // 于是整棵树静默（session-1d8c8c60：7 个子智能体只有 2 次通知送达）。
+  // 只补 depth ≥ 1：指挥者（root）的通知实测可靠，补它会变成重复噪音。
+  // 全程 fail-open，绝不影响正常结算。
+  ctx.on('subagent/end', (info) => {
+    try {
+      handleSettlement({
+        info,
+        getService,
+        logger: ctx.logger,
+      });
+    } catch (error) {
+      ctx.logger?.warn?.('commander-mode: 通知链兜底监听器异常（按跳过处理）：%o', error);
+    }
+  });
 
   // 计划清单只在 `todo_write` 成功之后才算更新（整表替换语义）。记它的作用有两个：
   // ① 判断"任务结算之后计划清单有没有更新过"；② 看板里给出清单的完成进度。

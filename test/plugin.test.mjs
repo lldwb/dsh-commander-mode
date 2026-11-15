@@ -101,7 +101,7 @@ function makeSubagents(record, settlement = { output: [{ type: 'text', text: '�
  * `inject` 回调收到的子上下文带着该依赖对应的桩服务；`effect()` 立即执行回调（与 Cordis
  * 的挂载语义一致），返回的 disposer 被记录下来。
  */
-function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, descendants } = {}) {
+function makeCtx({ withSkills = true, withSpecialistServices = true, settings = makeSettings(), settlement, agentTeams, ledger, descendants, extraServices } = {}) {
   const record = {
     sections: [],
     contexts: [],
@@ -154,6 +154,8 @@ function makeCtx({ withSkills = true, withSpecialistServices = true, settings = 
     } : {
       commanderSettings: settings,
     }),
+    // 7.5.0：通知链兜底测试需要 `agents` 服务（`ctx.get('agents')`）。
+    ...(extraServices === undefined ? {} : extraServices),
   };
   const ctx = {
     logger,
@@ -361,10 +363,45 @@ test('没有 skills 服务的部署里不炸', () => {
   assert.ok(record.listeners.some((item) => item.event === 'tools/pre-execute'));
 });
 
-test('注册了三个确定性钩子：门禁、计划清单记录、结算兜底', () => {
-  // 门禁（不执行操作）+ 计划清单记录（todo_write 之后更新账本）+ 回合结束兜底（结算同步）。
+test('注册了四个确定性钩子：门禁、计划清单记录、结算兜底、通知链兜底', () => {
+  // 门禁（不执行操作）+ 计划清单记录（todo_write 之后更新账本）+ 回合结束兜底（结算同步）
+  // + 7.5.0 通知链兜底（subagent/end → 父级是小组长时补 steer 唤醒）。
   const events = boot().record.listeners.map((item) => item.event);
-  assert.deepEqual([...events].sort(), ['agent/turn-stopping', 'tools/post-execute', 'tools/pre-execute']);
+  assert.deepEqual([...events].sort(), ['agent/turn-stopping', 'subagent/end', 'tools/post-execute', 'tools/pre-execute']);
+});
+
+test('7.5.0：subagent/end 兜底只在父级是小组长时唤醒，且用 steer（真实接线）', () => {
+  // 这条证明 `agent.js` 的监听器真的接上了 `handleSettlement`，而不是只写在 lib 里。
+  const steered = [];
+  const lead = {
+    id: 'session-lead-child',
+    session: { id: 'session-lead-child', header: { id: 'session-lead-child', parentSession: 'session-root', delegationDepth: 1 } },
+    steer: (message) => { steered.push(message); },
+  };
+  const { record } = boot({
+    // 用 ctx.get('agents') 提供最小实现
+    extraServices: { agents: { get: (id) => (id === 'session-lead-child' ? lead : undefined) } },
+  });
+  const listener = record.listeners.find((item) => item.event === 'subagent/end');
+  assert.ok(listener, '必须注册 subagent/end 监听器');
+
+  listener.listener({
+    runId: 'r1',
+    parentSessionId: 'session-lead-child',
+    id: 'child-u3',
+    stopReason: 'completed',
+  });
+  assert.equal(steered.length, 1, '父级是小组长 → 应补一条唤醒');
+  assert.ok(steered[0].content[0].text.includes('【子智能体完成】'));
+
+  // 父级是指挥者（root）→ 不补
+  const root = { id: 'session-root', session: { id: 'session-root', header: { id: 'session-root' } }, steer: () => { throw new Error('不该被调用'); } };
+  const { record: record2 } = boot({
+    extraServices: { agents: { get: () => root } },
+  });
+  const listener2 = record2.listeners.find((item) => item.event === 'subagent/end');
+  listener2.listener({ parentSessionId: 'session-root', id: 'child-x', stopReason: 'completed' });
+  // 没抛错 = 没被调用
 });
 
 // ---------------------------------------------------------------- 监听器 ---
