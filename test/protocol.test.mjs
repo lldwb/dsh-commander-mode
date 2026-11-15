@@ -102,6 +102,26 @@ test('紧凑版点名智能体团队的派发通道', () => {
   assert.ok(SECTION.includes('workflow'));
 });
 
+test('7.4.0：紧凑版要求长任务自设唤醒（通知会丢，用户不该是发现停滞的人）', () => {
+  // 用户 2026-11-15 追问「为什么需要我跟进进度」。
+  // 现场 session-1d8c8c60：小组长派了 7 个子智能体全部正常结束，只有 2 次完成通知送达，
+  // 其余 5 次静默丢失 → 小组长空闲、指挥者空闲 → 用户两次主动问「进度如何」，
+  // 中间静默 49 分钟和 89 分钟。
+  //
+  // 唤醒来源只有「用户消息」与「子智能体完成通知」，通知会丢；所以必须自设定时唤醒。
+  assert.ok(SECTION.includes('长任务自设唤醒'), '紧凑版必须写「长任务自设唤醒」');
+  assert.ok(SECTION.includes('schedule_create'), '紧凑版必须点名 schedule_create');
+  assert.ok(SECTION.includes('this_session'), '必须写清 target 是 this_session（唤醒自己）');
+  // 长文给出完整做法（设多久 / 结算后删除 / 派活 prompt 的节奏要求）。
+  for (const phrase of ['schedule_create', 'this_session', 'schedule_edit', '15–20 分钟', '每 10–15 分钟']) {
+    assert.ok(COMMANDER_PROTOCOL.includes(phrase), `长文缺自设唤醒要素：${phrase}`);
+  }
+  // 派活 prompt 的节奏要求必须写在「建板与派发」那一步。
+  assert.ok(COMMANDER_PROTOCOL.includes('不要静默工作超过 15 分钟'), '派活 prompt 要要求节奏回报');
+  // 收尾要删掉自查定时，别留垃圾。
+  assert.ok(COMMANDER_PROTOCOL.includes('删掉自己设的进度自查'), '收尾要删自查定时');
+});
+
 test('紧凑版包含输出契约', () => {
   assert.ok(SECTION.includes('输出契约'));
   assert.ok(SECTION.includes('正文'));
