@@ -6,3 +6,11 @@ pnpm-debug.log*
 *.local.json
 .DS_Store
 Thumbs.db
+
+# Archify 的中间产物（回执 / 校验日志 / 多视口截图）：不是交付物，重跑即可再生成。
+# 交付的只有三个：candidate.json（数据源）、architecture.html（成品）、preview.png（预览）。
+.archify/
+文档/commander-mode-architecture.browser-check.json
+文档/commander-mode-architecture.delivery.json
+文档/commander-mode-architecture.finalize*.json
+文档/commander-mode-architecture.visual-check*

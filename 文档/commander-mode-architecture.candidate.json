@@ -4,13 +4,13 @@
   "meta": {
     "title": "dsh-commander-mode：指挥者模式插件架构",
     "locale": "zh-CN",
-    "output": ".archify/architecture-commander-mode-20261113-1522/commander-mode-architecture.html",
+    "output": ".archify/architecture-commander-mode-20261115/commander-mode-architecture.html",
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/lldwb/dsh-commander-mode.git",
       "provider": "github",
       "link_mode": "web",
-      "revision": "58979cb21451966d1d6e0cfbf66282028cbaebb3"
+      "revision": "3675d1b896c29806c3b22564d576db29e4c55a00"
     }
   },
   "components": [
@@ -19,10 +19,21 @@
       "type": "external",
       "label": "外部事件源",
       "sublabel": "CI / 告警 / 定时巡检",
-      "pos": [40, 170],
-      "size": [180, 64],
+      "pos": [
+        40,
+        170
+      ],
+      "size": [
+        180,
+        64
+      ],
       "sources": [
-        { "path": "lib/event-inbox.js", "line": 4, "end_line": 9, "label": "外部世界没有入口" }
+        {
+          "path": "lib/event-inbox.js",
+          "line": 4,
+          "end_line": 9,
+          "label": "外部世界没有入口"
+        }
       ]
     },
     {
@@ -31,12 +42,33 @@
       "label": "外部事件投递器",
       "sublabel": "commanderEvents · 15s 轮询",
       "tag": "投递后进 delivered/",
-      "pos": [40, 300],
-      "size": [190, 84],
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        190,
+        84
+      ],
       "sources": [
-        { "path": "lib/event-inbox.js", "line": 167, "end_line": 183, "label": "install 启动轮询" },
-        { "path": "lib/event-inbox.js", "line": 296, "end_line": 339, "label": "路由到会话并 steer" },
-        { "path": "lib/event-inbox.js", "line": 45, "end_line": 48, "label": "服务名与轮询间隔" }
+        {
+          "path": "lib/event-inbox.js",
+          "line": 167,
+          "end_line": 183,
+          "label": "install 启动轮询"
+        },
+        {
+          "path": "lib/event-inbox.js",
+          "line": 296,
+          "end_line": 339,
+          "label": "路由到会话并 steer"
+        },
+        {
+          "path": "lib/event-inbox.js",
+          "line": 45,
+          "end_line": 48,
+          "label": "服务名与轮询间隔"
+        }
       ]
     },
     {
@@ -45,10 +77,21 @@
       "label": "用户",
       "sublabel": "下达任务 / 确认计划",
       "icon": "person",
-      "pos": [340, 170],
-      "size": [180, 72],
+      "pos": [
+        340,
+        170
+      ],
+      "size": [
+        180,
+        72
+      ],
       "sources": [
-        { "path": "agent.js", "line": 6, "end_line": 8, "label": "停下来让用户确认计划" }
+        {
+          "path": "agent.js",
+          "line": 6,
+          "end_line": 8,
+          "label": "停下来让用户确认计划"
+        }
       ]
     },
     {
@@ -58,26 +101,68 @@
       "sublabel": "不执行操作，只判断与派发",
       "tag": "主会话",
       "icon": "person",
-      "pos": [340, 300],
-      "size": [190, 84],
+      "pos": [
+        340,
+        300
+      ],
+      "size": [
+        190,
+        84
+      ],
       "sources": [
-        { "path": "agent.js", "line": 990, "end_line": 1018, "label": "注入指挥者协议 section" },
-        { "path": "agent.js", "line": 1024, "end_line": 1050, "label": "每轮看板上下文" },
-        { "path": "agent.js", "line": 1179, "end_line": 1197, "label": "门禁挂载点" }
+        {
+          "path": "agent.js",
+          "line": 992,
+          "end_line": 1020,
+          "label": "注入指挥者协议 section"
+        },
+        {
+          "path": "agent.js",
+          "line": 1026,
+          "end_line": 1052,
+          "label": "每轮看板上下文"
+        },
+        {
+          "path": "agent.js",
+          "line": 1199,
+          "end_line": 1217,
+          "label": "门禁挂载点"
+        }
       ]
     },
     {
       "id": "guard",
       "type": "security",
       "label": "门禁瀑布",
-      "sublabel": "执行 / 等待 / 层级 / 通道",
+      "sublabel": "执行 / 等待 / 层级 / 通道 / 结算",
       "tag": "拒绝即纠正指令",
-      "pos": [340, 440],
-      "size": [190, 80],
+      "pos": [
+        340,
+        440
+      ],
+      "size": [
+        190,
+        80
+      ],
       "sources": [
-        { "path": "lib/guard.js", "line": 103, "end_line": 159, "label": "blockedTools 判据" },
-        { "path": "lib/guard.js", "line": 343, "end_line": 353, "label": "派发通道硬门禁" },
-        { "path": "lib/guard.js", "line": 475, "end_line": 483, "label": "wait_agent 无条件拒绝" }
+        {
+          "path": "lib/guard.js",
+          "line": 343,
+          "end_line": 353,
+          "label": "派发通道硬门禁"
+        },
+        {
+          "path": "lib/guard.js",
+          "line": 475,
+          "end_line": 483,
+          "label": "wait_agent 无条件拒绝"
+        },
+        {
+          "path": "lib/guard.js",
+          "line": 712,
+          "end_line": 762,
+          "label": "结算门禁（子未完成 ≠ 父完成）"
+        }
       ]
     },
     {
@@ -86,12 +171,33 @@
       "label": "派发门禁",
       "sublabel": "计划授权 + 工单 + 投影",
       "tag": "确定性拒绝",
-      "pos": [340, 570],
-      "size": [190, 80],
+      "pos": [
+        340,
+        570
+      ],
+      "size": [
+        190,
+        80
+      ],
       "sources": [
-        { "path": "lib/dispatch-gate.js", "line": 135, "end_line": 151, "label": "门禁入口与放行面" },
-        { "path": "lib/dispatch-gate.js", "line": 165, "end_line": 183, "label": "没有计划授权就拒绝" },
-        { "path": "lib/dispatch-gate.js", "line": 185, "end_line": 200, "label": "派发必须带工单号" }
+        {
+          "path": "lib/dispatch-gate.js",
+          "line": 135,
+          "end_line": 151,
+          "label": "门禁入口与放行面"
+        },
+        {
+          "path": "lib/dispatch-gate.js",
+          "line": 165,
+          "end_line": 183,
+          "label": "没有计划授权就拒绝"
+        },
+        {
+          "path": "lib/dispatch-gate.js",
+          "line": 185,
+          "end_line": 200,
+          "label": "派发必须带工单号"
+        }
       ]
     },
     {
@@ -101,11 +207,27 @@
       "sublabel": "具名可续做，可再派下级",
       "tag": "subagent / subagent_fork",
       "icon": "person",
-      "pos": [340, 700],
-      "size": [190, 76],
+      "pos": [
+        340,
+        700
+      ],
+      "size": [
+        190,
+        76
+      ],
       "sources": [
-        { "path": "lib/capabilities.js", "line": 106, "end_line": 117, "label": "maxDepth 2 的三层链依据" },
-        { "path": "lib/guard.js", "line": 242, "end_line": 248, "label": "只有小组长改进度与排期" }
+        {
+          "path": "lib/capabilities.js",
+          "line": 106,
+          "end_line": 117,
+          "label": "maxDepth 2 的三层链依据"
+        },
+        {
+          "path": "lib/guard.js",
+          "line": 242,
+          "end_line": 248,
+          "label": "只有小组长改进度与排期"
+        }
       ]
     },
     {
@@ -115,11 +237,27 @@
       "sublabel": "subagent_<id> / workflow",
       "tag": "不再向下派",
       "icon": "person",
-      "pos": [340, 830],
-      "size": [190, 72],
+      "pos": [
+        340,
+        830
+      ],
+      "size": [
+        190,
+        72
+      ],
       "sources": [
-        { "path": "lib/guard.js", "line": 736, "end_line": 745, "label": "L1 派 L2 放行" },
-        { "path": "lib/specialists.js", "line": 458, "end_line": 460, "label": "递归预算由 preset 决定" }
+        {
+          "path": "lib/guard.js",
+          "line": 854,
+          "end_line": 863,
+          "label": "L1 派 L2 放行"
+        },
+        {
+          "path": "lib/specialists.js",
+          "line": 458,
+          "end_line": 460,
+          "label": "递归预算由 preset 决定"
+        }
       ]
     },
     {
@@ -128,12 +266,33 @@
       "label": "共享任务板",
       "sublabel": "工单投影 [commander:ticket=t-N]",
       "tag": "Agent Teams",
-      "pos": [40, 700],
-      "size": [190, 76],
+      "pos": [
+        40,
+        700
+      ],
+      "size": [
+        190,
+        76
+      ],
       "sources": [
-        { "path": "lib/team-board-bridge.js", "line": 37, "end_line": 43, "label": "投影标记与识别" },
-        { "path": "lib/team-board-bridge.js", "line": 515, "end_line": 543, "label": "owner 自动绑定" },
-        { "path": "lib/team-board-bridge.js", "line": 566, "end_line": 592, "label": "状态单向同步" }
+        {
+          "path": "lib/team-board-bridge.js",
+          "line": 37,
+          "end_line": 43,
+          "label": "投影标记与识别"
+        },
+        {
+          "path": "lib/team-board-bridge.js",
+          "line": 515,
+          "end_line": 543,
+          "label": "owner 自动绑定"
+        },
+        {
+          "path": "lib/team-board-bridge.js",
+          "line": 566,
+          "end_line": 592,
+          "label": "状态单向同步"
+        }
       ]
     },
     {
@@ -143,12 +302,33 @@
       "sublabel": "6 位专家 = preset + 工具",
       "tag": "模型继承指挥者",
       "icon": "person",
-      "pos": [640, 700],
-      "size": [190, 76],
+      "pos": [
+        640,
+        700
+      ],
+      "size": [
+        190,
+        76
+      ],
       "sources": [
-        { "path": "lib/presets.js", "line": 39, "end_line": 102, "label": "出厂六位专家" },
-        { "path": "lib/specialists.js", "line": 569, "end_line": 609, "label": "安装 preset + 工具" },
-        { "path": "lib/specialists.js", "line": 77, "end_line": 79, "label": "工具名 subagent_<id>" }
+        {
+          "path": "lib/presets.js",
+          "line": 39,
+          "end_line": 102,
+          "label": "出厂六位专家"
+        },
+        {
+          "path": "lib/specialists.js",
+          "line": 569,
+          "end_line": 609,
+          "label": "安装 preset + 工具"
+        },
+        {
+          "path": "lib/specialists.js",
+          "line": 77,
+          "end_line": 79,
+          "label": "工具名 subagent_<id>"
+        }
       ]
     },
     {
@@ -157,11 +337,27 @@
       "label": "能力行单一来源",
       "sublabel": "lib/capabilities.js",
       "tag": "bash / pwsh 按平台二选一",
-      "pos": [640, 40],
-      "size": [190, 64],
+      "pos": [
+        640,
+        40
+      ],
+      "size": [
+        190,
+        64
+      ],
       "sources": [
-        { "path": "lib/capabilities.js", "line": 39, "end_line": 140, "label": "CAPABILITY_ROWS" },
-        { "path": "lib/preset-plugins.js", "line": 44, "end_line": 46, "label": "拼装 plugins" }
+        {
+          "path": "lib/capabilities.js",
+          "line": 39,
+          "end_line": 140,
+          "label": "CAPABILITY_ROWS"
+        },
+        {
+          "path": "lib/preset-plugins.js",
+          "line": 44,
+          "end_line": 46,
+          "label": "拼装 plugins"
+        }
       ]
     },
     {
@@ -170,11 +366,27 @@
       "label": "模式声明行",
       "sublabel": "preset-commander · order 7",
       "tag": "agent preset: commander",
-      "pos": [640, 170],
-      "size": [190, 80],
+      "pos": [
+        640,
+        170
+      ],
+      "size": [
+        190,
+        80
+      ],
       "sources": [
-        { "path": "cordis.patch.yml", "line": 280, "end_line": 292, "label": "preset-commander 行" },
-        { "path": "lib/preset-plugins.js", "line": 31, "end_line": 35, "label": "两条模式行" }
+        {
+          "path": "cordis.patch.yml",
+          "line": 280,
+          "end_line": 292,
+          "label": "preset-commander 行"
+        },
+        {
+          "path": "lib/preset-plugins.js",
+          "line": 31,
+          "end_line": 35,
+          "label": "两条模式行"
+        }
       ]
     },
     {
@@ -183,12 +395,33 @@
       "label": "模式行 commander-mode-agent",
       "sublabel": "协议 section + 门禁 + 工具",
       "tag": "preset 子行",
-      "pos": [640, 300],
-      "size": [190, 88],
+      "pos": [
+        640,
+        300
+      ],
+      "size": [
+        190,
+        88
+      ],
       "sources": [
-        { "path": "agent.js", "line": 990, "end_line": 1018, "label": "systemPrompt.section" },
-        { "path": "agent.js", "line": 1357, "end_line": 1452, "label": "安装 specialist 工具" },
-        { "path": "agent.js", "line": 1456, "end_line": 1491, "label": "注册三个工单工具" }
+        {
+          "path": "agent.js",
+          "line": 1356,
+          "end_line": 1451,
+          "label": "安装 specialist 工具"
+        },
+        {
+          "path": "agent.js",
+          "line": 1498,
+          "end_line": 1533,
+          "label": "注册三个工单工具"
+        },
+        {
+          "path": "agent.js",
+          "line": 1060,
+          "end_line": 1073,
+          "label": "通知链兜底（subagent/end）"
+        }
       ]
     },
     {
@@ -197,10 +430,21 @@
       "label": "工作流手册行",
       "sublabel": "只注册 skill，不注入常驻 prompt",
       "tag": "索引 20 个方法 skill",
-      "pos": [640, 430],
-      "size": [190, 80],
+      "pos": [
+        640,
+        430
+      ],
+      "size": [
+        190,
+        80
+      ],
       "sources": [
-        { "path": "workflow.js", "line": 51, "end_line": 73, "label": "只注册 project-dev-workflow skill" }
+        {
+          "path": "workflow.js",
+          "line": 51,
+          "end_line": 73,
+          "label": "只注册 project-dev-workflow skill"
+        }
       ]
     },
     {
@@ -209,12 +453,33 @@
       "label": "配置行 commander-mode",
       "sublabel": "Config · 服务宿主 · 不注册工具",
       "tag": "profile 顶层",
-      "pos": [940, 300],
-      "size": [190, 88],
+      "pos": [
+        940,
+        300
+      ],
+      "size": [
+        190,
+        88
+      ],
       "sources": [
-        { "path": "index.js", "line": 71, "end_line": 103, "label": "配置服务 + 账本服务" },
-        { "path": "index.js", "line": 114, "end_line": 136, "label": "安装外部事件投递器" },
-        { "path": "index.js", "line": 177, "end_line": 189, "label": "强制开启智能体团队" }
+        {
+          "path": "index.js",
+          "line": 71,
+          "end_line": 103,
+          "label": "配置服务 + 账本服务"
+        },
+        {
+          "path": "index.js",
+          "line": 114,
+          "end_line": 136,
+          "label": "安装外部事件投递器"
+        },
+        {
+          "path": "index.js",
+          "line": 177,
+          "end_line": 189,
+          "label": "强制开启智能体团队"
+        }
       ]
     },
     {
@@ -223,12 +488,33 @@
       "label": "工单账本",
       "sublabel": "<DSH_HOME>/commander/<profile>.json",
       "tag": "按会话隔离 · 最多 100 张",
-      "pos": [940, 170],
-      "size": [190, 84],
+      "pos": [
+        940,
+        170
+      ],
+      "size": [
+        190,
+        84
+      ],
       "sources": [
-        { "path": "lib/ledger.js", "line": 67, "end_line": 75, "label": "文件位置解析" },
-        { "path": "lib/ledger.js", "line": 126, "end_line": 150, "label": "临时文件 + rename 原子写" },
-        { "path": "lib/ledger.js", "line": 100, "end_line": 109, "label": "损坏自动备份" }
+        {
+          "path": "lib/ledger.js",
+          "line": 67,
+          "end_line": 75,
+          "label": "文件位置解析"
+        },
+        {
+          "path": "lib/ledger.js",
+          "line": 126,
+          "end_line": 150,
+          "label": "临时文件 + rename 原子写"
+        },
+        {
+          "path": "lib/ledger.js",
+          "line": 100,
+          "end_line": 109,
+          "label": "损坏自动备份"
+        }
       ]
     },
     {
@@ -237,12 +523,31 @@
       "label": "设置页 client 半",
       "sublabel": "插件 → 指挥者专家名册",
       "tag": "命名空间 commander-mode",
-      "pos": [940, 430],
-      "size": [190, 64],
+      "pos": [
+        940,
+        430
+      ],
+      "size": [
+        190,
+        64
+      ],
       "sources": [
-        { "path": "client.js", "line": 194, "label": "SETTINGS_NS" },
-        { "path": "client.js", "line": 1193, "end_line": 1210, "label": "注册名册卡片" },
-        { "path": "locale/zh.json", "line": 7, "label": "卡片标题" }
+        {
+          "path": "client.js",
+          "line": 194,
+          "label": "SETTINGS_NS"
+        },
+        {
+          "path": "client.js",
+          "line": 1193,
+          "end_line": 1210,
+          "label": "注册名册卡片"
+        },
+        {
+          "path": "locale/zh.json",
+          "line": 7,
+          "label": "卡片标题"
+        }
       ]
     }
   ],
@@ -250,30 +555,148 @@
     {
       "kind": "region",
       "label": "preset scope: commander（声明行 + 2 条模式行）",
-      "wraps": ["presetDecl", "agentRow", "workflowRow"]
+      "wraps": [
+        "presetDecl",
+        "agentRow",
+        "workflowRow"
+      ]
     },
     {
       "kind": "security-group",
       "label": "确定性门禁（仅 Lead 生效）",
-      "wraps": ["guard", "dispatchGate"]
+      "wraps": [
+        "guard",
+        "dispatchGate"
+      ]
     }
   ],
   "connections": [
-    { "id": "external-to-inbox", "from": "external", "to": "eventInbox", "label": "写 JSON 到 inbox", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
-    { "id": "inbox-steers-commander", "from": "eventInbox", "to": "commander", "label": "steer 唤醒", "variant": "dashed", "fromSide": "right", "toSide": "left" },
-    { "id": "user-to-commander", "from": "user", "to": "commander", "label": "下任务", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
-    { "id": "agent-row-decorates", "from": "agentRow", "to": "commander", "label": "协议 + 门禁", "fromSide": "left", "toSide": "right" },
-    { "id": "config-to-agent-row", "from": "configRow", "to": "agentRow", "label": "配置服务", "fromSide": "left", "toSide": "right" },
-    { "id": "capabilities-to-preset", "from": "capabilities", "to": "presetDecl", "label": "能力行", "fromSide": "bottom", "toSide": "top" },
-    { "id": "preset-to-agent-row", "from": "presetDecl", "to": "agentRow", "fromSide": "bottom", "toSide": "top" },
-    { "id": "commander-to-guard", "from": "commander", "to": "guard", "label": "每次调用", "variant": "security", "fromSide": "bottom", "toSide": "top" },
-    { "id": "guard-to-dispatch", "from": "guard", "to": "dispatchGate", "label": "派发类", "variant": "security", "fromSide": "bottom", "toSide": "top" },
-    { "id": "dispatch-to-lead", "from": "dispatchGate", "to": "lead", "label": "放行", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
-    { "id": "lead-to-worker", "from": "lead", "to": "worker", "label": "派活", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
-    { "id": "lead-to-board", "from": "lead", "to": "board", "label": "改进度", "fromSide": "left", "toSide": "right" },
-    { "id": "lead-to-specialists", "from": "lead", "to": "specialists", "label": "调专家", "fromSide": "right", "toSide": "left" },
-    { "id": "config-to-ledger", "from": "configRow", "to": "ledger", "label": "原子写", "fromSide": "top", "toSide": "bottom" },
-    { "id": "client-to-config", "from": "client", "to": "configRow", "label": "编辑名册", "fromSide": "top", "toSide": "bottom" }
+    {
+      "id": "external-to-inbox",
+      "from": "external",
+      "to": "eventInbox",
+      "label": "写 JSON 到 inbox",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "inbox-steers-commander",
+      "from": "eventInbox",
+      "to": "commander",
+      "label": "steer 唤醒",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "user-to-commander",
+      "from": "user",
+      "to": "commander",
+      "label": "下任务",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "agent-row-decorates",
+      "from": "agentRow",
+      "to": "commander",
+      "label": "协议 + 门禁",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "config-to-agent-row",
+      "from": "configRow",
+      "to": "agentRow",
+      "label": "配置服务",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "capabilities-to-preset",
+      "from": "capabilities",
+      "to": "presetDecl",
+      "label": "能力行",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "preset-to-agent-row",
+      "from": "presetDecl",
+      "to": "agentRow",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "commander-to-guard",
+      "from": "commander",
+      "to": "guard",
+      "label": "每次调用",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "guard-to-dispatch",
+      "from": "guard",
+      "to": "dispatchGate",
+      "label": "派发类",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "dispatch-to-lead",
+      "from": "dispatchGate",
+      "to": "lead",
+      "label": "放行",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "lead-to-worker",
+      "from": "lead",
+      "to": "worker",
+      "label": "派活",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "lead-to-board",
+      "from": "lead",
+      "to": "board",
+      "label": "改进度",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "lead-to-specialists",
+      "from": "lead",
+      "to": "specialists",
+      "label": "调专家",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "config-to-ledger",
+      "from": "configRow",
+      "to": "ledger",
+      "label": "原子写",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "client-to-config",
+      "from": "client",
+      "to": "configRow",
+      "label": "编辑名册",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
   ],
   "cards": [
     {
@@ -293,6 +716,7 @@
         "evaluateWaitForbidden 对 wait_agent 无条件拒绝，无开关、整条链生效。",
         "evaluateBoardWrite / evaluateTicketWrite 把 claim / complete / reopen / set_dependencies 与工单推进状态的回报留给小组长；done / cancelled 归指挥官验收。",
         "evaluateCommanderChannels 是 7.0.0 硬门禁：workflow、subagent_<id>、commander_worker_* 对指挥官一律拒绝，delegationHierarchy:false 也拦。",
+        "evaluateTicketSettle 是 7.2.0 结算门禁：指挥官对工单写 done 时，读该工单派出去的小组长（assignments[].ref），若其子树里还有 activity === running 的行就拒绝并给纠正阶梯——「子智能体没干完 ≠ 小组长完成」。只认正面证据，读不到一律放行（无 ledger / 无 subagents / 身份不明 / 快照抛错）。",
         "除「禁止等待」外的门禁只对 Lead 生效：isDelegatedAgent 命中即放行——宁可漏拦，不可拦死。wait_agent 是例外，对整条链一律拒绝。"
       ]
     },
@@ -321,6 +745,17 @@
         "开箱六位：architect / implementer / reviewer / tester / security-auditor / doc-writer，每位一个独立 preset + 一个 subagent_<id> 工具。",
         "provider / model 默认留空 = 继承指挥官（父会话）的模型路由；只填一栏的条目会被跳过。",
         "名册是 volatile 配置：设置页保存后新会话立刻拿到新工具，已打开的会话保留启动时的名册。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "通知链：子完成→组长→指挥官",
+      "items": [
+        "正常路径是运行时通知：子智能体结算 → 唤醒它的父级（小组长）→ 小组长结算 → 唤醒指挥官。插件不轮询、不设进度定时器。",
+        "7.5.0 补的兜底（lib/wake-chain.js）：DSH 的 sendWaking() 在父级 activation 已结算时走 parent.followup()——排队但不唤醒；只有 steer 才唤醒。于是监听 subagent/end，在父级是被委派的子级（depth ≥ 1）时用 agent.steer() 补一条极短唤醒。",
+        "为什么只补 depth ≥ 1：指挥官（root）的通知实测每次都到，补它是重复噪音。消息只负责「叫醒」，详情仍以运行时通知为准。",
+        "全程 fail-open：无 agents 服务 / 父级不在线 / steer 抛错 → 静默跳过，绝不影响正常结算。",
+        "证据：session-1d8c8c60 里小组长派 7 个子智能体全部正常结束，只 2 次通知送达，静默 49 分钟 + 1 小时 29 分钟，用户两次追问「进度如何」。"
       ]
     }
   ]

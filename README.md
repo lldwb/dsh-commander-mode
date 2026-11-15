@@ -2352,6 +2352,25 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.5.1** —— **同步架构图到 7.5.0（纯文档，无代码变化）**。
+  ① **问题**：架构图（`文档/commander-mode-architecture.*`）绑定的是 revision `58979cb`（7.0.1），
+  7.1.0–7.5.0 的改动**一件都没进图**：团队模型八条→十条、结算门禁 `evaluateTicketSettle`、
+  通知链兜底 `lib/wake-chain.js` + `subagent/end` 监听器。
+  ② **`deliver` 门禁不校验行号内容**（实测）：只把 revision 改成 HEAD、行号不动，
+  `deliver` 仍返回 `verified: true`。所以图会**静默过期**——`agent.js:1179` 原本指
+  pre-execute 监听器，代码改动后指向 `canDelegate: ...`，门禁不报错。
+  ③ **本次做法**：
+  - 用「旧 revision 的行内容 → 在当前文件里重新定位」脚本重映射 **9 条漂移引用**
+    （`agent.js` / `lib/guard.js` / `client.js` / `locale/zh.json` 共 41 条引用全部核对）；
+  - 门禁卡片新增 `evaluateTicketSettle` 一条；`guard` 组件 `sublabel` 补「结算」；
+    `guard` / `agentRow` 各新增一条源码引用（schema 上限 3 条，**替换**而非追加）；
+  - 新增第 6 张卡片「通知链：子完成→组长→指挥官」；
+  - 重跑 `finalize --browser-check`：**validate / deliver / check / browser-check 四道门禁全过**，
+    HTML 880,663 B，`preview.png` 由 1440×900 light 截图替换；
+  - `.gitignore` 收掉 Archify 的中间产物（回执 / 多视口截图），只保留 candidate / html / preview 三件。
+  ④ **用户要做什么**：不需要——纯文档。看图直接打开 `文档/commander-mode-architecture.html`。
+  ⑤ **测试**：**678 / 678 通过、0 失败**（无代码变化，基线不变）。
+
 - **7.5.0** —— **通知链兜底：子完成→通知小组长、小组长完成→通知指挥官（不轮询）**
   （用户 2026-11-15 定调，修正 7.4.0 的方向；minor 版本）。
   ① **用户口径**：「**子智能体完成通知小组长，小组长完成通知指挥官，而不是定期去检查进度，
