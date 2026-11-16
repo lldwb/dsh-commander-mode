@@ -152,6 +152,8 @@ import {
   recordBoard,
   recordDelegation,
   recordPlan,
+  recordTurn,
+  renderLongSessionCheck,
   renderSyncBoard,
 } from './lib/sync.js';
 
@@ -972,6 +974,29 @@ export function apply(ctx) {
    * @param {object} exec - `tools/pre-execute` 的执行上下文。
    * @returns {void}
    */
+  /**
+   * 从一次派发调用里取"目标是谁"（7.10.0）。
+   *
+   * - `send_message` → `agent` 参数（续做的那个小组长）
+   * - `subagent` / `subagent_fork` → `name` 参数（新建的小组长）
+   * - 其他派发工具（`team_task_*`）→ 空串（它们不指向具体人）
+   *
+   * 取不到就返回空串：`recordDelegation` 会跳过空目标，不会污染分布统计。
+   *
+   * @param {object} exec - `tools/pre-execute` 的执行上下文。
+   * @returns {string} 目标名（读不到返回 `''`）。
+   */
+  const dispatchTargetOf = (exec) => {
+    try {
+      const args = exec?.arguments;
+      if (args === null || typeof args !== 'object') return '';
+      const candidate = typeof args.agent === 'string' ? args.agent : (typeof args.name === 'string' ? args.name : '');
+      return candidate.trim();
+    } catch {
+      return '';
+    }
+  };
+
   const observeDelegation = (exec) => {
     try {
       const agent = exec?.agent;
@@ -980,7 +1005,9 @@ export function apply(ctx) {
       const toolName = typeof exec?.name === 'string' ? exec.name : '';
       const kind = classifyDelegation(toolName);
       if (kind === undefined) return;
-      recordDelegation(ledgerOf(agent), kind, toolName);
+      // 7.10.0：把**派活目标**也记下来（`send_message` 的 agent / `subagent` 的 name）——
+      // 用它检测"26 小时全在推同一个小队长"这种退化（派活集中 = 把并行做成串行）。
+      recordDelegation(ledgerOf(agent), kind, toolName, dispatchTargetOf(exec));
     } catch (error) {
       // 观测失败不影响派活本身。
       ctx.logger?.debug?.('commander-mode: 记录派发通道失败：%o', error);
@@ -1036,6 +1063,10 @@ export function apply(ctx) {
             const { view, members } = inspectSync(agent);
             const syncText = renderSyncBoard(view, members);
             if (syncText !== '') parts.push(syncText);
+            // 7.10.0 长会话体检：规则每轮重注入、用户消息也不会被剪（实测 14 次 prune
+            // 全是 tool/result），所以退化不是"忘了"而是"漂移了"——定期把漂移摆到眼前。
+            const checkText = renderLongSessionCheck(ledgerOf(agent), view);
+            if (checkText !== '') parts.push(checkText);
           }
           // 0.6.0：工单看板（计划授权 / 进行中 / 待人工 / 停滞）独立于同步看板 ——
           // 即使部署里没有「智能体团队」，工单状态也照样要出现在每一步。
@@ -1121,6 +1152,9 @@ export function apply(ctx) {
       const turn = payload?.turn;
       const key = `${String(agent.session?.id ?? agent.id)}:${String(turn)}`;
       if (nudgedTurns.has(key)) return; // 同一回合只兜一次，否则会死循环
+
+      // 7.10.0：累加回合数，供「长会话体检」判断节奏（每 LONG_SESSION_EVERY 回合一次）。
+      recordTurn(ledgerOf(agent));
 
       const { ledger, view } = inspectSync(agent);
       // 孤儿任务（未结算 + 无人认领/主人已停手）每条会话强制提醒一次；之后它仍会留在

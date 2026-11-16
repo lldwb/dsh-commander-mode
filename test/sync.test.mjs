@@ -20,6 +20,9 @@ import {
   SYNC_CONTEXT_NAME,
   SYNC_CONTEXT_ORDER,
   TICKET_BACKLOG_LIMIT,
+  LONG_SESSION_EVERY,
+  recordTurn,
+  renderLongSessionCheck,
   TERMINAL_TASK_STATUSES,
   buildSyncNudge,
   consumeStaleNudge,
@@ -440,6 +443,100 @@ test('7.9.0：积压不超过上限时不报；等用户的项不计入积压', 
   recordBoard(waiting, rows, 0);
   assert.ok(!evaluateSync(waiting, { members: [member('a', 'running')], now: 60_000 })
     .issues.some((e) => e.code === 'ticket-backlog'), '等用户的项不该计入积压');
+});
+
+// ------------------------------------------ 派活过度集中（7.10.0） ---
+
+test('7.10.0：派活过度集中（26 小时全推同一个小队长）→ 报 dispatch-focus', () => {
+  // 现场 session-1d8c8c60：send_message 分布 47 / 9 / 1 / 0 —— 一个小组长吃掉 82%，
+  // 另一个几乎没被用过。不是报错，是把并行做成了串行。
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'slice-quality-lead' })], 0);
+  for (let i = 0; i < 47; i += 1) recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message', 'slice-quality-lead');
+  for (let i = 0; i < 9; i += 1) recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message', 'slice-final-lead');
+  recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message', 'installer-lead');
+
+  const view = evaluateSync(ledger, { members: [member('slice-quality-lead', 'running')], now: 60_000 });
+  const issue = view.issues.find((entry) => entry.code === 'dispatch-focus');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('47'), issue.detail);
+  assert.ok(issue.detail.includes('slice-quality-lead'), issue.detail);
+  // 兜底要给出"换团队 / 扇出"的动作
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('换团队'), nudge);
+});
+
+test('7.10.0：派活均匀 / 总量太少 / 只有一个目标时不报', () => {
+  // 均匀分布
+  const even = createSyncLedger();
+  recordBoard(even, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  for (let i = 0; i < 5; i += 1) recordDelegation(even, DELEGATION_CHANNELS.TEAM, 'send_message', 'a');
+  for (let i = 0; i < 5; i += 1) recordDelegation(even, DELEGATION_CHANNELS.TEAM, 'send_message', 'b');
+  assert.ok(!evaluateSync(even, { members: [member('a', 'running')], now: 60_000 })
+    .issues.some((e) => e.code === 'dispatch-focus'), '50/50 不该报');
+
+  // 总量不足 10 次
+  const few = createSyncLedger();
+  recordBoard(few, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  for (let i = 0; i < 8; i += 1) recordDelegation(few, DELEGATION_CHANNELS.TEAM, 'send_message', 'a');
+  recordDelegation(few, DELEGATION_CHANNELS.TEAM, 'send_message', 'b');
+  assert.ok(!evaluateSync(few, { members: [member('a', 'running')], now: 60_000 })
+    .issues.some((e) => e.code === 'dispatch-focus'), '不足 10 次不判');
+
+  // 只有一个目标（确实只有一个合适的人）
+  const solo = createSyncLedger();
+  recordBoard(solo, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  for (let i = 0; i < 20; i += 1) recordDelegation(solo, DELEGATION_CHANNELS.TEAM, 'send_message', 'a');
+  assert.ok(!evaluateSync(solo, { members: [member('a', 'running')], now: 60_000 })
+    .issues.some((e) => e.code === 'dispatch-focus'), '只有一个人时不判');
+});
+
+test('7.10.0：没有目标名的派活不污染分布统计', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  for (let i = 0; i < 12; i += 1) recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'team_task_create');
+  assert.equal(ledger.dispatchTargets, undefined, '空目标不应写入分布');
+});
+
+// ---------------------------------------- 长会话退化体检（7.10.0） ---
+
+test('7.10.0：每 N 回合给一次长会话体检，且带当前实测信号', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  const view = evaluateSync(ledger, { members: [member('a', 'running')], now: 60_000 });
+
+  // 不到点：空
+  assert.equal(renderLongSessionCheck(ledger, view), '');
+  for (let i = 0; i < LONG_SESSION_EVERY - 1; i += 1) recordTurn(ledger);
+  assert.equal(renderLongSessionCheck(ledger, view), '', '第 14 回合还不体检');
+
+  // 到点：四问全在
+  recordTurn(ledger);
+  const text = renderLongSessionCheck(ledger, view);
+  assert.ok(text.includes('长会话体检'), text);
+  assert.ok(text.includes(`${LONG_SESSION_EVERY} 回合`), text);
+  for (const phrase of ['并行有没有变成串行', '只开不收', '重复同一个纠正', '小组长是不是在独干']) {
+    assert.ok(text.includes(phrase), `体检缺一问：${phrase}`);
+  }
+
+  // 下一个周期再给一次；中间回合不给
+  recordTurn(ledger);
+  assert.equal(renderLongSessionCheck(ledger, view), '');
+  for (let i = 0; i < LONG_SESSION_EVERY - 1; i += 1) recordTurn(ledger);
+  assert.ok(renderLongSessionCheck(ledger, view).includes('长会话体检'));
+});
+
+test('7.10.0：体检会把已检测到的信号一并列出（有才列，不编）', () => {
+  const ledger = createSyncLedger();
+  // 造出"派活过度集中"信号
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  for (let i = 0; i < 20; i += 1) recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message', 'a');
+  for (let i = 0; i < 5; i += 1) recordDelegation(ledger, DELEGATION_CHANNELS.TEAM, 'send_message', 'b');
+  const view = evaluateSync(ledger, { members: [member('a', 'running')], now: 60_000 });
+  for (let i = 0; i < LONG_SESSION_EVERY; i += 1) recordTurn(ledger);
+  const text = renderLongSessionCheck(ledger, view);
+  assert.ok(text.includes('派活过度集中'), text);
+  assert.ok(text.includes('先修'), text);
 });
 
 // -------------------------------------------- 小组长独干（7.7.0） ---
