@@ -324,35 +324,37 @@ test('名册非空时 section 列出每个工具、职责与模型', () => {
   assert.ok(ROSTER_SECTION.includes('`wait_agent` 硬禁用'), ROSTER_SECTION);
 });
 
-test('双通道选择规则一眼可懂：独立模型走 A，长驻队友走 B，可混用', () => {
+test('双通道选择规则一眼可懂：通道 A 归小组长，通道 B 是指挥官唯一通道', () => {
+  // 7.8.0：三节「派发通道」去重合并——通道 B 的工具清单与「怎么选」不再重复出现在
+  // 这一节（它们由「派发通道硬规则」承载），本节只留"通道 A 归小组长"与定位匹配。
   assert.ok(ROSTER_SECTION.includes('通道 A'));
-  assert.ok(ROSTER_SECTION.includes('通道 B'));
-  assert.ok(ROSTER_SECTION.includes('独立模型'));
+  assert.ok(ROSTER_SECTION.includes('只有小组长用'));
+  // 「通道 B」的完整工具清单在「派发通道硬规则」那节（同一份 section 内）。
+  assert.ok(ROSTER_SECTION.includes('### 派发通道硬规则'), ROSTER_SECTION.slice(0, 400));
+  assert.ok(ROSTER_SECTION.includes('subagent'), '通道 B 的工具仍要点名');
+  assert.ok(ROSTER_SECTION.includes('send_message'));
+  // 前台调用 / 结果直接返回：通道 A 的调用语义（一次性子智能体）。
   assert.ok(ROSTER_SECTION.includes('前台调用'));
   assert.ok(ROSTER_SECTION.includes('结果直接返回'));
-  // 6.0.0：Team 成员就是标准 subagent（`subagent` / `subagent_fork` 建小组长）。
-  assert.ok(ROSTER_SECTION.includes('长期存在的具名子代理'));
-  assert.ok(ROSTER_SECTION.includes('共享任务板'));
-  assert.ok(ROSTER_SECTION.includes('后台并行'));
-  assert.ok(ROSTER_SECTION.includes('混用'));
   // 写作用域重叠的硬要求不能因为多一条通道就松掉。
-  assert.ok(ROSTER_SECTION.includes('同一批文件不要同时交给两条通道'));
+  assert.ok(ROSTER_SECTION.includes('写作用域'), ROSTER_SECTION.slice(0, 400));
 });
 
-test('3.5.0：通道选择给出「小组长什么时候交下级」的判据（不是只有"可以"）', () => {
-  // 用户 2026-11-12 指出：协议只写了"小组长可以自己执行，也可以交下级"，
-  // 没有判据，于是它既可能把该自己干的活塞给一次性子智能体，也可能反过来什么都自己干。
-  // 判据必须落在协议里（模型看不到 README）。
-  for (const phrase of ['单点', '产出明确', '前台等一会就能拿到结果', 'workflow', '多阶段', '要持续对话', '要中途纠偏', '任务板进度']) {
-    assert.ok(ROSTER_SECTION.includes(phrase), `通道判据缺少：${phrase}`);
+test('7.7.0：通道 A 的用法交给小组长按「先拆再扇出」判据决定（旧 3.5.0 判据已废止）', () => {
+  // 3.5.0 曾在这里写「单点 → 交 subagent_<id>；多阶段 → 自己执行」，那是**默认偏向自己干**的
+  // 判据，实测导致小组长全程独干（session-1d8c8c60：4 位小组长里 3 位零扇出）。
+  // 7.7.0 起判据改为「先拆再扇出」（团队模型 leader-may-execute），这里只保留指路，不再复述判据。
+  assert.ok(ROSTER_SECTION.includes('先拆再扇出'), '应指向 7.7.0 的新判据');
+  // 旧判据的措辞不能再出现在 section 里（否则两套判据打架）。
+  for (const stale of ['单点、产出明确、前台等一会就能拿到结果', '多阶段、要持续对话、要中途纠偏、要留任务板进度']) {
+    assert.ok(!ROSTER_SECTION.includes(stale), `section 仍残留旧判据：${stale}`);
   }
-  // 判据的方向必须写死：单点 → 一次性子智能体；多阶段 / 要持续对话 → 自己执行。
-  assert.match(ROSTER_SECTION, /单点[^。\n]*→[^。\n]*subagent_<id>/u, ROSTER_SECTION);
-  assert.match(ROSTER_SECTION, /多阶段[^。\n]*→[^。\n]*自己执行/u, ROSTER_SECTION);
 });
 
-test('名册是可复用工具，不是任务数上限，也不许造活', () => {
-  for (const phrase of ['不是任务数上限', 'runtime 容量', '一个新的 child', '造活', '空着']) {
+test('名册是可复用工具，不是任务数上限', () => {
+  // 7.8.0：「runtime 容量 / 造活」两句随去重合并到团队模型的并行上限一节，
+  // 这里只钉住"名册≠任务上限""每次都是新 child"这两条最容易被误读的语义。
+  for (const phrase of ['不是任务数上限', '新 child']) {
     assert.ok(ROSTER_SECTION.includes(phrase), `名册语义缺少：${phrase}`);
   }
 });
@@ -365,11 +367,7 @@ test('派活前必须做定位匹配，差距大就开新的子智能体（而�
     assert.ok(ROSTER_SECTION.includes(phrase), `紧凑版缺少定位匹配规则：${phrase}`);
   }
   // 新开的子智能体要把定位写进它的 description 与 prompt —— 否则它仍用默认人设。
-  assert.ok(ROSTER_SECTION.includes('写进它的 description 与 prompt'));
-  // 判断口径必须给出，否则"差距大"没有可执行标准。
-  assert.ok(ROSTER_SECTION.includes('顺带多做一点同领域的小事'));
-  assert.ok(ROSTER_SECTION.includes('这是另一类工作'));
-
+  assert.ok(ROSTER_SECTION.includes('写清这次的定位'));
   // 同一任务里混着两种定位的工作 → 拆开派，而不是塞给一个人。
   assert.ok(ROSTER_SECTION.includes('拆成两个任务分别派'));
 });
@@ -577,13 +575,16 @@ test('两条通道都在时，紧凑版给出「通道配比：Team 优先，spe
   // 0.5.0 依据：session-7064696b 里 Team 通道在重启后被彻底放弃（后 300 个事件 0 次），
   // 任务板留下 6 项没收尾。所以通道选择必须是 section 的一部分，而不是只在 skill 长文里。
   assert.ok(ROSTER_SECTION.includes('通道配比：Team 优先'), ROSTER_SECTION);
-  // 6.0.0：Team 成员是标准 subagent，复用对象从"teammate"改称"小组长"。
-  for (const phrase of ['按任务形状选通道', '建板必有主', '复用同一个小组长', '重启后先看团队', '静默结束']) {
+  // 7.8.0：三节去重——「按任务形状选通道」已并入「派发通道」那节（同一 section 内仍可读到
+  // Team 是唯一通道的口径），本节只保留"建板必有主 / 复用 / 重启后 / 静默结束"这几条独有的。
+  for (const phrase of ['建板必有主', '复用同一个小组长', '重启后先看团队', '静默结束']) {
     assert.ok(ROSTER_SECTION.includes(phrase), `Team 优先缺少：${phrase}`);
   }
   // 必须点名"多阶段/长任务走 Team"，否则 specialist 还是会被当万能通道。
   assert.ok(ROSTER_SECTION.includes('多阶段'), ROSTER_SECTION);
   assert.ok(ROSTER_SECTION.includes('subagent'), ROSTER_SECTION);
+  // 通道选择的口径仍要在场（去重后落在「派发通道硬规则」那节）。
+  assert.ok(ROSTER_SECTION.includes('唯一'), 'Team 优先口径仍要在场');
 });
 
 test('没有专职子代理工具时不提「通道配比」（没有选择，就不制造选择）', () => {
@@ -703,8 +704,8 @@ test('3.0.0：名册启用时通道 A 明确标注「只有小组长用」且不
   assert.ok(ROSTER_SECTION.includes('只有小组长用'), ROSTER_SECTION);
   assert.ok(ROSTER_SECTION.includes('这条通道**不属于你**'), ROSTER_SECTION);
   assert.ok(ROSTER_SECTION.includes('你调用会被门禁拒绝'), ROSTER_SECTION);
-  // 通道 B 是"你的唯一通道"。
-  assert.ok(ROSTER_SECTION.includes('你的唯一通道'), ROSTER_SECTION);
+  // 通道 B 是"你的唯一通道"（7.8.0 去重后这句话由「派发通道硬规则」那节承载）。
+  assert.ok(ROSTER_SECTION.includes('只有一条'), ROSTER_SECTION);
 });
 
 // ------------------------------------- 6.0.0：Team 常驻，降级形态已删除 ---
@@ -737,7 +738,8 @@ test('6.0.0：hasTeamTools 已删除 —— 传 false + 名册仍走正常的两
   // 正常的 Team 前提标题必须在场（旧断言是"不应出现"，6.0.0 反转）。
   assert.ok(text.includes('通道 A：一次性专家工具'), '应出现正常的通道 A 标题');
   assert.ok(text.includes('只有小组长用'), 'Team 常驻：一次性专家工具归小组长');
-  assert.ok(text.includes('你的唯一通道'), 'Team 通道是唯一通道');
+  // 7.8.0：去重后「你的唯一通道」小标题并入「派发通道硬规则」那节，改钉同一语义的另一处表述。
+  assert.ok(text.includes('只有一条'), 'Team 通道是唯一通道');
 });
 
 test('6.0.0：hasTeamTools 已删除 —— 传 false + 无名册仍走 Team 常驻形态（不再有逃生段）', () => {
@@ -797,7 +799,7 @@ test('6.0.0 默认回归：hasTeamTools 旧选项被忽略，且无覆盖段', (
   assert.ok(!SECTION.includes('本部署**没有**智能体团队'));
   // 名册启用时默认仍走"两条通道、你只走通道 B"的正常形态。
   assert.ok(ROSTER_SECTION.includes('只有小组长用'));
-  assert.ok(ROSTER_SECTION.includes('你的唯一通道'));
+  assert.ok(ROSTER_SECTION.includes('只有一条'));
 });
 
 // ---------------------------------------------------------------- 长度与兼容 ---
@@ -812,7 +814,11 @@ test('紧凑版长度受控：每轮注入，必须短于长文', () => {
   // 上限的作用是防"把细节都塞进 section"，不是精确配额：超了就说明该搬到长文了。
   // 5.0.0：合并「项目经理模式」后新增两节（按任务形状拆 + 验收与收口），
   // 实测默认 9983 / 名册 11308 / 开场 10137 字符 —— 预算提到 12000。
-  const CHAR_BUDGET = 12_000;
+  // 7.8.0：规则密度上升到 7.7.0 后，名册版只剩 3 字符余量（11,997/12,000），一加规则就撞线。
+  // 本轮先做了**三节「派发通道」去重**（名册版 11,933 → 11,110，省 823 字符），
+  // 再按用户 2026-11-16 的决定把预算提到 14000 —— 目的是留出余量，而不是允许囤细节：
+  // 去重后的真实占用仍远低于新上限，超了还是该搬长文。
+  const CHAR_BUDGET = 14_000;
   for (const [label, text] of [
     ['默认 section', SECTION],
     ['启用名册 section', ROSTER_SECTION],
