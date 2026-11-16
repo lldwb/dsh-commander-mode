@@ -27,6 +27,7 @@ import {
   isOpenTaskStatus,
   isOpenTodoStatus,
   isTerminalTaskStatus,
+  parseTicketStatusMarker,
   recordBoard,
   recordDelegation,
   recordPlan,
@@ -300,6 +301,107 @@ test('孤儿任务被结算后问题消失', () => {
   assert.ok(evaluateSync(ledger, { now: LATER }).issues.some((issue) => issue.code === 'board-stale-open'));
   recordBoard(ledger, [task('task-3', 'completed')], LATER);
   assert.ok(!evaluateSync(ledger, { now: LATER + 1000 }).issues.some((issue) => issue.code === 'board-stale-open'));
+});
+
+// ------------------------------------------------ 全员 idle 但还有活（7.6.0） ---
+
+test('7.6.0：还有未结算任务 + 团队全员 inactive → 报 all-idle-stalled', () => {
+  // 现场 session-1d8c8c60（2026-11-16 11:00）：任务板 8 项进行中、团队 20 人全部 inactive，
+  // 指挥者在报告里写「还剩 4 项切图判据」然后结束回合去等通知——而没有在飞的下级就永远
+  // 不会产生通知，于是静默到用户来问「进度如何？」。
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    task('task-13', 'in_progress', { ownerName: 'slice-quality-lead' }),
+    task('task-14', 'pending', { ready: true }),
+  ], 0);
+  const view = evaluateSync(ledger, {
+    members: [member('slice-quality-lead', 'inactive'), member('installer-lead', 'inactive')],
+    now: 60_000,
+  });
+  const issue = view.issues.find((entry) => entry.code === 'all-idle-stalled');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('2 项未结算'), issue.detail);
+  assert.ok(issue.detail.includes('全部 inactive'), issue.detail);
+  assert.ok(issue.detail.includes('task-13'), issue.detail);
+});
+
+test('7.6.0：有成员在跑时不报（通知链还在工作）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-13', 'in_progress', { ownerName: 'a' })], 0);
+  const view = evaluateSync(ledger, {
+    members: [member('a', 'inactive'), member('b', 'running')],
+    now: 60_000,
+  });
+  assert.ok(!view.issues.some((entry) => entry.code === 'all-idle-stalled'), JSON.stringify(view.issues));
+});
+
+test('7.6.0：没有未结算任务 / 没有团队成员时不报', () => {
+  const settled = createSyncLedger();
+  recordBoard(settled, [task('task-1', 'completed')], 0);
+  assert.ok(!evaluateSync(settled, { members: [member('a', 'inactive')], now: 60_000 })
+    .issues.some((entry) => entry.code === 'all-idle-stalled'));
+
+  const noTeam = createSyncLedger();
+  recordBoard(noTeam, [task('task-2', 'pending', { ready: true })], 0);
+  assert.ok(!evaluateSync(noTeam, { members: [], now: 60_000 })
+    .issues.some((entry) => entry.code === 'all-idle-stalled'));
+});
+
+test('7.6.0：兜底提醒要说清"不会有通知"并给出继续派的动作', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-13', 'in_progress', { ownerName: 'a' })], 0);
+  const view = evaluateSync(ledger, { members: [member('a', 'inactive')], now: 60_000 });
+  const nudge = buildSyncNudge(view);
+  // 关键：让模型明白"等通知"这条路已经不存在了
+  assert.ok(nudge.includes('不会再有通知'), nudge);
+  assert.ok(nudge.includes('send_message'), nudge);
+  assert.ok(nudge.includes('subagent'), nudge);
+  // 看板每轮都要能看见这条（不是只在兜底里）
+  const board = renderSyncBoard(view, [member('a', 'inactive')]);
+  assert.ok(board.includes('全部 inactive'), board);
+});
+
+test('7.6.0：在等用户的工单（waiting / blocked）不算"可推进"，不误报', () => {
+  // 任务板只有 4 个状态：工单的 waiting / blocked 在板上同样是 in_progress，
+  // 真实状态在描述 marker `[commander:status=...]` 里。不排除的话，指挥官合理地
+  // 等用户拍板时会被反复催着继续派活——那是误报，会把正常收尾卡死。
+  for (const ticketStatus of ['waiting', 'blocked']) {
+    const ledger = createSyncLedger();
+    recordBoard(ledger, [{
+      ...task('task-20', 'in_progress', { ownerName: 'a' }),
+      description: `[commander:ticket=t-400]\n[commander:channel=team]\n[commander:status=${ticketStatus}]`,
+    }], 0);
+    const view = evaluateSync(ledger, { members: [member('a', 'inactive')], now: 60_000 });
+    assert.ok(
+      !view.issues.some((entry) => entry.code === 'all-idle-stalled'),
+      `${ticketStatus} 不该报 all-idle-stalled：${JSON.stringify(view.issues)}`,
+    );
+    assert.equal(buildSyncNudge(view), '', `${ticketStatus} 不该拦回合`);
+  }
+});
+
+test('7.6.0：同一个板上既有"等用户"又有"可推进"时，只点名可推进的那几项', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    { ...task('task-1', 'in_progress', { ownerName: 'a' }), description: '[commander:status=waiting]' },
+    { ...task('task-2', 'in_progress', { ownerName: 'a' }), description: '[commander:status=blocked]' },
+    task('task-3', 'in_progress', { ownerName: 'a' }),
+  ], 0);
+  const view = evaluateSync(ledger, { members: [member('a', 'inactive')], now: 60_000 });
+  const issue = view.issues.find((entry) => entry.code === 'all-idle-stalled');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('task-3'), issue.detail);
+  assert.ok(!issue.detail.includes('task-1'), issue.detail);
+  assert.ok(!issue.detail.includes('task-2'), issue.detail);
+  assert.ok(issue.detail.includes('1 项未结算'), issue.detail);
+});
+
+test('7.6.0：解析 marker 的边界（无描述 / 无 marker / 大小写）', () => {
+  assert.equal(parseTicketStatusMarker(undefined), '');
+  assert.equal(parseTicketStatusMarker(''), '');
+  assert.equal(parseTicketStatusMarker('没有 marker 的描述'), '');
+  assert.equal(parseTicketStatusMarker('[commander:status=WAITING]'), 'waiting');
+  assert.equal(parseTicketStatusMarker('[commander:ticket=t-1]\n[commander:status=progress]'), 'progress');
 });
 
 test('孤儿任务兜底默认包含，可用 includeStale:false 降级为看板常驻', () => {
