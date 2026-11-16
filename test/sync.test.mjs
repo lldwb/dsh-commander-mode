@@ -19,6 +19,7 @@ import {
   STALE_OPEN_GRACE_MS,
   SYNC_CONTEXT_NAME,
   SYNC_CONTEXT_ORDER,
+  TICKET_BACKLOG_LIMIT,
   TERMINAL_TASK_STATUSES,
   buildSyncNudge,
   consumeStaleNudge,
@@ -402,6 +403,43 @@ test('7.6.0：解析 marker 的边界（无描述 / 无 marker / 大小写）', 
   assert.equal(parseTicketStatusMarker('没有 marker 的描述'), '');
   assert.equal(parseTicketStatusMarker('[commander:status=WAITING]'), 'waiting');
   assert.equal(parseTicketStatusMarker('[commander:ticket=t-1]\n[commander:status=progress]'), 'progress');
+});
+
+// ------------------------------------------------ 工单积压（7.9.0） ---
+
+test('7.9.0：同时开着超过上限的未结算项 → 报 ticket-backlog（先收口）', () => {
+  // 现场 session-1d8c8c60：26.6 小时开了 14 张工单，尾声仍有 8 项进行中、只结算 6 张，
+  // 一直没形成交付闭环。积压本身会让"做完了没有"永远说不清。
+  const ledger = createSyncLedger();
+  const tasks = [];
+  for (let i = 1; i <= TICKET_BACKLOG_LIMIT + 2; i += 1) {
+    tasks.push(task(`task-${i}`, 'in_progress', { ownerName: 'a' }));
+  }
+  recordBoard(ledger, tasks, 0);
+  const view = evaluateSync(ledger, { members: [member('a', 'running')], now: 60_000 });
+  const issue = view.issues.find((entry) => entry.code === 'ticket-backlog');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('项未结算'), issue.detail);
+  // 兜底要给出"先收口"的动作
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('先收口'), nudge);
+});
+
+test('7.9.0：积压不超过上限时不报；等用户的项不计入积压', () => {
+  const ok = createSyncLedger();
+  recordBoard(ok, Array.from({ length: TICKET_BACKLOG_LIMIT }, (_, i) => task(`task-${i + 1}`, 'in_progress', { ownerName: 'a' })), 0);
+  assert.ok(!evaluateSync(ok, { members: [member('a', 'running')], now: 60_000 })
+    .issues.some((e) => e.code === 'ticket-backlog'));
+
+  // 6 项可推进 + 3 项"等用户" → 不计入，不该报
+  const waiting = createSyncLedger();
+  const rows = Array.from({ length: TICKET_BACKLOG_LIMIT }, (_, i) => task(`task-${i + 1}`, 'in_progress', { ownerName: 'a' }));
+  for (let i = 0; i < 3; i += 1) {
+    rows.push({ ...task(`task-w${i}`, 'in_progress', { ownerName: 'a' }), description: '[commander:status=waiting]' });
+  }
+  recordBoard(waiting, rows, 0);
+  assert.ok(!evaluateSync(waiting, { members: [member('a', 'running')], now: 60_000 })
+    .issues.some((e) => e.code === 'ticket-backlog'), '等用户的项不该计入积压');
 });
 
 // -------------------------------------------- 小组长独干（7.7.0） ---
