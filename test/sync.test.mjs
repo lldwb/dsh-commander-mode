@@ -408,6 +408,39 @@ test('7.6.0：解析 marker 的边界（无描述 / 无 marker / 大小写）', 
   assert.equal(parseTicketStatusMarker('[commander:ticket=t-1]\n[commander:status=progress]'), 'progress');
 });
 
+test('7.11.0：早已完工且 inactive 的小组长不该被翻旧账（本次修的误报）', () => {
+  // 现场：9 位小组长里 7 位早已完工、inactive，第一版仍点名"在独干"，
+  // 那条警告**永远无法消除**（历史改不了），实测刷了 98 次，指挥官每回合都要解释一遍
+  // "已完结的单点任务，无需再拆"——这是警告疲劳的来源，比不报更糟。
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'rollback-lead' })], 0);
+  const members = [];
+  for (const n of ['slice-quality-lead', 'installer-lead', 'ui-progress-lead', 'slice-final-lead']) {
+    members.push({ name: n, status: 'inactive', role: 'member', depth: 1 }); // 早已完工
+  }
+  members.push({ name: 'rollback-lead', status: 'running', role: 'member', depth: 1 });
+  // 团队会扇出：rollback-lead 自己有下级
+  members.push({ name: 'rollback-lead/fix-a', status: 'running', role: 'member', depth: 2 });
+
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  assert.ok(!view.issues.some((e) => e.code === 'fan-out-unused'), JSON.stringify(view.issues));
+});
+
+test('7.7.0：正在干活的小组长零下级 → 仍然要报（真阳性不能修没）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'b' })], 0);
+  const members = [
+    { name: 'a', status: 'running', role: 'member', depth: 1 },   // 在跑，零下级
+    { name: 'b', status: 'inactive', role: 'member', depth: 1 },
+    { name: 'b/fix-a', status: 'inactive', role: 'member', depth: 2 }, // 团队确实在扇出
+  ];
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  const issue = view.issues.find((e) => e.code === 'fan-out-unused');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('正在干活'), issue.detail);
+  assert.ok(issue.detail.includes('a'), issue.detail);
+});
+
 // ------------------------------------------------ 工单积压（7.9.0） ---
 
 test('7.9.0：同时开着超过上限的未结算项 → 报 ticket-backlog（先收口）', () => {
