@@ -27,13 +27,14 @@ import {
 
 // ---------------------------------------------------------------- 九条规则 ---
 
-test('TEAM_MODEL_RULES 恰好十条，id 固定且顺序稳定', () => {
+test('TEAM_MODEL_RULES 恰好十一条，id 固定且顺序稳定', () => {
   // id 是契约：`lib/protocol.js` / 测试都按 id 引用。
   // 顺序不是契约的一部分（正文渲染会编号），但固定顺序能让 diff 可读。
   // 7.0.0 新增第 8 条 `dispatch-channel-hard`（指挥官只有一条派发通道 + 恢复阶梯）。
   // 7.1.0 新增第 9 条 `fanout-owns-fanin`（团队形状：扇出者负责扇入，用户 2026-11-14 纠正）。
   // 7.2.0 新增第 10 条 `child-completion-required`（完成语义：子智能体没干完，小组长就没完成）。
-  assert.equal(TEAM_MODEL_RULES.length, 10);
+  // 7.7.0 新增第 11 条 `requirement-axes`（需求判断要拆轴，用户 2026-11-16 纠正）。
+  assert.equal(TEAM_MODEL_RULES.length, 11);
   assert.deepEqual(
     TEAM_MODEL_RULES.map((rule) => rule.id),
     [
@@ -47,6 +48,7 @@ test('TEAM_MODEL_RULES 恰好十条，id 固定且顺序稳定', () => {
       'dispatch-channel-hard',
       'fanout-owns-fanin',
       'child-completion-required',
+      'requirement-axes',
     ],
   );
 });
@@ -103,14 +105,15 @@ test('九条规则各自覆盖用户 2026-11-11 / 2026-11-14 的一条要求（�
   assert.match(byId.get('leader-may-execute').detail, /不直接调用/u);
   // 3.5.0（用户 2026-11-12）：光说"可以交下级"没有判据，模型要么把该自己干的活塞给
   // 一次性子智能体，要么什么都自己干。判据必须写在规则正文里。
-  for (const phrase of ['什么时候该交下级', '单点', '产出明确', '前台等一会就能拿到结果', 'workflow', '多阶段', '要持续对话', '要中途纠偏', '任务板进度', '新 child']) {
+  for (const phrase of ['拆分并扇出', '能拆出', '才自己干', '单点活', 'workflow', '多阶段', '要持续对话', '要中途纠偏', '任务板进度', '新 child', '独干']) {
     assert.ok(byId.get('leader-may-execute').detail.includes(phrase), `leader-may-execute 缺判据：${phrase}`);
   }
-  // 方向不能写反：单点 → 一次性子智能体；多阶段 / 要持续对话 → 自己执行。
-  assert.match(byId.get('leader-may-execute').detail, /单点[^。]*→[^。]*subagent_<id>/u);
-  assert.match(byId.get('leader-may-execute').detail, /多阶段[^。]*→[^。]*自己执行/u);
-  // 「为什么」也要说清代价：一次性子智能体每次调用都是新 child，上下文要重新交代。
+  // 7.7.0 方向：默认先拆再扇出，单点活才自己干（不是"默认自己干、偶尔交下级"）。
+  assert.match(byId.get('leader-may-execute').detail, /第一步是"拆分并扇出"，不是"开始干"/u);
+  assert.match(byId.get('leader-may-execute').detail, /只有\*\*真正的单点活\*\*/u);
+  // 「为什么」要说清两种代价：一次性子智能体丢上下文 + 小组长独干是最隐蔽的浪费。
   assert.match(byId.get('leader-may-execute').why, /新 child|上下文/u);
+  assert.match(byId.get('leader-may-execute').why, /独干|隐蔽的浪费/u);
 });
 
 // ---------------------------------------------------------------- 7.0.0 派发通道硬规则 ---
@@ -200,8 +203,8 @@ test('7.1.0 / 7.3.0：前三条规则与第 9 条不打架（任务链不拆成�
   assert.match(byId.get('runtime-limits').detail, /同一交付物的几个并行切片不算独立工作流/u);
   assert.match(byId.get('one-team-one-task').detail, /同一交付物的 N 个并行切片不按这条拆/u);
   assert.match(byId.get('one-team-one-task').detail, /第 9 条/u);
-  // 正文标题同步（十条规则，不是九条）。
-  assert.ok(TEAM_MODEL.includes('## 十条规则'), 'TEAM_MODEL 的规则小节标题应改成「十条规则」');
+  // 正文标题同步（十一条规则，不是十条）。
+  assert.ok(TEAM_MODEL.includes('## 十一条规则'), 'TEAM_MODEL 的规则小节标题应改成「十条规则」');
 });
 
 // ------------------------------------------------- 7.2.0 完成语义（子未完成 ≠ 父完成） ---
@@ -301,14 +304,14 @@ test('TEAM_MODEL 含三层标题、关键数字与「小组长」口径', () => 
   }
 });
 
-test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：十条规则的标题与「为什么」都在正文里', () => {
+test('TEAM_MODEL 由 TEAM_MODEL_RULES 渲染：十一条规则的标题与「为什么」都在正文里', () => {
   // 渲染而不是手抄，是为了避免"规则改了、正文没改"这种漂移。
   for (const rule of TEAM_MODEL_RULES) {
     assert.ok(TEAM_MODEL.includes(rule.title), `TEAM_MODEL 缺规则标题：${rule.title}`);
     assert.ok(TEAM_MODEL.includes(rule.why), `TEAM_MODEL 缺规则依据（why）：${rule.id}`);
   }
-  // 十条规则按顺序编号成 `### 1. …` … `### 10. …`。
-  for (let index = 1; index <= 10; index += 1) {
+  // 十一条规则按顺序编号成 `### 1. …` … `### 11. …`。
+  for (let index = 1; index <= 11; index += 1) {
     assert.ok(TEAM_MODEL.includes(`### ${index}. `), `TEAM_MODEL 缺第 ${index} 条规则编号`);
   }
   // 无 Markdown 表格（与其它 section 的排版约定一致）。

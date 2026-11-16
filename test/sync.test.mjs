@@ -404,6 +404,49 @@ test('7.6.0：解析 marker 的边界（无描述 / 无 marker / 大小写）', 
   assert.equal(parseTicketStatusMarker('[commander:ticket=t-1]\n[commander:status=progress]'), 'progress');
 });
 
+// -------------------------------------------- 小组长独干（7.7.0） ---
+
+test('7.7.0：有下级在工作、但所有小组长都没派下级 → 报 fan-out-unused', () => {
+  // 现场 session-1d8c8c60：4 位小组长里 3 位一个子智能体都没派，全程自己串行做。
+  // 判据只在"团队里确实已经有子智能体"时才成立（否则小团队单打独斗是正常的）。
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'installer-lead' })], 0);
+  const members = [
+    { name: 'installer-lead', status: 'running', role: 'member', depth: 1 },
+    { name: 'ui-progress-lead', status: 'inactive', role: 'member', depth: 1 },
+    // 子智能体挂在第三个小组长下（说明这个团队确实会扇出）
+    { name: 'slice-lead/fix-a', status: 'inactive', role: 'member', depth: 2 },
+  ];
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  const issue = view.issues.find((entry) => entry.code === 'fan-out-unused');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('一个下级都没派'), issue.detail);
+  assert.ok(issue.detail.includes('installer-lead'), issue.detail);
+  // 兜底要给出"先拆再干"的动作
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('先拆再干'), nudge);
+  assert.ok(nudge.includes('subagent'), nudge);
+});
+
+test('7.7.0：小组长真在扇出时不报（哪怕只有一位）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  const members = [
+    { name: 'a', status: 'running', role: 'member', depth: 1 },
+    { name: 'a/fix-1', status: 'running', role: 'member', depth: 2 },
+  ];
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  assert.ok(!view.issues.some((entry) => entry.code === 'fan-out-unused'), JSON.stringify(view.issues));
+});
+
+test('7.7.0：团队里根本没有子智能体时不报（小团队单干正常）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  const members = [{ name: 'a', status: 'running', role: 'member', depth: 1 }];
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  assert.ok(!view.issues.some((entry) => entry.code === 'fan-out-unused'), JSON.stringify(view.issues));
+});
+
 test('孤儿任务兜底默认包含，可用 includeStale:false 降级为看板常驻', () => {
   const ledger = createSyncLedger();
   recordBoard(ledger, [task('task-3', 'pending', { ready: true })], 0);
