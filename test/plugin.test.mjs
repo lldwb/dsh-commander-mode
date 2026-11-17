@@ -638,8 +638,26 @@ test('注册了同步看板运行时上下文，名字与 order 是约定的', (
 test('没有智能体团队的部署里，同步看板不产生任何文本', () => {
   const { record } = boot();
   assert.equal(syncContext(record).text({ agent: LEAD }), '');
-  // teammate 也永远拿不到看板。
-  assert.equal(syncContext(record).text({ agent: TEAMMATE }), '');
+  // 7.14.1 变更：teammate 不再拿到**指挥者**看板，但会拿到**执行者**看板（见下一条用例）。
+  const teammateText = syncContext(record).text({ agent: TEAMMATE });
+  assert.ok(!teammateText.includes('指挥者'), `teammate 不该拿到指挥者看板：${teammateText}`);
+  assert.ok(teammateText.includes('执行者'), `teammate 应拿到执行者看板：${teammateText}`);
+});
+
+test('7.14.1：小组长与子智能体也收到执行者看板（不再是空）', () => {
+  // 此前 `systemPrompt.context` 对 isDelegatedAgent 一律 return ''，于是同一批缺陷在每层重演：
+  // 小组长层并发均值 0.58、55.2% 采样点无人、3/4 位小组长零扇出、b013bfbf 的小组长还在轮询。
+  const { record } = boot();
+  // L1 小组长：没有下级 → 提示"先拆再扇出"
+  const lead = syncContext(record).text({ agent: TEAMMATE });
+  assert.ok(lead.includes('小组长'), lead);
+  assert.ok(lead.includes('先拆再扇出'), lead);
+  // L2 子智能体：不再向下派 + 不等待/不轮询 + 结论写进最终答复
+  const child = syncContext(record).text({ agent: { session: { header: { delegationDepth: 2 } } } });
+  assert.ok(child.includes('L2 子智能体'), child);
+  assert.ok(child.includes('不再向下派'), child);
+  assert.ok(child.includes('不等待'), child);
+  assert.ok(child.includes('最终答复'), child);
 });
 
 test('7.12.0（b）：没写 todo 时，看板从**工单派生**计划清单（真实接线）', () => {

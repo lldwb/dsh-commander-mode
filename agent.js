@@ -155,6 +155,7 @@ import {
   recordDelegation,
   recordPlan,
   recordTurn,
+  renderExecutorBoard,
   renderLongSessionCheck,
   renderSyncBoard,
 } from './lib/sync.js';
@@ -445,6 +446,52 @@ export function apply(ctx) {
       refreshingTeams.delete(agent);
     }
   };
+
+  /**
+   * 取一个 agent 的委派深度（7.14.1）。
+   *
+   * 用 `session.header` 上的真实字段判断，不靠"是不是被委派"来猜：
+   * `delegationDepth` 有数就用它；`origin === 'subagent'` / 有 `parentSession` 但没深度时按 1 算。
+   *
+   * @param {object} agent - 任意 agent。
+   * @returns {number} 深度（根 agent 为 0）。
+   */
+  function delegationDepthOf(agent) {
+    try {
+      const header = agent?.session?.header;
+      if (header === null || header === undefined || typeof header !== 'object') return 0;
+      const depth = header.delegationDepth;
+      if (typeof depth === 'number' && Number.isFinite(depth) && depth >= 0) return depth;
+      if (header.parentSession !== undefined && header.parentSession !== null) return 1;
+      if (header.origin === 'subagent') return 1;
+      return 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 读某个 agent **自己子树**的成员快照（7.14.1，专供执行者看板）。
+   *
+   * 复用 `teamMembers` 缓存（key 是 agent，天然按子树隔离）：`subagents.listDescendants(sessionId)`
+   * 返回的本来就是"相对这个 session"的后代，所以对小组长也能拿到它自己的下级。
+   *
+   * @param {object} agent - 小组长 / 子智能体。
+   * @returns {object[]} 成员 view；读不到返回空数组。
+   */
+  function readExecutorMembers(agent) {
+    try {
+      const cached = teamMembers.get(agent);
+      if (cached === undefined || Date.now() - cached.at > TEAM_MEMBERS_MAX_AGE_MS) {
+        // 同步文本渲染不能 await：触发后台刷新，本轮先用已有缓存（可能为空）。
+        void refreshTeamMembers(agent);
+      }
+      const rows = teamMembers.get(agent)?.members;
+      return Array.isArray(rows) ? rows : [];
+    } catch {
+      return [];
+    }
+  }
 
   /**
    * 读团队视图（任务板 + 成员快照）。
@@ -1135,7 +1182,19 @@ export function apply(ctx) {
       text: (context) => {
         try {
           const agent = context?.agent;
-          if (agent === undefined || isDelegatedAgent(agent)) return '';
+          if (agent === undefined) return '';
+          // 7.14.1：**被委派的 agent（小组长 / 子智能体）也必须有看板**。
+          // 此前这里一律 `return ''`，于是"逐层重演的缺陷"没人管：实测小组长层并发均值 0.58、
+          // 55.2% 采样点无人，3/4 位小组长零扇出，`b013bfbf` 的小组长还在轮询——
+          // 它们自己看不到任何提示。**规则只放指挥官那一层，等于只治症状不入病根。**
+          if (isDelegatedAgent(agent)) {
+            const executorText = renderExecutorBoard({
+              depth: delegationDepthOf(agent),
+              members: readExecutorMembers(agent),
+              selfRunning: true,
+            });
+            return executorText;
+          }
           const parts = [];
           if (syncBoardEnabled()) {
             const { view, members } = inspectSync(agent);

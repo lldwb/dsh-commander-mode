@@ -2352,6 +2352,33 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.14.1** —— **并行度约束下沉到小组长与子智能体（执行者看板）**。
+  ① **问题**：7.6.0–7.14.0 的所有看板与告警（同步看板、并行度不足、轮询提醒…）
+  **只给指挥官看**——`agent.js` 的 `systemPrompt.context` 对 `isDelegatedAgent` 命中的 agent
+  一律 `return ''`。于是同一批缺陷在**每一层**重演：
+  - `session-1d8c8c60` 小组长层并发均值 **0.58**、**55.2%** 采样点无人；
+  - **3/4 位小组长一个子智能体都没派**（独干），它们自己看不到任何"你该扇出"的提示；
+  - `b013bfbf` 的小组长 `wait_agent` 被拒后改用 `list_agents` **轮询**，也没收到"不许轮询"的提醒。
+  **规则只放在指挥官那一层，等于只治了症状、不入病根。**
+  ② **修法**：`lib/sync.js` 新增 `renderExecutorBoard()`，按深度给被委派 agent 一份最小自我约束：
+  - **L1 小组长**：下级人数与在跑数；**0 个在跑且 ≥2 个下级** → 「**现在派 2-3 条同时跑**」
+    （并行上限用宿主的 `subagent.maxActiveSubagents`，默认 8）；没有下级 → 「**先拆再扇出**」
+    （多步骤活的默认动作，单点活才自己干）；恒定两条：**收齐下级再报 ready**、**不等待不轮询**。
+  - **L2 子智能体**：三条——**不再向下派**（深度到 2 为止）、**不等待/不反复查状态**
+    （`list_agents` 连续 >4 次会被拒）、**结论与证据写进最终答复**（上级只看得到它）。
+  ③ **接线**：`systemPrompt.context` 对 `isDelegatedAgent` 的 agent 改为渲染执行者看板
+  （`delegationDepthOf()` 读 `header.delegationDepth` / `parentSession` / `origin`；
+  `readExecutorMembers()` 复用 `teamMembers` 缓存——`listDescendants(sessionId)` 返回的就是
+  相对该 session 的后代，所以小组长也能拿到**它自己**的下级）。
+  ④ **设计约束（沿用 7.11.0 教训）**：每条都必须**可被行动消除**——"没有下级"能被"派一个"消除、
+  "0 个在跑"能被"现在派"消除；**已停手且无下级的小组长不产生任何文本**，不制造噪声。
+  ⑤ **用户要做什么**：重新安装 / **重启 DSH**。
+  ⑥ **测试**：**722 / 722 通过、0 失败**（7.14.0 基线 716，净增 6）：
+  `test/sync.test.mjs` 新增 5 条（无下级→先拆再扇出 / 0 在跑→现在派 2-3 条且并行后消失 /
+  恒定的 ready 与不轮询两条 / L2 三条约束 / 已停手不产生文本）；
+  `test/plugin.test.mjs` 更新 1 条并新增 1 条**真实接线**（teammate 拿到的是执行者看板而非指挥者看板、
+  L2 也拿到看板）。
+
 - **7.14.0** —— **并行度不足检测（`parallel-underused`）：并行不该靠用户"点火"**。
   ① **实测（`session-1d8c8c60`，按回合区间严格统计，5 分钟采样 643 点）**：
 

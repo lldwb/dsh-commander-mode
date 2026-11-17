@@ -22,6 +22,7 @@ import {
   TICKET_BACKLOG_LIMIT,
   LONG_SESSION_EVERY,
   recordTurn,
+  renderExecutorBoard,
   renderLongSessionCheck,
   TERMINAL_TASK_STATUSES,
   buildSyncNudge,
@@ -570,6 +571,59 @@ test('7.10.0：体检会把已检测到的信号一并列出（有才列，不�
   const text = renderLongSessionCheck(ledger, view);
   assert.ok(text.includes('派活过度集中'), text);
   assert.ok(text.includes('先修'), text);
+});
+
+// -------------------------------------- 执行者看板（7.14.1） ---
+
+test('7.14.1：小组长还没有下级 → 提示「先拆再扇出」（这正是 3/4 组长零扇出的病根）', () => {
+  const text = renderExecutorBoard({ depth: 1, members: [], selfRunning: true });
+  assert.ok(text.includes('小组长'), text);
+  assert.ok(text.includes('先拆再扇出'), text);
+  assert.ok(text.includes('独干'), text);
+  assert.ok(text.includes('单点活'), text);
+});
+
+test('7.14.1：小组长有下级但 0 个在跑 → 报「现在派 2-3 条」（可被行动消除）', () => {
+  const members = [
+    { name: 'a', status: 'inactive', role: 'member', depth: 1 },
+    { name: 'b', status: 'inactive', role: 'member', depth: 1 },
+    { name: 'c', status: 'inactive', role: 'member', depth: 1 },
+  ];
+  const text = renderExecutorBoard({ depth: 1, members, selfRunning: true });
+  assert.ok(text.includes('下级 3 人'), text);
+  assert.ok(text.includes('0 个在跑'), text);
+  assert.ok(text.includes('现在派 2-3 条'), text);
+  // 并行起来这条就该消失——所以只在 0 个在跑时出现
+  const running = renderExecutorBoard({
+    depth: 1,
+    members: members.map((m, i) => ({ ...m, status: i < 2 ? 'running' : 'inactive' })),
+    selfRunning: true,
+  });
+  assert.ok(!running.includes('现在派 2-3 条'), running);
+  assert.ok(running.includes('2 个在跑'), running);
+});
+
+test('7.14.1：小组长永远收到「收齐下级再报 ready」与「不等待、不轮询」', () => {
+  const members = [{ name: 'a', status: 'running', role: 'member', depth: 1 }];
+  const text = renderExecutorBoard({ depth: 1, members, selfRunning: true });
+  assert.ok(text.includes('收齐下级再报 ready'), text);
+  assert.ok(text.includes('progress'), text);
+  assert.ok(text.includes('不等待'), text);
+  assert.ok(text.includes('轮询'), text);
+});
+
+test('7.14.1：L2 子智能体只给三条行为约束（不再向下派 / 不等待 / 结论写进最终答复）', () => {
+  const text = renderExecutorBoard({ depth: 2, members: [], selfRunning: true });
+  assert.ok(text.includes('L2 子智能体'), text);
+  assert.ok(text.includes('不再向下派'), text);
+  assert.ok(text.includes('不等待'), text);
+  assert.ok(text.includes('最终答复'), text);
+  // L2 不该收到"你该扇出"这类只对小组长有意义的指令
+  assert.ok(!text.includes('先拆再扇出'), text);
+});
+
+test('7.14.1：已停手且没有下级的小组长不产生文本（不制造噪声）', () => {
+  assert.equal(renderExecutorBoard({ depth: 1, members: [], selfRunning: false }), '');
 });
 
 // ------------------------------------------ 并行度不足（7.14.0） ---
