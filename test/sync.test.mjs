@@ -23,6 +23,7 @@ import {
   LONG_SESSION_EVERY,
   recordTurn,
   renderExecutorBoard,
+  findScopeConflicts,
   renderLongSessionCheck,
   TERMINAL_TASK_STATUSES,
   buildSyncNudge,
@@ -573,6 +574,113 @@ test('7.10.0：体检会把已检测到的信号一并列出（有才列，不�
   assert.ok(text.includes('先修'), text);
 });
 
+// ------------------------------------------ 写作用域冲突（7.15.0） ---
+
+test('7.15.0：findScopeConflicts 用 scope 算出"会不会撞文件"（不靠猜）', () => {
+  // 现场 turn 144：指挥官说「并行的代价是**大概率**会再次出现写冲突」，然后把
+  // 「串行做三条，还是立刻并行？」抛给用户。用户原话：
+  // 「这种很明显会导致冲突的没必要问我啊，可以安排串行」。
+  // 而工单本来就带 scope（实测 43/43 都填了具体路径）——能不能并行是**算得出来的**。
+  const tickets = [
+    { id: 't-1', title: 'A', scope: ['src/text-image-segmentation.mjs'] },
+    { id: 't-2', title: 'B', scope: ['src/text-image-segmentation.mjs'] }, // 同一文件 → 冲突
+    { id: 't-3', title: 'C', scope: ['installer/'] },
+    { id: 't-4', title: 'D', scope: ['docs/'] }, // 与上面的都不重叠
+  ];
+  const pairs = findScopeConflicts(tickets);
+  assert.equal(pairs.length, 1, JSON.stringify(pairs));
+  assert.equal(pairs[0].a, 't-1');
+  assert.equal(pairs[0].b, 't-2');
+  assert.ok(pairs[0].paths.includes('src/text-image-segmentation.mjs'));
+});
+
+test('7.15.0：目录前缀算重叠，相邻名字不算（避免误报）', () => {
+  // 目录以 / 结尾：installer/ 包含 installer/setup.mjs
+  assert.equal(findScopeConflicts([
+    { id: 't-1', scope: ['installer/'] },
+    { id: 't-2', scope: ['installer/setup.mjs'] },
+  ]).length, 1);
+
+  // 但 src 与 src-extra 是不同的东西，不能因为前缀就被判成冲突
+  assert.equal(findScopeConflicts([
+    { id: 't-1', scope: ['src'] },
+    { id: 't-2', scope: ['src-extra'] },
+  ]).length, 0);
+
+  // 完全不同的路径不冲突
+  assert.equal(findScopeConflicts([
+    { id: 't-1', scope: ['src/a.mjs'] },
+    { id: 't-2', scope: ['src/b.mjs'] },
+  ]).length, 0);
+});
+
+test('7.15.0：没有 scope / 非法输入不报冲突（信息不足 ≠ 有冲突）', () => {
+  assert.deepEqual(findScopeConflicts([]), []);
+  assert.deepEqual(findScopeConflicts(undefined), []);
+  assert.deepEqual(findScopeConflicts([{ id: 't-1' }, { id: 't-2' }]), []);
+  assert.deepEqual(findScopeConflicts([{ id: 't-1', scope: [] }, { id: 't-2', scope: [] }]), []);
+  // 说不出具体冲突对象就是"没确认"，不能报冲突
+  assert.deepEqual(findScopeConflicts([{ id: 't-1', scope: ['a/'] }, { id: 't-2', scope: [] }]), []);
+});
+
+test('7.15.0：有 scope 冲突时，看板报 scope-conflict 且要求"排串行，不要问用户"', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    task('task-1', 'in_progress', { ownerName: 'a' }),
+    task('task-2', 'in_progress', { ownerName: 'b' }),
+  ], 0);
+  const tickets = [
+    { id: 't-1', status: 'working', title: 'A', scope: ['src/x.mjs'] },
+    { id: 't-2', status: 'working', title: 'B', scope: ['src/x.mjs'] },
+  ];
+  const view = evaluateSync(ledger, {
+    members: [
+      { name: 'a', status: 'running', role: 'member', depth: 1 },
+      { name: 'b', status: 'running', role: 'member', depth: 1 },
+    ],
+    tickets,
+    now: 60_000,
+  });
+  const issue = view.issues.find((e) => e.code === 'scope-conflict');
+  assert.ok(issue, JSON.stringify(view.issues));
+  // 7.15.0 收紧后：只报"两个都在跑"的冲突（一个在跑一个排队 = 已是串行，不该吵）。
+  assert.ok(issue.detail.includes('正在同时跑'), issue.detail);
+  assert.ok(issue.detail.includes('确实重叠'), issue.detail);
+  assert.ok(issue.detail.includes('src/x.mjs'), issue.detail);
+
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('排串行'), nudge);
+  assert.ok(nudge.includes('不要问用户'), nudge);
+});
+
+test('7.15.0：冲突的工单不进"可并行"清单（两个告警不能自相矛盾）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    task('task-1', 'in_progress', { ownerName: 'a' }),
+    task('task-2', 'in_progress', { ownerName: 'b' }),
+    task('task-3', 'in_progress', { ownerName: 'c' }),
+  ], 0);
+  // ⚠️ 真实形态：工单 id（`t-1`）与任务板 id（`task-1`）是两套命名空间，
+  // 靠 `team_task_id` 映射——第一次实现漏了这一步，测试当场抓到。
+  const tickets = [
+    { id: 't-1', status: 'working', title: 'A', scope: ['src/x.mjs'], team_task_id: 'task-1' },
+    { id: 't-2', status: 'working', title: 'B', scope: ['src/x.mjs'], team_task_id: 'task-2' }, // 与 t-1 冲突
+    { id: 't-3', status: 'working', title: 'C', scope: ['docs/'], team_task_id: 'task-3' },
+  ];
+  const view = evaluateSync(ledger, {
+    members: [
+      { name: 'a', status: 'running', role: 'member', depth: 1 },
+      { name: 'b', status: 'inactive', role: 'member', depth: 1 },
+      { name: 'c', status: 'inactive', role: 'member', depth: 1 },
+    ],
+    tickets,
+    now: 60_000,
+  });
+  // 3 项里只有 task-3 是"安全可并行"的 → 不足 2 项，所以不该报 parallel-underused
+  assert.ok(!view.issues.some((e) => e.code === 'parallel-underused'), JSON.stringify(view.issues));
+  assert.ok(view.issues.some((e) => e.code === 'scope-conflict'));
+});
+
 // -------------------------------------- 执行者看板（7.14.1） ---
 
 test('7.14.1：小组长还没有下级 → 提示「先拆再扇出」（这正是 3/4 组长零扇出的病根）', () => {
@@ -645,7 +753,9 @@ test('7.14.0：还有 ≥2 项可推进、却只有 ≤1 位小组长在跑 → 
   const view = evaluateSync(ledger, { members, now: 60_000 });
   const issue = view.issues.find((e) => e.code === 'parallel-underused');
   assert.ok(issue, JSON.stringify(view.issues));
-  assert.ok(issue.detail.includes('3 项可推进'), issue.detail);
+  // 7.15.0：文案改为「写作用域不冲突的可推进工作」——并行建议必须排除会撞文件的工单。
+  assert.ok(issue.detail.includes('3 项'), issue.detail);
+  assert.ok(issue.detail.includes('写作用域不冲突'), issue.detail);
   assert.ok(issue.detail.includes('只有 1 位'), issue.detail);
   assert.ok(issue.detail.includes('团队共 3 位'), issue.detail);
 
