@@ -130,6 +130,7 @@ import {
   renderModeOpening,
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
+import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
 import { handleSettlement } from './lib/wake-chain.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
@@ -147,7 +148,6 @@ import {
   SYNC_CONTEXT_ORDER,
   buildSyncNudge,
   consumeStaleNudge,
-  createSyncLedger,
   evaluateSync,
   recordBoard,
   recordDelegation,
@@ -334,11 +334,52 @@ export function apply(ctx) {
   const ledgerOf = (agent) => {
     let ledger = ledgers.get(agent);
     if (ledger === undefined) {
-      ledger = createSyncLedger();
+      // 7.12.0：首次创建时**从账本恢复快照**。同步账本原本纯内存，宿主重启即丢
+      // （实测：看板「计划清单」整段消失、plan-stale 52 小时零触发、派活分布归零）。
+      ledger = createRestoredLedger(loadSyncSnapshot(agent));
       ledgers.set(agent, ledger);
     }
     return ledger;
   };
+
+  /**
+   * 读本会话的持久化同步快照（7.12.0；读不到返回 `undefined`）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {object | undefined} 快照。
+   */
+  function loadSyncSnapshot(agent) {
+    try {
+      const ledger = getLedger();
+      if (ledger === undefined || typeof ledger.getSyncSnapshot !== 'function') return undefined;
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return undefined;
+      return ledger.getSyncSnapshot(sessionId);
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 读取同步快照失败（按无快照处理）：%o', error);
+      return undefined;
+    }
+  }
+
+  /**
+   * 把同步账本落盘一次（7.12.0；失败只记 debug，不影响回合）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {void}
+   */
+  function persistSyncSnapshot(agent) {
+    try {
+      const service = getLedger();
+      if (service === undefined || typeof service.putSyncSnapshot !== 'function') return;
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return;
+      const ledger = ledgers.get(agent);
+      if (ledger === undefined) return;
+      service.putSyncSnapshot(sessionId, toSnapshot(ledger));
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 保存同步快照失败：%o', error);
+    }
+  }
 
   /** 已经提醒过的回合（`sessionId:turn`）；只需要覆盖还可能在收尾的轮次。 */
   const nudgedTurns = new Set();
@@ -456,8 +497,35 @@ export function apply(ctx) {
     const team = readTeam(agent);
     const now = Date.now();
     if (team !== undefined) recordBoard(ledger, team.nativeTasks, now);
-    return { ledger, view: evaluateSync(ledger, { members: team?.members ?? [], now }), members: team?.members ?? [] };
+    // 7.12.0（b）：把工单传给评估器——模型不写 todo 时，看板从**工单派生**计划清单。
+    // 实测该会话 todo_write 只有 5 次/127 回合（后半程 0 次），而工单用了 34 创建/36 更新：
+    // 与其强制维护第二份台账，不如从它已经在维护的那份推导。
+    return {
+      ledger,
+      view: evaluateSync(ledger, { members: team?.members ?? [], now, tickets: listTicketsSafe(agent) }),
+      members: team?.members ?? [],
+    };
   };
+
+  /**
+   * 读本会话的工单（含已结束；7.12.0）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {object[]} 工单视图；读不到返回空数组。
+   */
+  function listTicketsSafe(agent) {
+    try {
+      const service = getLedger();
+      if (service === undefined || typeof service.listTickets !== 'function') return [];
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return [];
+      const rows = service.listTickets(sessionId, { includeEnded: true });
+      return Array.isArray(rows) ? rows : [];
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 读取工单失败（派生计划按无处理）：%o', error);
+      return [];
+    }
+  }
 
   /**
    * Team 通道的**派活**动作（`wait_agent` / `list_agents` 不算派活，它们是等待与读状态）。
@@ -1155,6 +1223,9 @@ export function apply(ctx) {
 
       // 7.10.0：累加回合数，供「长会话体检」判断节奏（每 LONG_SESSION_EVERY 回合一次）。
       recordTurn(ledgerOf(agent));
+      // 7.12.0：回合收尾时把同步账本落盘一次——重启后 epoch / plan / tasks / turns /
+      // dispatchTargets 都还在，检测不会静默失效。
+      persistSyncSnapshot(agent);
 
       const { ledger, view } = inspectSync(agent);
       // 孤儿任务（未结算 + 无人认领/主人已停手）每条会话强制提醒一次；之后它仍会留在

@@ -642,6 +642,41 @@ test('没有智能体团队的部署里，同步看板不产生任何文本', ()
   assert.equal(syncContext(record).text({ agent: TEAMMATE }), '');
 });
 
+test('7.12.0（b）：没写 todo 时，看板从**工单派生**计划清单（真实接线）', () => {
+  // 实测依据：session-1d8c8c60 里 todo_write 只有 5 次/127 回合（后半程 0 次），
+  // 而工单用了 34 创建 / 36 更新——模型不是不管理状态，只是不用 todo。
+  // 所以看板直接用已经在维护的工单派生清单，**清单不可能与事实脱钩**。
+  const ledger = memoryLedger();
+  const open = ledger.createTicket({ sessionId: 'session-lead', title: '安装器优化' });
+  const done = ledger.createTicket({ sessionId: 'session-lead', title: '判例4 树状图' });
+  ledger.setStatus(done.id, 'session-lead', 'done', { reason: '已交付' });
+
+  // 同步看板只在有「智能体团队」服务时渲染（`syncBoardEnabled()`）。
+  const { record } = boot({ ledger, agentTeams: makeAgentTeams({ tasks: [] }) });
+  const text = syncContext(record).text({ agent: LEAD });
+
+  assert.ok(text.includes('计划清单（工单派生）'), `应显示派生清单：${text}`);
+  assert.ok(text.includes('1/2 已完成'), `派生进度应为 1/2：${text}`);
+  assert.ok(text.includes(open.id), '应点名进行中的工单');
+  assert.ok(!text.includes('计划清单：未建立'), '有工单时不该再说未建立');
+});
+
+test('7.12.0（b）：有 todo 清单时以 todo 为准（派生不覆盖模型自己的计划）', () => {
+  const ledger = memoryLedger();
+  ledger.createTicket({ sessionId: 'session-lead', title: '某工单' });
+  const { record } = boot({ ledger, agentTeams: makeAgentTeams({ tasks: [] }) });
+  const postExecute = listenerOf(record, 'tools/post-execute');
+  postExecute({ name: 'todo_write', agent: LEAD, arguments: { todos: [
+    { content: '步骤一', status: 'completed' },
+    { content: '步骤二', status: 'pending' },
+    { content: '步骤三', status: 'pending' },
+  ] } }, undefined, spyNext({ kind: 'accept' }).next);
+
+  const text = syncContext(record).text({ agent: LEAD });
+  assert.ok(text.includes('计划清单 1/3 已完成'), `应以 todo 为准：${text}`);
+  assert.ok(!text.includes('工单派生'), '有 todo 时不该再派生');
+});
+
 test('任务结算后，看板立刻指出计划清单没同步', () => {
   const agentTeams = makeAgentTeams({
     tasks: [
