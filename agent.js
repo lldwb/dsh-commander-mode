@@ -133,7 +133,8 @@ import {
 } from './lib/protocol.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
 import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
-import { handleSettlement } from './lib/wake-chain.js';
+import { buildStallNotice, shouldWakeStall } from './lib/stall-watchdog.js';
+import { handleSettlement, steerParent } from './lib/wake-chain.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
@@ -327,6 +328,139 @@ export function apply(ctx) {
 
   /** 每个 agent 一份同步账本；agent 是活对象，会话结束自然回收。 */
   const ledgers = new WeakMap();
+
+  /**
+   * 停滞看门狗（7.16.0）：空闲但有活时把指挥官叫醒一次。
+   *
+   * 为什么必须有它（用户 2026-11-17 第 3 次报同一问题）：本插件到 7.15.0 为止的所有
+   * "防退化"能力都是**看板**——只在**回合运行时**渲染。于是结构性的死角：
+   * **告警的可见性建立在"它正在运行"这个前提上，而"停下来"恰恰是"它不运行"。**
+   *
+   * 实测 `session-1d8c8c60`（重启后）：13 个间隙、空闲 134.2 分钟；唤醒源是
+   * **用户消息 3 次 / 下级通知 10 次 / 自己 0 次**——最近一次空闲 11 分钟后用户问
+   * 「进度如何了？」才继续。同期 `长会话体检`/`dispatch-focus` 都在报，但**检测不会唤醒任何东西**。
+   *
+   * 与用户「不要定期检查进度」不冲突：那条禁的是 **agent 自己轮询**；这里是**插件**在
+   * "无回合 + 无下级在跑 + 还有未结算工作 + 不在等用户"时投递一次唤醒（像 CI 告警）。
+   */
+  const watchedSessions = new Map();
+  let watchdogTimer;
+
+  /**
+   * 判断一个 agent 此刻是否空闲。
+   *
+   * 优先用运行时自己的 `status`（运行时在 `notifySettlement` 里就用 `parent.status === 'idle'`
+   * 决定投递方式，所以这个字段可靠）；读不到时保守地认为"不空闲"，宁可不叫也不打断。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {boolean} 是否空闲。
+   */
+  function isAgentIdle(agent) {
+    try {
+      const status = agent?.status;
+      if (typeof status === 'string') return status === 'idle';
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 数一数"可推进的未结算工作"（工单口径）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {number} 未结算工单数（排除等用户的）。
+   */
+  function countOpenWork(agent) {
+    try {
+      const service = getLedger();
+      const sessionId = sessionIdOf(agent);
+      if (service === undefined || sessionId === undefined) return 0;
+      if (typeof service.listTickets !== 'function') return 0;
+      const rows = service.listTickets(sessionId);
+      if (!Array.isArray(rows)) return 0;
+      return rows.filter((ticket) => ticket !== null && typeof ticket === 'object'
+        && (ticket.status === 'open' || ticket.status === 'working')).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * 数一数正在跑的下级（异步，只在定时器里调用）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {Promise<number>} 正在跑的下级数量。
+   */
+  async function countRunningChildren(agent) {
+    try {
+      const subagents = getService('subagents');
+      const sessionId = sessionIdOf(agent);
+      if (subagents === undefined || sessionId === undefined) return 0;
+      if (typeof subagents.listDescendants !== 'function') return 0;
+      const rows = await subagents.listDescendants(sessionId);
+      if (!Array.isArray(rows)) return 0;
+      return rows.filter((row) => row !== null && typeof row === 'object' && row.activity === 'running').length;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** 跑一轮看门狗检查（对所有被跟踪的会话）。 */
+  async function runStallWatchdog() {
+    for (const [sessionId, entry] of watchedSessions) {
+      try {
+        const agent = entry.agent;
+        if (agent === undefined || isDelegatedAgent(agent)) {
+          watchedSessions.delete(sessionId);
+          continue;
+        }
+        if (readOptions().stallWatchdog === false) continue;
+        const runningChildren = await countRunningChildren(agent);
+        const decision = shouldWakeStall({
+          now: Date.now(),
+          lastActiveAt: entry.lastActiveAt,
+          turnRunning: !isAgentIdle(agent),
+          runningChildren,
+          openWork: countOpenWork(agent),
+          waitingOnUser: false,
+          lastWokeAt: entry.lastWokeAt,
+        });
+        if (!decision.wake) continue;
+        const idleMinutes = (Date.now() - entry.lastActiveAt) / 60000;
+        const woke = steerParent(agent, buildStallNotice({ idleMinutes, openWork: countOpenWork(agent) }), '停滞看门狗');
+        if (woke) {
+          entry.lastWokeAt = Date.now();
+          ctx.logger?.info?.('commander-mode: 停滞看门狗唤醒会话 %s（空闲 %.1f 分钟）', sessionId, idleMinutes);
+        }
+      } catch (error) {
+        ctx.logger?.debug?.('commander-mode: 看门狗检查失败：%o', error);
+      }
+    }
+  }
+
+  /** 登记/刷新一个会话的活跃时间（回合开始与结束都算"有动作"）。 */
+  function touchSession(agent) {
+    try {
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return;
+      const existing = watchedSessions.get(sessionId);
+      if (existing === undefined) watchedSessions.set(sessionId, { agent, lastActiveAt: Date.now(), lastWokeAt: 0 });
+      else {
+        existing.agent = agent;
+        existing.lastActiveAt = Date.now();
+      }
+    } catch {
+      /* 登记失败不影响主流程 */
+    }
+  }
+
+  // 每 60 秒检查一次：频率与"5 分钟宽限 + 20 分钟冷却"配合，不会变成轮询。
+  watchdogTimer = setInterval(() => { void runStallWatchdog(); }, 60 * 1000);
+  if (typeof watchdogTimer?.unref === 'function') watchdogTimer.unref();
+  ctx.on('dispose', () => {
+    if (watchdogTimer !== undefined) clearInterval(watchdogTimer);
+  });
 
   /**
    * 取（或创建）某个 agent 的同步账本。
@@ -1196,6 +1330,8 @@ export function apply(ctx) {
             return executorText;
           }
           const parts = [];
+          // 7.16.0：上下文渲染发生在每个回合里 → 用它登记"有动作"，看门狗的宽限期从这里起算。
+          touchSession(agent);
           if (syncBoardEnabled()) {
             const { view, members } = inspectSync(agent);
             const syncText = renderSyncBoard(view, members);
@@ -1292,6 +1428,8 @@ export function apply(ctx) {
 
       // 7.10.0：累加回合数，供「长会话体检」判断节奏（每 LONG_SESSION_EVERY 回合一次）。
       recordTurn(ledgerOf(agent));
+      // 7.16.0：回合收尾即"有动作"，登记活跃时间供停滞看门狗判断。
+      touchSession(agent);
       // 7.12.0：回合收尾时把同步账本落盘一次——重启后 epoch / plan / tasks / turns /
       // dispatchTargets 都还在，检测不会静默失效。
       persistSyncSnapshot(agent);
