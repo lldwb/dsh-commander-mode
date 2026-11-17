@@ -2352,6 +2352,39 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.13.0** —— **「不许用轮询代替等待」：门禁只禁了工具名，没禁行为**。
+  ① **现场**（`b013bfbf`，某小组长会话，2026-11-16 18:05:16，同一秒内）：
+  ```
+  tool/call:   wait_agent {"timeout_ms":180000}
+  tool/result: Error: 三层指挥链门禁：本模式**不允许** wait_agent（硬禁用，没有开关，不要重试）。
+               … 不等之后这样做：1) 要看状态 → list_agents / team_task_list …
+  assistant:   "Understood — wait_agent is hard-disabled. Instead, I can poll with list_agents"
+  ```
+  于是 turn 1 查 2 次、turn 2 查 2 次、turn 3 查 **3 次**（间隔约 4 分钟）。
+  ② **根因（两层）**：
+  - **只禁了工具名，没禁行为**：轮询和 `wait_agent` 语义相同——都是"我没活干，在等别人"，
+    区别只是轮询还额外烧轮次；
+  - **拒因自己教了它怎么绕过**：旧拒因第 1 条写着「要看状态 → `list_agents`」，
+    却没说不许**反复**看。模型照做，等于门禁亲手把"阻塞等待"改造成了"轮询等待"。
+  ③ **修法一（拒因）**：`buildWaitForbiddenReason()` 补一段——
+  > ⚠️ **不许换个形式继续等**：反复 `list_agents` / `team_task_list` 查状态来"看它好了没"，
+  > 和 `wait_agent` 是同一件事——只是把阻塞等待换成了**轮询等待**，同样在烧轮次。
+  > 状态**看一眼就够**；看一眼之后要么推进，要么结束回合。
+  并说明"结束回合不是放弃，下级结算时运行时会主动唤醒你"。
+  ④ **修法二（确定性门禁）**：新增 `evaluatePollingGuard()` + `STATE_POLL_TOOLS`
+  （`list_agents` / `team_task_list` / `team_task_get` / `commander_tickets`）。
+  判据是**连续**只查状态：超过 `STATE_POLL_LIMIT`（4 次）就拒绝并给出两条唯一出路
+  （推进 / 结束回合）；一旦调用了任何非查询类工具就**清零**——"查一次然后去干活"是正常的，
+  "连着查好几次不干活"才是轮询。
+  ⑤ **用户要做什么**：重新安装 / **重启 DSH**。
+  ⑥ **测试**：**713 / 713 通过、0 失败**（7.12.0 基线 705，净增 8）：
+  `test/guard-polling.test.mjs`（新增 6 条：阈值内放行 / 超阈值拦且拒因说清 / 非查状态工具不误拦 /
+  四种工具同阈值 / 旧拒因不再教轮询 / STATE_POLL_TOOLS 内容）；
+  `test/plugin.test.mjs`（新增 2 条**真实接线**：连续查超阈值被 pre-execute 拒 + 干活后重置 /
+  查与干活交替全程放行）。
+  **接线测试还抓到一个门禁顺序问题**：用 `pwsh` 当"干活"会先被执行边界门禁拒绝，
+  根本没走到重置分支——改用 `read`（只读侦察放行）才测得到。
+
 - **7.12.0** —— **同步账本持久化（A）+ 清单与工单同源（B）**。按用户决定只做 A+B（C 不做）。
   ① **实测依据**（`session-1d8c8c60`，52.3 小时 / 127 回合）：
   - **`todo_write` 只有 5 次（3.9%）**，前半程 5 次、**后半程 0 次**；最后一次是 11-15 06:41，

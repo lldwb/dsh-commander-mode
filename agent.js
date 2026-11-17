@@ -108,12 +108,14 @@ import {
   evaluateBoardWrite,
   evaluateCommanderChannels,
   evaluatePreExecute,
+  evaluatePollingGuard,
   evaluateTicketSettle,
   evaluateTicketWrite,
   evaluateWaitForbidden,
   hasUsableDispatchChannel,
   isDelegatedAgent,
   isSpecialistDispatchTool,
+  STATE_POLL_TOOLS,
 } from './lib/guard.js';
 import {
   evaluateDispatchGate,
@@ -383,6 +385,14 @@ export function apply(ctx) {
 
   /** 已经提醒过的回合（`sessionId:turn`）；只需要覆盖还可能在收尾的轮次。 */
   const nudgedTurns = new Set();
+
+  /**
+   * 每个会话"连续查状态"的计数（7.13.0）。
+   *
+   * 只记**连续**次数：一调用非查询类工具就清零。用它把"查一次然后去干活"（正常）
+   * 和"连着查好几次不干活"（轮询）分开——后者是 `wait_agent` 被禁之后最常见的绕过形式。
+   */
+  const statePollCounts = new Map();
 
   /**
    * 团队成员的**缓存快照**（6.0.0）。
@@ -1400,6 +1410,31 @@ export function apply(ctx) {
       if (waitDecision !== undefined) {
         ctx.logger?.info?.('commander-mode: 拒绝 wait_agent（禁止等待，无开关，整条链生效）');
         return waitDecision;
+      }
+
+      // 7.13.0「不许用轮询代替等待」：`wait_agent` 被禁之后，实测模型会改用反复查状态来"等"
+      // （`b013bfbf`：turn 1 查 2 次、turn 3 查 3 次，间隔约 4 分钟）。
+      // 判据是**连续**只查状态：一旦调用了非查询类工具就重置——"查一次然后去干活"是正常的，
+      // "连着查好几次不干活"才是轮询。
+      try {
+        const pollAgent = exec?.agent;
+        const pollSession = sessionIdOf(pollAgent);
+        if (pollSession !== undefined) {
+          if (STATE_POLL_TOOLS.includes(toolName)) {
+            const count = (statePollCounts.get(pollSession) ?? 0) + 1;
+            statePollCounts.set(pollSession, count);
+            const pollDecision = evaluatePollingGuard({ name: toolName, count });
+            if (pollDecision !== undefined) {
+              ctx.logger?.info?.('commander-mode: 拒绝轮询状态（%s 第 %d 次）', toolName, count);
+              return pollDecision;
+            }
+          } else {
+            // 任何"干活"的调用都把计数清零：轮询的定义是**连续**查而不做。
+            statePollCounts.delete(pollSession);
+          }
+        }
+      } catch (error) {
+        ctx.logger?.debug?.('commander-mode: 轮询门禁异常（按放行处理）：%o', error);
       }
 
       // 0.7.0 异步容量：一次性 specialist 在飞数量达上限时**在启动前**拒绝，

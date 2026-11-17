@@ -1475,6 +1475,45 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
 
+// -------------------------------------- 7.13.0 不许用轮询代替等待 ---
+
+test('7.13.0：连续查状态超阈值会被真实 pre-execute 拒绝（接线）', async () => {
+  // 现场 b013bfbf：wait_agent 被拒后模型改用 list_agents 轮询（turn 1 两次、turn 3 三次）。
+  // 这条证明门禁真的接在 tools/pre-execute 上，且"连续"才计数。
+  const listener = preExecute(boot().record);
+  const agent = { id: 'session-poll', session: { id: 'session-poll', header: { id: 'session-poll' } } };
+
+  // 前 STATE_POLL_LIMIT 次放行
+  for (let i = 1; i <= 4; i += 1) {
+    const decision = await listener({ name: 'list_agents', agent }, spyNext().next);
+    assert.notEqual(decision?.kind, 'deny', `第 ${i} 次查状态不该被拒：${decision?.reason ?? ''}`);
+  }
+  // 第 5 次拒
+  const denied = await listener({ name: 'list_agents', agent }, spyNext().next);
+  assert.equal(denied?.kind, 'deny', '连续第 5 次查状态应被拒');
+  assert.ok(denied.reason.includes('轮询'), denied.reason);
+  assert.ok(denied.reason.includes('结束回合'), denied.reason);
+
+  // 干一件活 → 计数清零 → 又能正常查状态
+  // ⚠️ 这里用 `read`（只读侦察，执行边界放行），不能用 `pwsh`：后者会被**执行边界门禁**
+  // 抢先拒绝（指挥者不许自己执行），那样就绕过了本门禁的重置分支——那是另一条门禁的事。
+  await listener({ name: 'read', agent, arguments: { file_path: 'x' } }, spyNext().next);
+  const afterWork = await listener({ name: 'list_agents', agent }, spyNext().next);
+  assert.notEqual(afterWork?.kind, 'deny', '干活之后应重置计数');
+});
+
+test('7.13.0：中间夹了干活就不会被当成轮询', async () => {
+  const listener = preExecute(boot().record);
+  const agent = { id: 'session-poll2', session: { id: 'session-poll2', header: { id: 'session-poll2' } } };
+  // 查 → 干活 → 查 → 干活 …… 交替 12 轮，都不该被拦
+  for (let i = 0; i < 12; i += 1) {
+    const look = await listener({ name: 'team_task_list', agent }, spyNext().next);
+    assert.notEqual(look?.kind, 'deny', `第 ${i + 1} 轮查状态不该被拒`);
+    await listener({ name: 'send_message', agent, arguments: { agent: 'x', message: 'y' } }, spyNext().next);
+  }
+  assert.ok(true, '交替调用全程放行');
+});
+
 // -------------------------------------- 3.1.0 禁止等待（3.2.0 整条链生效） ---
 
 test('禁止等待：Lead 调 wait_agent 一律被拒（不是"超长才拒"）', async () => {
