@@ -2352,6 +2352,38 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.12.0** —— **同步账本持久化（A）+ 清单与工单同源（B）**。按用户决定只做 A+B（C 不做）。
+  ① **实测依据**（`session-1d8c8c60`，52.3 小时 / 127 回合）：
+  - **`todo_write` 只有 5 次（3.9%）**，前半程 5 次、**后半程 0 次**；最后一次是 11-15 06:41，
+    之后还发生 **35 次工单状态更新、29 次结算** —— 清单与事实彻底脱钩；
+  - 对照：工单 **34 创建 / 36 更新**（高频在用）——模型不是不管理状态，**只是不用 todo**；
+  - `plan-stale` **52 小时一次都没触发**（按事实它该从清单停更起一直响）。
+  ② **为什么 plan-stale 失效（A 的根因）**：同步账本是 `agent.js` 的
+  `const ledgers = new WeakMap()` + `createSyncLedger()`（**纯内存**），宿主重启即全丢：
+  `plan` 归零 → 看板从 11-16 02:51 起**再没有「计划清单」那一段**（前一天的「2/8 已完成」
+  是重启前写的）；`plan-stale` 失去比较对象 → 静默失效；`dispatchTargets` 归零 →
+  "派活过度集中"重启后报不出来。
+  **结论：所有防退化检测都建立在"进程不重启"这个假设上，而长会话必然重启过。**
+  ③ **A：持久化**。新增 `lib/sync-store.js`（`toSnapshot` / `applySnapshot` /
+  `createRestoredLedger`，带 `SNAPSHOT_SCHEMA` 版本、有界裁剪、逐字段容错）；
+  `lib/ledger.js` 加 `syncSnapshots`（按会话、最多保留 20 份）；
+  `lib/ledger-service.js` 加 `getSyncSnapshot()` / `putSyncSnapshot()`；
+  `agent.js` 的 `ledgerOf()` 首次创建时**从账本恢复**，`agent/turn-stopping` 里**每回合落盘一次**。
+  恢复了 `epoch` / `terminalEpoch` / `plan` / `tasks` / `turns` / `dispatchTargets` / `delegations`。
+  ④ **B：清单与工单同源**。`derivePlanFromTickets()` 从工单派生只读计划视图；
+  `evaluateSync` 接受 `options.tickets`，**只有在模型没写 todo 时才派生**；
+  看板显示「计划清单（工单派生）X/Y 已完成」。
+  **不写回账本、不参与 plan-stale 的 epoch 比较**——它只是"事实的另一种展示"，
+  所以**不可能与事实脱钩**，也不需要模型维护第二份台账。
+  ⑤ **顺带修掉一个真 bug**：`toSnapshot()` 里裁剪算出了 `boundedTasks` 却返回未裁剪的
+  `tasks`（死代码），测试当场抓到——现在任务与派活目标都按上限裁剪。
+  ⑥ **用户要做什么**：重新安装 / **重启 DSH**。
+  ⑦ **测试**：**705 / 705 通过、0 失败**（7.11.0 基线 697，净增 8）：
+  `test/sync-store.test.mjs` 新增 6 条（往返一致 / 恢复后 plan-stale 仍能判 / 坏快照不炸 /
+  有界裁剪 / 重复恢复幂等 / 账本服务存取模拟重启）；
+  `test/plugin.test.mjs` 新增 2 条**真实接线**用例（无 todo 时看板显示派生清单 /
+  有 todo 时以 todo 为准）。
+
 - **7.11.0** —— **修 7.7.0 `fan-out-unused` 的误报（刷了 98 次，导致警告疲劳）**。
   ① **现场**：`session-1d8c8c60` 尾声，看板反复报
   「4/9 位小组长**自己一个下级都没派**（installer-lead、ui-progress-lead、slice-final-lead 等 在独干）」，
