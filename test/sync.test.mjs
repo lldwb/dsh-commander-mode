@@ -572,6 +572,82 @@ test('7.10.0：体检会把已检测到的信号一并列出（有才列，不�
   assert.ok(text.includes('先修'), text);
 });
 
+// ------------------------------------------ 并行度不足（7.14.0） ---
+
+test('7.14.0：还有 ≥2 项可推进、却只有 ≤1 位小组长在跑 → 报 parallel-underused', () => {
+  // 实测 session-1d8c8c60：小组长层并发均值 0.58、55.2% 采样点无人；并行上升 45 次里 78%
+  // 紧跟用户消息（随机基线 32.5%），用户消息后 10 分钟内有派发 94%——并行几乎全靠用户点火。
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    task('task-1', 'in_progress', { ownerName: 'a' }),
+    task('task-2', 'in_progress', { ownerName: 'b' }),
+    task('task-3', 'pending', { ready: true }),
+  ], 0);
+  const members = [
+    { name: 'a', status: 'running', role: 'member', depth: 1 },   // 只有 1 个在跑
+    { name: 'b', status: 'inactive', role: 'member', depth: 1 },
+    { name: 'c', status: 'inactive', role: 'member', depth: 1 },
+  ];
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  const issue = view.issues.find((e) => e.code === 'parallel-underused');
+  assert.ok(issue, JSON.stringify(view.issues));
+  assert.ok(issue.detail.includes('3 项可推进'), issue.detail);
+  assert.ok(issue.detail.includes('只有 1 位'), issue.detail);
+  assert.ok(issue.detail.includes('团队共 3 位'), issue.detail);
+
+  // 兜底要给出"现在多开几条"的动作与上限说明
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('多开几条'), nudge);
+  assert.ok(nudge.includes('maxActiveSubagents'), nudge);
+});
+
+test('7.14.0：已经并行起来（≥2 位在跑）→ 告警消失（必须可被行动消除）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    task('task-1', 'in_progress', { ownerName: 'a' }),
+    task('task-2', 'in_progress', { ownerName: 'b' }),
+  ], 0);
+  const members = [
+    { name: 'a', status: 'running', role: 'member', depth: 1 },
+    { name: 'b', status: 'running', role: 'member', depth: 1 },
+  ];
+  const view = evaluateSync(ledger, { members, now: 60_000 });
+  assert.ok(!view.issues.some((e) => e.code === 'parallel-underused'), JSON.stringify(view.issues));
+});
+
+test('7.14.0：只有一个小组长 / 只有 1 项可推进 / 全在等用户 → 不报', () => {
+  // 团队只有 1 位小组长：无从并行，该走"补人"而不是"并行"
+  const solo = createSyncLedger();
+  recordBoard(solo, [task('task-1', 'in_progress', { ownerName: 'a' }), task('task-2', 'pending', { ready: true })], 0);
+  assert.ok(!evaluateSync(solo, {
+    members: [{ name: 'a', status: 'running', role: 'member', depth: 1 }], now: 60_000,
+  }).issues.some((e) => e.code === 'parallel-underused'));
+
+  // 只有 1 项可推进：没有第二条可并行
+  const one = createSyncLedger();
+  recordBoard(one, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  assert.ok(!evaluateSync(one, {
+    members: [
+      { name: 'a', status: 'running', role: 'member', depth: 1 },
+      { name: 'b', status: 'inactive', role: 'member', depth: 1 },
+    ], now: 60_000,
+  }).issues.some((e) => e.code === 'parallel-underused'));
+
+  // 剩下的都在等用户：不算"可推进"
+  const waiting = createSyncLedger();
+  recordBoard(waiting, [
+    task('task-1', 'in_progress', { ownerName: 'a' }),
+    { ...task('task-2', 'in_progress', { ownerName: 'b' }), description: '[commander:status=waiting]' },
+    { ...task('task-3', 'in_progress', { ownerName: 'b' }), description: '[commander:status=blocked]' },
+  ], 0);
+  assert.ok(!evaluateSync(waiting, {
+    members: [
+      { name: 'a', status: 'running', role: 'member', depth: 1 },
+      { name: 'b', status: 'inactive', role: 'member', depth: 1 },
+    ], now: 60_000,
+  }).issues.some((e) => e.code === 'parallel-underused'), '等用户的项不该算可推进');
+});
+
 // -------------------------------------------- 小组长独干（7.7.0） ---
 
 test('7.7.0：有下级在工作、但所有小组长都没派下级 → 报 fan-out-unused', () => {
