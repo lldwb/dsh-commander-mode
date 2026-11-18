@@ -20,6 +20,7 @@ import { apply, FALLBACK_OPTIONS, SECTION_NAME, SECTION_ORDER } from '../agent.j
 import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
 import { emptyLedger } from '../lib/ledger.js';
 import { CommanderLedger } from '../lib/ledger-service.js';
+import { isOpen } from '../lib/tickets.js';
 import { PLAN_CONFIRM_LABEL, PLAN_QUESTION_ID } from '../lib/tickets.js';
 import { SYNC_CONTEXT_NAME, SYNC_CONTEXT_ORDER } from '../lib/sync.js';
 
@@ -1492,6 +1493,33 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   );
   const stored = ledger.getTicket(ticket.id, 'session-lead');
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
+});
+
+// -------------------------------------- 7.17.1 看门狗的状态词 bug ---
+
+test('7.17.1：工单"有活"的判据要用 isOpen（status 是 open/working，`queued` 只是 stage）', () => {
+  // 排查 2026-11-18 04:08 停顿时，看板显示 `t-456[queued]`。**`queued` 是 `ticketStage()`
+  // 的输出（阶段），不是 `status`** —— 实测 status 的真实取值是
+  // `open`（新建）/ `working`（派发后）/ `done` 等，`listTickets` 返回的是内部记录。
+  // 所以判"还有没有活"必须用 `isOpen()`，不要自己硬编码状态词（将来加状态就会漏）。
+  const ledger = memoryLedger();
+  const ticket = ledger.createTicket({ sessionId: 'session-lead', title: '工作区清理' });
+  assert.equal(ticket.status, 'open', '新工单的真实 status 是 open');
+  assert.equal(ticket.stage, 'queued', '看板上的 queued 来自 stage');
+
+  const openOnes = ledger.listTickets('session-lead').filter((row) => isOpen(row));
+  assert.equal(openOnes.length, 1, 'open 工单必须被算成"有活"');
+  assert.ok(openOnes.some((row) => row.id === ticket.id));
+
+  // 派发后变 working，仍然算"有活"
+  ledger.recordAssignment(ticket.id, 'session-lead', { channel: 'team', toolName: 'subagent', ref: 'lead-a' });
+  const afterDispatch = ledger.listTickets('session-lead').filter((row) => isOpen(row));
+  assert.equal(afterDispatch.length, 1, 'working 工单也算"有活"');
+  assert.equal(afterDispatch[0].status, 'working');
+
+  // 结算后就不该再算"有活"
+  ledger.setStatus(ticket.id, 'session-lead', 'done', { reason: '已交付' });
+  assert.equal(ledger.listTickets('session-lead').filter((row) => isOpen(row)).length, 0);
 });
 
 // -------------------------------------- 7.17.0 不许重复建小组长 ---

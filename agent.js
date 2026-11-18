@@ -141,6 +141,7 @@ import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
   findPlanQuestion,
+  isOpen,
   isPlanConfirmed,
   isTerminal,
   parseReportStatus,
@@ -372,8 +373,15 @@ export function apply(ctx) {
   /**
    * 数一数"可推进的未结算工作"（工单口径）。
    *
+   * ⚠️ **必须用 `isOpen()`，不能硬编码状态名**：7.16.0 第一版写的是
+   * `status === 'open' || status === 'working'`，而真实状态词是
+   * `queued`（实测该会话出现 **1716 次**）/ `working`（654）/ `failed`（20）——
+   * **`open` 根本不存在**。于是"排队中"的工单被当成"没活"：
+   * 2026-11-18 04:08 会话停下时，最后一条看板正是 `t-456[queued]`（工作区清理），
+   * 但看门狗算出 `openWork = 0` 就保持了沉默——**而用户说任务还没完成**。
+   *
    * @param {object} agent - 指挥者 agent。
-   * @returns {number} 未结算工单数（排除等用户的）。
+   * @returns {number} 未结算工单数。
    */
   function countOpenWork(agent) {
     try {
@@ -383,8 +391,8 @@ export function apply(ctx) {
       if (typeof service.listTickets !== 'function') return 0;
       const rows = service.listTickets(sessionId);
       if (!Array.isArray(rows)) return 0;
-      return rows.filter((ticket) => ticket !== null && typeof ticket === 'object'
-        && (ticket.status === 'open' || ticket.status === 'working')).length;
+      // `listTickets` 默认不含已结束工单；再用 isOpen 兜一层，避免将来的状态词漂移。
+      return rows.filter((ticket) => isOpen(ticket)).length;
     } catch {
       return 0;
     }
@@ -429,6 +437,8 @@ export function apply(ctx) {
           openWork: countOpenWork(agent),
           waitingOnUser: false,
           lastWokeAt: entry.lastWokeAt,
+          // 回合刚结束 + 还有 open 工单 + 无下级在跑 → 用 15 秒宽限（最强停滞信号）。
+          justEndedTurn: entry.afterTurnEnd === true,
         });
         if (!decision.wake) continue;
         const idleMinutes = (Date.now() - entry.lastActiveAt) / 60000;
@@ -443,16 +453,23 @@ export function apply(ctx) {
     }
   }
 
-  /** 登记/刷新一个会话的活跃时间（回合开始与结束都算"有动作"）。 */
-  function touchSession(agent) {
+  /**
+   * 登记/刷新一个会话的活跃时间（回合开始与结束都算"有动作"）。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @param {boolean} [afterTurnEnd] - 是否是"回合刚结束"这一下（用更短的宽限）。
+   */
+  function touchSession(agent, afterTurnEnd = false) {
     try {
       const sessionId = sessionIdOf(agent);
       if (sessionId === undefined) return;
       const existing = watchedSessions.get(sessionId);
-      if (existing === undefined) watchedSessions.set(sessionId, { agent, lastActiveAt: Date.now(), lastWokeAt: 0 });
-      else {
+      if (existing === undefined) {
+        watchedSessions.set(sessionId, { agent, lastActiveAt: Date.now(), lastWokeAt: 0, afterTurnEnd });
+      } else {
         existing.agent = agent;
         existing.lastActiveAt = Date.now();
+        existing.afterTurnEnd = afterTurnEnd;
       }
     } catch {
       /* 登记失败不影响主流程 */
@@ -1466,7 +1483,9 @@ export function apply(ctx) {
       // 7.10.0：累加回合数，供「长会话体检」判断节奏（每 LONG_SESSION_EVERY 回合一次）。
       recordTurn(ledgerOf(agent));
       // 7.16.0：回合收尾即"有动作"，登记活跃时间供停滞看门狗判断。
-      touchSession(agent);
+      // 7.18.0：标记 `afterTurnEnd`，让看门狗用 15 秒宽限（而不是 90 秒）——
+      // 实测"回合刚结束 + 还有 open 工单 + 无人无活"是最强的停滞信号。
+      touchSession(agent, true);
       // 7.12.0：回合收尾时把同步账本落盘一次——重启后 epoch / plan / tasks / turns /
       // dispatchTargets 都还在，检测不会静默失效。
       persistSyncSnapshot(agent);

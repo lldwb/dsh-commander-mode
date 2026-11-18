@@ -28,7 +28,6 @@ import {
   buildStallNotice,
   shouldWakeStall,
 } from '../lib/stall-watchdog.js';
-
 const NOW = 1_000_000_000_000;
 /** 已空闲 10 分钟（> 5 分钟宽限）的基准输入。 */
 const stalled = (over = {}) => ({
@@ -40,6 +39,29 @@ const stalled = (over = {}) => ({
   waitingOnUser: false,
   lastWokeAt: 0,
   ...over,
+});
+
+test('7.18.0：宽限期从 5 分钟缩到 90 秒（用户比看门狗先动就说明太慢）', () => {
+  // 现场：04:08:12 结算完最后一项结束回合，空闲 **3 分 17 秒** 时用户就发「继续推进」把它叫醒
+  // （04:11:32）——**用户比看门狗先动**。宽限期一旦超过用户容忍时间，看门狗永远来不及。
+  assert.equal(STALL_GRACE_MS, 90 * 1000);
+  // 90 秒 + 1 秒：该叫
+  assert.equal(shouldWakeStall(stalled({ lastActiveAt: NOW - 91 * 1000 })).wake, true);
+  // 90 秒内：不叫
+  assert.equal(shouldWakeStall(stalled({ lastActiveAt: NOW - 60 * 1000 })).reason, 'within-grace');
+});
+
+test('7.18.0：回合刚结束 + 还有 open 工单 + 无下级 → 15 秒就叫（最强停滞信号）', () => {
+  // 它刚"确认没活了"并结束回合，但台账里明明还有未结算项，而且没有下级会回来叫它。
+  const justEnded = stalled({ lastActiveAt: NOW - 20 * 1000, justEndedTurn: true });
+  const decision = shouldWakeStall(justEnded);
+  assert.equal(decision.wake, true, `15 秒后就该叫：${JSON.stringify(decision)}`);
+  // 但 15 秒内仍不叫（给收尾留一点余地）
+  assert.equal(shouldWakeStall(stalled({ lastActiveAt: NOW - 10 * 1000, justEndedTurn: true })).reason, 'within-grace');
+  // 没有 open 工单时，即使刚结束回合也不叫
+  assert.equal(shouldWakeStall(stalled({ lastActiveAt: NOW - 60 * 1000, justEndedTurn: true, openWork: 0 })).reason, 'no-open-work');
+  // 有下级在跑时也不叫（它们会走通知链）
+  assert.equal(shouldWakeStall(stalled({ lastActiveAt: NOW - 60 * 1000, justEndedTurn: true, runningChildren: 1 })).reason, 'children-running');
 });
 
 test('7.16.0：真停滞（无回合 + 无下级 + 有活 + 超宽限）→ 叫醒', () => {
