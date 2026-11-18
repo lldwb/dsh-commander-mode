@@ -1494,6 +1494,46 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
 
+// -------------------------------------- 7.17.0 不许重复建小组长 ---
+
+test('7.17.0：已有同定位小组长时，真实 pre-execute 会拒绝新建（接线）', async () => {
+  // 现场：01:24 建 feedback-1117-lead 做「11月17日客户反馈分析」→ 02:53 又建
+  // feedback-doc-lead 做「补出 11/17 客户反馈清单」→ 用户纠正
+  // 「不是应该安排 feedback-1117-lead 吗？」→ 94 秒后改成 send_message。
+  const record = boot().record;
+  const listener = preExecute(record);
+  const agent = { id: 'session-dup', session: { id: 'session-dup', header: { id: 'session-dup' } } };
+
+  // ① 第一次建人：放行（还没有已知 lead）
+  const first = await listener({
+    name: 'subagent', agent,
+    arguments: { name: 'feedback-1117-lead', prompt: '[ticket:t-453]\n\n你是「11月17日客户反馈分析」小组长。' },
+  }, spyNext().next);
+  assert.notEqual(first?.kind, 'deny', `第一次建人应放行：${first?.reason ?? ''}`);
+
+  // ② post-execute 记录定位（真实接线：模拟成功返回 name）
+  const postExecute = listenerOf(record, 'tools/post-execute');
+  postExecute({
+    name: 'subagent', agent,
+    arguments: { name: 'feedback-1117-lead', prompt: '你是「11月17日客户反馈分析」小组长。' },
+  }, { isError: false, value: { kind: 'activation', name: 'feedback-1117-lead' } }, spyNext({ kind: 'accept' }).next);
+
+  // ③ 再建一个"功能相同、名字不同"的：必须被拒
+  const second = await listener({
+    name: 'subagent', agent,
+    arguments: { name: 'feedback-doc-lead', prompt: '你是「补出 11/17 客户反馈清单」小组长。' },
+  }, spyNext().next);
+  assert.equal(second?.kind, 'deny', '同定位的新小组长应被拒绝');
+  assert.ok(second.reason.includes('feedback-1117-lead'), second.reason);
+
+  // ④ 定位不同的：仍然放行（不能把正常派活拦死）
+  const third = await listener({
+    name: 'subagent', agent,
+    arguments: { name: 'installer-lead2', prompt: '你是「安装器进度条修复」小组长。' },
+  }, spyNext().next);
+  assert.notEqual(third?.kind, 'deny', `不同定位应放行：${third?.reason ?? ''}`);
+});
+
 // -------------------------------------- 7.13.0 不许用轮询代替等待 ---
 
 test('7.13.0：连续查状态超阈值会被真实 pre-execute 拒绝（接线）', async () => {

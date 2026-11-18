@@ -107,6 +107,7 @@ import {
   agentToolNames,
   evaluateBoardWrite,
   evaluateCommanderChannels,
+  evaluateDuplicateLead,
   evaluatePreExecute,
   evaluatePollingGuard,
   evaluateTicketSettle,
@@ -115,6 +116,7 @@ import {
   hasUsableDispatchChannel,
   isDelegatedAgent,
   isSpecialistDispatchTool,
+  extractLeadRole,
   STATE_POLL_TOOLS,
 } from './lib/guard.js';
 import {
@@ -154,6 +156,8 @@ import {
   evaluateSync,
   recordBoard,
   recordDelegation,
+  recordLeadRole,
+  knownLeadRoles,
   recordPlan,
   recordTurn,
   renderExecutorBoard,
@@ -1116,6 +1120,36 @@ export function apply(ctx) {
   };
 
   /**
+   * 记录新建小组长的功能定位（7.17.0）。
+   *
+   * ⚠️ **不能挂在 `settleObservedDispatch` 里**：那条路径要求 prompt 带 `[ticket:t-N]`，
+   * 没有工单就直接 return —— 而"不带工单建人"恰恰也会产生重复 lead（本版第一次实现
+   * 就是挂错了位置，接线测试当场抓到门禁没生效）。
+   *
+   * @param {object} exec - `tools/post-execute` 的 exec。
+   * @param {object} result - 工具结果。
+   * @returns {void}
+   */
+  function observeLeadRole(exec, result) {
+    try {
+      const toolName = typeof exec?.name === 'string' ? exec.name : '';
+      if (toolName !== 'subagent' && toolName !== 'subagent_fork') return;
+      if (result?.isError === true) return;
+      const agent = exec?.agent;
+      if (agent === undefined || isDelegatedAgent(agent)) return;
+      const value = result?.value;
+      const name = typeof value?.name === 'string' && value.name !== ''
+        ? value.name
+        : (typeof exec?.arguments?.name === 'string' ? exec.arguments.name : '');
+      const role = extractLeadRole(exec?.arguments?.prompt);
+      if (name === '' || role === '') return;
+      recordLeadRole(ledgerOf(agent), name, role);
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 记录小组长定位失败：%o', error);
+    }
+  }
+
+  /**
    * 派发工具**报错** → 把工单从"working 幽灵"里拉回来：结算 Assignment 并记 failed。
    *
    * 0.8.0 E2E 抓到的真实问题：一个派发工具已记录 Assignment 后报错（当时的现场是
@@ -1378,6 +1412,9 @@ export function apply(ctx) {
   ctx.on('tools/post-execute', (exec, _result, next) => {
     try {
       const agent = exec?.agent;
+      // 7.17.0：记录新建小组长的**功能定位**（不依赖工单——挂 `settleObservedDispatch` 里
+      // 会被"必须有 [ticket:t-N]"的前置条件挡掉，那正是本版第一次实现时的漏洞）。
+      observeLeadRole(exec, _result);
       if (agent !== undefined && !isDelegatedAgent(agent) && ledgerEnabled()) {
         observePlanConfirmation(exec, _result);
         observeOneShotSettlement(exec, _result);
@@ -1632,6 +1669,22 @@ export function apply(ctx) {
         }
       } catch (error) {
         ctx.logger?.debug?.('commander-mode: 轮询门禁异常（按放行处理）：%o', error);
+      }
+
+      // 7.17.0「不许重复建人」：已有功能相同的小组长时，必须复用（send_message），不许新建。
+      // 现场：01:24 建 feedback-1117-lead 做「11月17日客户反馈分析」→ 02:53 又新建
+      // feedback-doc-lead 做「补出 11/17 客户反馈清单」→ 用户纠正「不是应该安排
+      // feedback-1117-lead 吗？」→ 94 秒后它改成 send_message，说明复用完全可行。
+      // 运行时对**同名**是硬拒的，所以它换名绕过（ordinal-detect-lead → ordinal-scheme-lead）。
+      if ((toolName === 'subagent' || toolName === 'subagent_fork') && !isDelegatedAgent(exec?.agent)) {
+        const duplicate = evaluateDuplicateLead({
+          prompt: exec?.arguments?.prompt,
+          knownLeads: knownLeadRoles(ledgerOf(exec.agent)),
+        });
+        if (duplicate !== undefined) {
+          ctx.logger?.info?.('commander-mode: 拒绝重复建小组长（已有同定位的小组长）');
+          return duplicate;
+        }
       }
 
       // 0.7.0 异步容量：一次性 specialist 在飞数量达上限时**在启动前**拒绝，
