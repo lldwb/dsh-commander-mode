@@ -2352,6 +2352,47 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.19.0** —— **子智能体完成但小组长不知道：运行时在父级空闲时把通知静默丢弃**。
+  ① **现象**（`9fbe2191` = 小组长 `layout-paradigm-lead`，2026-11-18）：它派了 **6 个子智能体**，
+  **只收到 2 个完成通知**，而且规律 100% 吻合：
+
+  | 子智能体 | 结束时刻 | 结束时小组长 | 通知 |
+  |---|---|---|---|
+  | `code-structure-analyst` | 09:02:55 | turn 1 **在跑** | ✅ |
+  | `bdx-reverser` | 09:09:00 | turn 2 **在跑** | ✅ |
+  | `diag-data-analyst` | 09:07:00 | 空闲（09:05:01 结束） | ❌ |
+  | `svg-verifier` | 09:20:56 | 空闲（09:15:40 结束） | ❌ |
+  | `diag-direction-fields` | 09:51:46 | 空闲（09:40:29 结束） | ❌ |
+  | `impl-zero-direction` | 09:59:17 | 空闲 | ❌ |
+
+  最后是**上级**发来「子智能体已经完成任务了」才把它叫醒（turn 5 @ 10:00:11）——
+  它自己完全不知道那 4 个已经完成。
+  ② **根因（读运行时源码 + 日志双向确证）**：`@deepseek-ai/dsh-subagent` 的 `notifySettlement()`：
+  ```js
+  const parent = this.ctx.agents.get(parentId);
+  if (parent === void 0 || parent.ctx.fiber.state !== 2 || this.rootOf(parent) !== activation.root) return;
+  ```
+  **`fiber.state !== 2`（父级回合不在跑）→ 直接 return**：通知既不生成、不排队、也不唤醒
+  —— **静默丢弃**。
+  ⚠️ 这修正了 7.5.0 注释里的说法（当时写成"排队但不唤醒"，实际 `followup` 分支只在父级
+  有 activity 时才走到；父级空闲时连那条分支都到不了）。
+  ③ **为什么 7.5.0 的 `steer` 补偿也只救回 2/6**：补偿要求 `agents.get(parentSessionId)`
+  拿到**活着的** parent agent；父级回合已结束、实例被回收时拿不到 → `parent-not-live` 直接放弃。
+  **"补一条 steer"解决不了父级已休眠的情况。**
+  ④ **修法**：新增 `lib/pending-notices.js` + 账本队列（`pendingNotices`，随账本落盘）：
+  - `subagent/end` 时先判断"这条通知能不能真的送到"（`shouldQueueNotice`）；
+    送不到（父级不在 / 父级是被委派的子级且**空闲**）→ **入队**；
+  - 父级下次渲染 `systemPrompt.context` 时 `drainPendingNotices` → 补投并**清空**
+    （不重复轰炸）；
+  - 同一子会话只留一条、TTL 6 小时、上限 20 条（不积压、不翻旧账）。
+  ⑤ **边界**：指挥者（depth 0）**不补投**——运行时对 root 的通知实测可靠，补了只是重复噪音。
+  ⑥ **用户要做什么**：重新安装 / **重启 DSH**。
+  ⑦ **测试**：**756 / 756 通过、0 失败**（7.18.0 基线 745，净增 11：
+  `test/pending-notices.test.mjs` 9 条——入队/取出即清空、同子会话去重、按时间排序、TTL、
+  上限、非法输入、补投文本、该入队三种情形、不该入队两种情形；
+  `test/plugin.test.mjs` 2 条**真实接线**——父级空闲丢的通知在下次渲染时补上且**只补一次**、
+  指挥者不会收到补投）。
+
 - **7.18.0** —— **看门狗的宽限期比用户的容忍时间还长，所以它永远来不及**。
   ① **现场（`session-1d8c8c60`，2026-11-18）**：用户在 12:08 看到它停了并追问，查日志：
 

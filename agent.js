@@ -136,7 +136,8 @@ import {
 import { buildTicketTools } from './lib/ticket-tools.js';
 import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
 import { buildStallNotice, shouldWakeStall } from './lib/stall-watchdog.js';
-import { handleSettlement, steerParent } from './lib/wake-chain.js';
+import { renderPendingNotices, shouldQueueNotice } from './lib/pending-notices.js';
+import { handleSettlement, parseSettlement, steerParent } from './lib/wake-chain.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
@@ -1378,7 +1379,10 @@ export function apply(ctx) {
               members: readExecutorMembers(agent),
               selfRunning: true,
             });
-            return executorText;
+            // 7.19.0：把空闲期间被运行时**静默丢弃**的子智能体完成通知补给它。
+            // 实测 `9fbe2191` 小组长 6 个子智能体只收到 2 个，最后靠上级提醒才知道。
+            const pending = renderPendingNotices(drainNotices(agent));
+            return [pending, executorText].filter((part) => part !== '').join('\n');
           }
           const parts = [];
           // 7.16.0：上下文渲染发生在每个回合里 → 用它登记"有动作"，看门狗的宽限期从这里起算。
@@ -1412,8 +1416,62 @@ export function apply(ctx) {
   // 于是整棵树静默（session-1d8c8c60：7 个子智能体只有 2 次通知送达）。
   // 只补 depth ≥ 1：指挥者（root）的通知实测可靠，补它会变成重复噪音。
   // 全程 fail-open，绝不影响正常结算。
+  /**
+   * 把一条送不出去的结算通知存到**父会话**的待投递队列（7.19.0）。
+   *
+   * @param {string} sessionId - 父会话 id。
+   * @param {object} notice - 通知。
+   * @returns {void}
+   */
+  function queueNoticeForSession(sessionId, notice) {
+    try {
+      const service = getLedger();
+      if (service === undefined || typeof service.queuePendingNotice !== 'function') return;
+      service.queuePendingNotice(sessionId, notice);
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 入队结算通知失败：%o', error);
+    }
+  }
+
+  /**
+   * 取出本会话的待投递结算通知（7.19.0，父级下次渲染上下文时补投）。
+   *
+   * @param {object} agent - 任意 agent（通常是刚醒来的小组长）。
+   * @returns {object[]} 通知列表。
+   */
+  function drainNotices(agent) {
+    try {
+      const service = getLedger();
+      const sessionId = sessionIdOf(agent);
+      if (service === undefined || sessionId === undefined) return [];
+      if (typeof service.drainPendingNotices !== 'function') return [];
+      return service.drainPendingNotices(sessionId);
+    } catch {
+      return [];
+    }
+  }
+
   ctx.on('subagent/end', (info) => {
     try {
+      // 7.19.0：先判断"这条通知能不能真的送进父级"。
+      // 运行时 `notifySettlement()` 的守卫是 `parent.ctx.fiber.state !== 2` → 父级回合不在跑时
+      // **直接 return（静默丢弃）**。实测 `9fbe2191`：小组长 6 个子智能体只收到 2 个通知，
+      // 且 100% 符合"父级在跑→送达 / 父级空闲→丢失"。取不到父级 agent 时连 steer 都发不出去，
+      // 所以必须**存下来**，等父级下次醒来时补投。
+      const parsed = parseSettlement(info);
+      const parents = getService('agents');
+      const parentAgent = parsed !== undefined && parents !== undefined && typeof parents.get === 'function'
+        ? parents.get(parsed.parentSessionId)
+        : undefined;
+      if (shouldQueueNotice({ parentAgent, stopReason: info?.stopReason }) && parsed !== undefined) {
+        // 入队到**父会话**的账本（父级下次渲染上下文时会 drain）。
+        queueNoticeForSession(parsed.parentSessionId, {
+          childId: parsed.childId,
+          name: typeof info?.name === 'string' ? info.name : '',
+          stopReason: typeof info?.stopReason === 'string' ? info.stopReason : '',
+          at: Date.now(),
+        });
+      }
       handleSettlement({
         info,
         getService,

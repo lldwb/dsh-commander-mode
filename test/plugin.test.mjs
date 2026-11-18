@@ -1495,6 +1495,42 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
 
+// -------------------------------------- 7.19.0 结算通知补投 ---
+
+test('7.19.0：父级空闲时丢失的结算通知，会在它下次渲染上下文时补上', () => {
+  // 现场 9fbe2191：小组长 6 个子智能体只收到 2 个通知，规律是
+  // 「父级在跑 → 送达 / 父级空闲 → 静默丢弃」；最后靠上级说「子智能体已经完成任务了」
+  // 才醒（turn 5 @ 10:00:11）。这条验证补投链路：入队 → 父级渲染 → 拿走并清空。
+  const ledger = memoryLedger();
+  const sessionId = 'session-lead';
+  // 模拟两次"父级空闲时结束的子智能体"
+  ledger.queuePendingNotice(sessionId, { childId: 'c-svg', name: 'svg-verifier', stopReason: 'completed' });
+  ledger.queuePendingNotice(sessionId, { childId: 'c-impl', name: 'impl-zero-direction', stopReason: 'completed' });
+  assert.equal(ledger.state.pendingNotices.length, 2, '两条都应入队');
+
+  const { record } = boot({ ledger });
+  // 小组长（depth 1）渲染上下文 → 应该看到补投
+  const lead = { id: sessionId, session: { id: sessionId, header: { id: sessionId, parentSession: 'session-root', delegationDepth: 1 } } };
+  const text = syncContext(record).text({ agent: lead });
+  assert.ok(text.includes('补投'), `应出现补投提示：${text}`);
+  assert.ok(text.includes('svg-verifier'), text);
+  assert.ok(text.includes('impl-zero-direction'), text);
+
+  // 取走后必须清空：第二次渲染不再重复提醒
+  const again = syncContext(record).text({ agent: lead });
+  assert.ok(!again.includes('补投'), `不该重复补投：${again}`);
+  assert.equal(ledger.state.pendingNotices.length, 0, '队列应已清空');
+});
+
+test('7.19.0：指挥者不会收到"补投"（它的通知路径可靠）', () => {
+  const ledger = memoryLedger();
+  ledger.queuePendingNotice('session-lead', { childId: 'c-1', name: 'x', stopReason: 'completed' });
+  const { record } = boot({ ledger });
+  // 指挥者 LEAD 的 session id 与那个队列无关 → 不该看到补投
+  const text = syncContext(record).text({ agent: LEAD });
+  assert.ok(!text.includes('补投'), text);
+});
+
 // -------------------------------------- 7.17.1 看门狗的状态词 bug ---
 
 test('7.17.1：工单"有活"的判据要用 isOpen（status 是 open/working，`queued` 只是 stage）', () => {
