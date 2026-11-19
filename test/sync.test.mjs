@@ -24,6 +24,7 @@ import {
   recordTurn,
   renderExecutorBoard,
   findScopeConflicts,
+  findStarvedTickets,
   renderLongSessionCheck,
   TERMINAL_TASK_STATUSES,
   buildSyncNudge,
@@ -572,6 +573,96 @@ test('7.10.0：体检会把已检测到的信号一并列出（有才列，不�
   const text = renderLongSessionCheck(ledger, view);
   assert.ok(text.includes('派活过度集中'), text);
   assert.ok(text.includes('先修'), text);
+});
+
+// ------------------------------------------ 多线并行冷落（7.23.0） ---
+
+test('7.23.0：多线并行时，最久没动的那条会被点名（真实时间线）', () => {
+  // 实测 session-1d8c8c60（2026-11-19）：4 条线并行，t-496 派活后 58 分钟无人过问，
+  // 而同期 t-494 一直在被推。指挥者自述「我的调度失误…精力集中在最紧急的客户反馈和
+  // 资产化上，导致 t-492/t-496 卡在收尾阶段没人推」。
+  const NOW = Date.parse('2026-11-19T04:13:00Z');
+  const at = (m) => NOW - m * 60 * 1000;
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [
+    task('task-1', 'in_progress', { ownerName: 'layout-paradigm-lead' }),
+    task('task-2', 'in_progress', { ownerName: 'feedback-1119-lead' }),
+  ], 0);
+  const tickets = [
+    { id: 't-492', status: 'working', title: '预览优化', updated_at: at(80) },
+    { id: 't-494', status: 'working', title: '客户反馈分析', updated_at: at(2) },   // 一直在推进
+    { id: 't-496', status: 'working', title: '多级序号', updated_at: at(58) },
+    { id: 't-499', status: 'working', title: '资产化', updated_at: at(33) },
+  ];
+  const view = evaluateSync(ledger, {
+    members: [
+      { name: 'layout-paradigm-lead', status: 'inactive', role: 'member', depth: 1 },
+      { name: 'feedback-1119-lead', status: 'running', role: 'member', depth: 1 },
+    ],
+    tickets,
+    now: NOW,
+  });
+  const issue = view.issues.find((e) => e.code === 'starved-ticket');
+  assert.ok(issue, JSON.stringify(view.issues));
+  // 三条都被点名，且都带"多少分钟没动"
+  assert.ok(issue.detail.includes('t-492'), issue.detail);
+  assert.ok(issue.detail.includes('t-496'), issue.detail);
+  assert.ok(issue.detail.includes('80 分钟没动'), issue.detail);
+  // 必须点出"哪条在推进"作为对照——否则它不知道该把注意力从哪挪开
+  assert.ok(issue.detail.includes('t-494'), issue.detail);
+  // 兜底要给出动作，且点名"代码改完只差提交"这种要先催提交
+  const nudge = buildSyncNudge(view);
+  assert.ok(nudge.includes('被冷落'), nudge);
+  assert.ok(nudge.includes('催提交') || nudge.includes('未提交'), nudge);
+});
+
+test('7.23.0：所有线都很久没动 → 不算"冷落"（那是整体停滞，由看门狗管）', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' }), task('task-2', 'in_progress', { ownerName: 'b' })], 0);
+  const NOW = Date.now();
+  const at = (m) => NOW - m * 60 * 1000;
+  const allStale = [
+    { id: 't-1', status: 'working', updated_at: at(40) },
+    { id: 't-2', status: 'working', updated_at: at(45) },
+  ];
+  const view = evaluateSync(ledger, { members: [], tickets: allStale, now: NOW });
+  assert.ok(!view.issues.some((e) => e.code === 'starved-ticket'), '全员没动不该算冷落');
+});
+
+test('7.23.0：单条工单 / 全部都很新 → 不报', () => {
+  const ledger = createSyncLedger();
+  recordBoard(ledger, [task('task-1', 'in_progress', { ownerName: 'a' })], 0);
+  const NOW = Date.now();
+  const at = (m) => NOW - m * 60 * 1000;
+
+  // 只有一条线：谈不上冷落
+  assert.ok(!evaluateSync(ledger, { members: [], tickets: [{ id: 't-1', status: 'working', updated_at: at(60) }], now: NOW })
+    .issues.some((e) => e.code === 'starved-ticket'));
+
+  // 全部 5 分钟内动过
+  assert.ok(!evaluateSync(ledger, {
+    members: [],
+    tickets: [
+      { id: 't-1', status: 'working', updated_at: at(5) },
+      { id: 't-2', status: 'working', updated_at: at(3) },
+    ],
+    now: NOW,
+  }).issues.some((e) => e.code === 'starved-ticket'));
+});
+
+test('7.23.0：阈值边界（25 分钟内不报、超过就报）', () => {
+  const NOW = Date.now();
+  const at = (m) => NOW - m * 60 * 1000;
+  assert.equal(findStarvedTickets([
+    { id: 't-1', updated_at: at(24) },
+    { id: 't-2', updated_at: at(3) },
+  ], NOW), undefined, '24 分钟不该报');
+  const hit = findStarvedTickets([
+    { id: 't-1', updated_at: at(26) },
+    { id: 't-2', updated_at: at(3) },
+  ], NOW);
+  assert.ok(hit !== undefined, '26 分钟该报');
+  assert.equal(hit.starved[0].id, 't-1');
 });
 
 // ------------------------------------------ 写作用域冲突（7.15.0） ---
