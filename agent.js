@@ -136,6 +136,7 @@ import {
 import { buildTicketTools } from './lib/ticket-tools.js';
 import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
 import { buildStallNotice, shouldWakeStall } from './lib/stall-watchdog.js';
+import { DegenerationTracker, buildDegenerationNotice } from './lib/degeneration-guard.js';
 import { renderPendingNotices, shouldQueueNotice } from './lib/pending-notices.js';
 import { handleSettlement, parseSettlement, steerParent } from './lib/wake-chain.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
@@ -529,6 +530,7 @@ export function apply(ctx) {
   if (typeof watchdogTimer?.unref === 'function') watchdogTimer.unref();
   ctx.on('dispose', () => {
     if (watchdogTimer !== undefined) clearInterval(watchdogTimer);
+    degenerationTrackers.clear();
   });
 
   /**
@@ -1526,6 +1528,47 @@ export function apply(ctx) {
       });
     } catch (error) {
       ctx.logger?.warn?.('commander-mode: 通知链兜底监听器异常（按跳过处理）：%o', error);
+    }
+  });
+
+  // 7.22.0 退化输出看门狗：模型陷入重复循环时**在生成中途掐断**。
+  // 现场 `94f76704`（子智能体 docs-checklist-spec）：单次输出 322,334 字、
+  // `Emit` 5602 次 / `OK` 5115 次、**零工具调用**、持续 11 分钟，最后被 max-tokens 硬截断
+  // （回合结束原因 {"kind":"max-tokens"}）。重复从第 64,306 字符开始，
+  // 退化前是「Then write. Then verify. Then answer. … I'll now emit the tool call.」的自我催促。
+  //
+  // 为什么能掐断：运行时流式循环里每个 chunk 都 `signal.throwIfAborted()`，
+  // 而 `agent.cancel()` 会 `this.phase.abort.abort(cause)` —— 中断当前回合。
+  const degenerationTrackers = new Map();
+  ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+    try {
+      if (agent === undefined || readOptions().degenerationGuard === false) return;
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return;
+      let tracker = degenerationTrackers.get(sessionId);
+      if (tracker === undefined) {
+        tracker = new DegenerationTracker();
+        degenerationTrackers.set(sessionId, tracker);
+      }
+      // 每次新尝试开始 → 重置（上一轮的累积不能算到这一轮）。
+      if (frame?.type === 'start') { tracker.reset(); return; }
+      const result = tracker.push(frame);
+      if (!result.degenerate) return;
+      // 掐断当前回合（保留收件箱，避免把已经排队的消息清掉），再把原因排给下一回合。
+      const notice = buildDegenerationNotice({ pattern: result.pattern, count: result.count });
+      try {
+        if (typeof agent.cancel === 'function') agent.cancel({ kind: 'degeneration' }, { keepInbox: true });
+      } catch (error) {
+        ctx.logger?.debug?.('commander-mode: 退化看门狗取消失败：%o', error);
+      }
+      try {
+        if (typeof agent.followup === 'function') agent.followup({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: notice }], source: { kind: 'dsh-commander-mode', form: 'notice', summary: '退化输出看门狗' } });
+      } catch (error) {
+        ctx.logger?.debug?.('commander-mode: 退化看门狗补说明失败：%o', error);
+      }
+      ctx.logger?.info?.('commander-mode: 检测到退化输出并已中断（会话 %s，片段「%s」重复 %d 次）', sessionId, String(result.pattern ?? '').slice(0, 20), result.count ?? 0);
+    } catch (error) {
+      ctx.logger?.debug?.('commander-mode: 退化看门狗异常（按忽略处理）：%o', error);
     }
   });
 
