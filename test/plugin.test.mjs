@@ -368,10 +368,12 @@ test('注册了确定性钩子：门禁、计划清单记录、结算兜底、�
   // 门禁（不执行操作）+ 计划清单记录（todo_write 之后更新账本）+ 回合结束兜底（结算同步）
   // + 7.5.0 通知链兜底（subagent/end → 父级是小组长时补 steer 唤醒）
   // + 7.22.0 退化输出看门狗（agent/assistant-stream → 重复循环时中途掐断）
+  // + 7.24.0 冷唤醒兜底 / 开场补投（agent/created → 记录 root 与父子链、补投积压通知）
   // + 7.16.0 `dispose`（停掉停滞看门狗的定时器，避免热重载后留下多个定时器）。
   const events = boot().record.listeners.map((item) => item.event);
   assert.deepEqual([...events].sort(), [
     'agent/assistant-stream',
+    'agent/created',
     'agent/turn-stopping',
     'dispose',
     'subagent/end',

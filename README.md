@@ -2383,6 +2383,35 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.24.0** —— **修小组长「莫名停止」：父级空闲时冷唤醒 + 结束回合条件化**。
+  ① **根因**（读运行时源码 + 会话日志确证）：`@deepseek-ai/dsh-subagent` 的
+  `notifySettlement()` 在父级回合不在跑时直接 `return`（**静默丢弃**通知）；而本模式协议要求
+  小组长「没有可推进的事 → 结束回合等通知」→ 小组长收尾后其下级的完成通知全丢，整条链静默。
+  7.5.0 的 `steer` 兜底只在 `agents.get(parentId)` 拿到**活**父级时生效，父级实例被回收时
+  直接走 `parent-not-live` 放弃。
+  ② **修1 三级降级冷唤醒**（`lib/wake-chain.js` 的 `createColdWaker`）：
+  L1 活父级 → `steer`（既有行为不变）；L2 拿不到活父级 → `sessionController.prompt()`
+  冷唤醒父会话（运行时 `resolveAgent()` 会先 resume 再 steer）；L3 L2 因 subagent ownership
+  失败（`session-controller/src/agent.ts:168-173`：会话被 subagent 持有时代理直接返回
+  ownership 错误而不 resume）→ 沿已知父子链上溯到最近的非子会话（root 指挥者）投一条极短
+  升级通知。同一 childId 只唤醒一次、root 不冷唤醒、全程 fail-open（失败只 `logger.warn`，
+  通知仍持久化在 pending-notices 等它下次醒来）。
+  ③ **修2 开场主动补投**（`lib/pending-notices.js` 的 `takePendingForRedelivery`）：
+  会话开场 / 被冷唤醒后（`agent/created`）把积压的结算通知主动投一次；`drain` 是破坏性的，
+  与上下文补投天然互斥、不重复交付；保留 MAX 20 / TTL 6h。
+  ④ **修3 结束回合条件化 + turn-stopping**：`discipline` / `guard` / `protocol` 三处文案改为
+  「**有在飞下级时不得结束回合**；没有才可结束等外部输入」；`agent/turn-stopping` 对被委派的
+  agent（depth ≥ 1）额外看一次成员快照，若仍有 `running` 下级就注入一条 advisory
+  （不硬拦、同 turn 一次、无在飞下级不注入）。
+  ⑤ **兼容性**：只改插件、不改 DSH 运行时；所用面（`subagent/end`、`agents.get/steer`、
+  `sessionController.prompt`、`agent/created`、`agent/turn-stopping`）在 **rc.3 与 rc.5** 均存在
+  （rc.3 asar 内同路径 TS 源码与 rc.5 tag 源码逐处核对，`SessionPromptRequest` 形状两版一致）。
+  steer 优先、pending-notices 持久化、stall-watchdog、异步派发语义均未改。
+  ⑥ **验证**：`node --test "test/**/*.test.mjs"`（桌面 Node v24.21.0）→ **803/803 通过**
+  （791 既有 + 12 新增；新增覆盖 L1 优先 / L2 成功 / L2 ownership 降 L3 / L2 非 ownership
+  不升级 / 全失败 fail-open / childId 去重 / root 不冷唤醒 / 开场补投与去重 /
+  turn-stopping 有与无在飞下级）。
+
 - **7.23.0** —— **多线并行时"被冷落的线"要被点名**（`starved-ticket`）。
   ① **现象**（`session-1d8c8c60`，2026-11-19，指挥者自述）：
   > 「这轮我同时开了 4 条线（t-492、t-494、t-496、t-499），但**精力集中在最紧急的客户反馈和

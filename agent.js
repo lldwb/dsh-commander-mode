@@ -137,8 +137,9 @@ import { buildTicketTools } from './lib/ticket-tools.js';
 import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
 import { buildStallNotice, shouldWakeStall } from './lib/stall-watchdog.js';
 import { DegenerationTracker, buildDegenerationNotice } from './lib/degeneration-guard.js';
-import { renderPendingNotices, shouldQueueNotice } from './lib/pending-notices.js';
-import { handleSettlement, parseSettlement, steerParent } from './lib/wake-chain.js';
+import { renderPendingNotices, shouldQueueNotice, takePendingForRedelivery } from './lib/pending-notices.js';
+import { createColdWaker, handleSettlement, parseSettlement, steerParent } from './lib/wake-chain.js';
+import { buildInFlightAdvisory } from './lib/in-flight-advisory.js';
 import { createTeamBoardBridge, isProjectedTask } from './lib/team-board-bridge.js';
 import { installSpecialist, outputText, MAX_RESULT_CHARS } from './lib/specialists.js';
 import {
@@ -1521,13 +1522,78 @@ export function apply(ctx) {
           at: Date.now(),
         });
       }
+      if (parsed !== undefined) sessionParents.set(parsed.childId, parsed.parentSessionId);
       handleSettlement({
         info,
         getService,
         logger: ctx.logger,
+        coldWake,
       });
     } catch (error) {
       ctx.logger?.warn?.('commander-mode: 通知链兜底监听器异常（按跳过处理）：%o', error);
+    }
+  });
+
+  // 7.24.0 冷唤醒兜底 + 开场补投：
+  // 运行时 `notifySettlement()` 在父级回合不在跑时**静默丢弃**通知（根因见
+  // `lib/pending-notices.js`），而 7.5.0 的 steer 兜底要求"父级 agent 还活着"。
+  // 这里补三级降级，目标不是"必须唤醒某个具体会话"，而是**链路不静默**：
+  //   L1 活父级 → steer（既有行为，保持不变）；
+  //   L2 拿不到活父级 → `sessionController.prompt()` 冷唤醒父会话；
+  //   L3 L2 因 subagent ownership 失败 → 升级到最近的非子会话祖先（至少 root 指挥者）。
+  // 同时记录已知 root 会话（root 不做冷唤醒：运行时对 root 的通知实测可靠）与父子链
+  // （冷会话已无 agent 可读 header，只能靠事件攒出来的映射上溯）。
+  const knownRootSessions = new Set();
+  const sessionParents = new Map();
+
+  /** 从一个活 agent 记录「会话 → 父会话 / 是否 root」。 */
+  const rememberSessionTree = (agent) => {
+    try {
+      const sessionId = sessionIdOf(agent);
+      if (sessionId === undefined) return;
+      const header = agent?.session?.header;
+      if (header === null || header === undefined || typeof header !== 'object') return;
+      const parent = typeof header.parentSession === 'string' ? header.parentSession : '';
+      if (parent !== '') sessionParents.set(sessionId, parent);
+      if (delegationDepthOf(agent) === 0) knownRootSessions.add(sessionId);
+    } catch {
+      // fail-open：记录失败只影响冷唤醒的精度，不影响正常结算。
+    }
+  };
+
+  try {
+    const agentsService = getService('agents');
+    const liveAgents = agentsService !== undefined && typeof agentsService.list === 'function' ? agentsService.list() : [];
+    for (const live of Array.isArray(liveAgents) ? liveAgents : []) rememberSessionTree(live);
+  } catch {
+    // fail-open：读不到活 agent 列表时，后续 agent/created 会补上。
+  }
+
+  const coldWake = createColdWaker({
+    getService,
+    logger: ctx.logger,
+    isRootSession: (sessionId) => knownRootSessions.has(sessionId),
+    parentOf: (sessionId) => sessionParents.get(sessionId),
+  });
+
+  ctx.on('agent/created', ({ agent } = {}) => {
+    try {
+      if (agent === undefined || agent === null) return;
+      rememberSessionTree(agent);
+      // 修2：会话开场（含被冷唤醒后 resume）主动补投积压的结算通知。
+      // `drain` 是破坏性的 → 同一批通知只会交付一次；冷唤醒正文不含清单，不重复。
+      const sessionId = sessionIdOf(agent);
+      const pending = takePendingForRedelivery({ service: getLedger(), sessionId });
+      if (pending.count === 0 || typeof agent.followup !== 'function') return;
+      agent.followup({
+        id: randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text: pending.text }],
+        source: { kind: 'dsh-commander-mode', form: 'notice', summary: '补投子智能体结算通知' },
+      });
+      ctx.logger?.info?.('commander-mode: 会话开场补投 %d 条结算通知（%s）', pending.count, sessionId);
+    } catch (error) {
+      ctx.logger?.warn?.('commander-mode: 开场补投失败（按跳过处理）：%o', error);
     }
   });
 
@@ -1618,8 +1684,31 @@ export function apply(ctx) {
   ctx.on('agent/turn-stopping', (payload) => {
     try {
       const agent = payload?.agent;
-      if (agent === undefined || isDelegatedAgent(agent)) return;
+      if (agent === undefined) return;
       if (payload?.signal?.aborted === true) return;
+      // 7.24.0 修3：小组长 / 子智能体收尾前，若台账仍有在飞下级 → 注入一次 advisory
+      // （不硬拦、同一回合只注一次；读不到成员快照时按"未知"不注入）。
+      if (isDelegatedAgent(agent)) {
+        if (typeof agent.inject !== 'function') return;
+        const advisory = buildInFlightAdvisory({
+          members: readExecutorMembers(agent),
+          depth: delegationDepthOf(agent),
+        });
+        if (advisory === '') return;
+        const turn = payload?.turn;
+        const advisoryKey = `in-flight:${String(agent.session?.id ?? agent.id)}:${String(turn)}`;
+        if (nudgedTurns.has(advisoryKey)) return;
+        if (nudgedTurns.size > 256) nudgedTurns.clear();
+        nudgedTurns.add(advisoryKey);
+        agent.inject({
+          id: randomUUID(),
+          role: 'user',
+          content: [{ type: 'text', text: advisory }],
+          source: { kind: 'dsh-commander-mode', form: 'notice', summary: '在下级未收尾提醒' },
+        });
+        ctx.logger?.info?.('commander-mode: 执行者收尾时仍有在飞下级，已注入提醒（turn=%s）', String(turn));
+        return;
+      }
       if (readOptions().syncGuard === false) return;
       if (!syncBoardEnabled()) return;
       if (typeof agent.inject !== 'function') return;
