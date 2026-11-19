@@ -424,16 +424,47 @@ export function apply(ctx) {
     for (const [sessionId, entry] of watchedSessions) {
       try {
         const agent = entry.agent;
-        if (agent === undefined || isDelegatedAgent(agent)) {
+        if (agent === undefined) {
           watchedSessions.delete(sessionId);
           continue;
         }
         if (readOptions().stallWatchdog === false) continue;
+        const delegated = isDelegatedAgent(agent);
+        if (isAgentIdle(agent) === false) continue; // 回合在跑 → 不打扰
+
+        // 7.20.0：**被委派的小组长 / 子智能体也要看门狗**。
+        // 此前这里直接 `continue` 跳过它们，于是小组长空闲后没有任何东西叫醒它：
+        // 实测 `layout-paradigm-lead` 03:29:07 回合结束 → 它派的 `multi-level-ordinal-plan`
+        // 03:41:37 完成并写出 818 行方案，但父级空闲 → 运行时静默丢弃通知 →
+        // 小组长之后**零事件**，直到用户 03:55:37 问「进度如何？」才被发现。
+        const pending = countPendingNotices(sessionId);
+        if (delegated) {
+          // 有代投通知 = 通知已经在队列里，只差叫醒它 → 立即叫（不等宽限、不受冷却限制）。
+          if (pending > 0) {
+            const woke = steerParent(
+              agent,
+              [
+                `【通知补投】你有 ${pending} 条子智能体结算通知送不到（运行时在父级空闲时会静默丢弃）。`,
+                '现在已唤醒你：请核对这些子智能体的产物与结论，继续推进；该结算就结算、该回报就回报。',
+              ].join('\n'),
+              `通知补投：${pending} 条`,
+            );
+            if (woke) {
+              entry.lastWokeAt = Date.now();
+              ctx.logger?.info?.('commander-mode: 唤醒小组长补投 %d 条通知（会话 %s）', pending, sessionId);
+            }
+            continue;
+          }
+          // 小组长没有代投通知时不做"有活没活"的判定：它的"活"由指挥官派，
+          // 自己判断容易误唤醒（会把在等上级指令的小组长反复叫起来）。
+          continue;
+        }
+
         const runningChildren = await countRunningChildren(agent);
         const decision = shouldWakeStall({
           now: Date.now(),
           lastActiveAt: entry.lastActiveAt,
-          turnRunning: !isAgentIdle(agent),
+          turnRunning: false,
           runningChildren,
           openWork: countOpenWork(agent),
           waitingOnUser: false,
@@ -451,6 +482,22 @@ export function apply(ctx) {
       } catch (error) {
         ctx.logger?.debug?.('commander-mode: 看门狗检查失败：%o', error);
       }
+    }
+  }
+
+  /**
+   * 数一数某会话的待投递结算通知（7.20.0，只看条数不清空）。
+   *
+   * @param {string} sessionId - 会话 id。
+   * @returns {number} 条数。
+   */
+  function countPendingNotices(sessionId) {
+    try {
+      const service = getLedger();
+      if (service === undefined || typeof service.peekPendingNotices !== 'function') return 0;
+      return service.peekPendingNotices(sessionId).length;
+    } catch {
+      return 0;
     }
   }
 

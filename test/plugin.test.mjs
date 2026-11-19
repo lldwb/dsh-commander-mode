@@ -1495,6 +1495,24 @@ test('0.8.1 派发报错：已有更新回报时不覆盖', async () => {
   assert.equal(stored.lastReport.status, 'ready', '更新回报不应被迟到错误覆盖');
 });
 
+test('7.20.0：peek 只看不吞 —— 看门狗靠它发现待投递通知，补投内容不能被吃掉', () => {
+  // 现场 layout-paradigm-lead：03:29:07 回合结束 → 子智能体 03:41:37 完成 →
+  // 通知入队但父级再也不醒来，补投永不执行（7.19.0 的窗口）。
+  // 7.20.0 让看门狗用 peek 发现"有代投通知"并叫醒它；必须用 peek 而不是 drain，
+  // 否则队列被看门狗吃掉、真正补投时就没内容了。
+  const ledger = memoryLedger();
+  ledger.queuePendingNotice('session-lead', { childId: 'c-1', name: 'multi-level-ordinal-plan', stopReason: 'completed' });
+  assert.equal(ledger.peekPendingNotices('session-lead').length, 1);
+  // peek 三次都还在（不清空）
+  assert.equal(ledger.peekPendingNotices('session-lead').length, 1);
+  assert.equal(ledger.peekPendingNotices('session-lead').length, 1);
+  // 别的会话看不到
+  assert.equal(ledger.peekPendingNotices('session-other').length, 0);
+  // 真正 drain 才清空
+  assert.equal(ledger.drainPendingNotices('session-lead').length, 1);
+  assert.equal(ledger.peekPendingNotices('session-lead').length, 0);
+});
+
 // -------------------------------------- 7.19.0 结算通知补投 ---
 
 test('7.19.0：父级空闲时丢失的结算通知，会在它下次渲染上下文时补上', () => {

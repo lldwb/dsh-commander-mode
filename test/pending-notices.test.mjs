@@ -112,7 +112,31 @@ test('7.19.0：补投文本要说清"运行时静默丢弃"并给出动作', () 
   assert.equal(renderPendingNotices(undefined), '');
 });
 
-test('7.19.0：该入队的三种情形', () => {
+test('7.20.0：`peek` 只看不吞（看门狗每分钟都要看，不能把队列吃掉）', () => {
+  // 现场 layout-paradigm-lead：03:29:07 回合结束 → 子智能体 03:41:37 完成 →
+  // 通知进队列但**父级再也不醒来**，补投永远不执行。看门狗要靠 peek 发现"有代投通知"
+  // 去叫醒它；如果用 drain，队列会被看门狗吃掉、补投内容就丢了。
+  const ledger = {};
+  pushPendingNotice(ledger, { childId: 'c-1', at: 1000 });
+  pushPendingNotice(ledger, { childId: 'c-2', at: 2000 });
+  // peek 两次都应看到 2 条
+  assert.equal(ledger.pendingNotices.length, 2);
+  assert.equal(ledger.pendingNotices.length, 2, 'peek 不应改变队列');
+  // drain 才清空
+  assert.equal(drainPendingNotices(ledger, 3000).length, 2);
+  assert.deepEqual(drainPendingNotices(ledger, 4000), []);
+});
+
+test('7.20.0：该入队的第三种情形 —— 父级空闲的小组长（正是本次现场）', () => {
+  // layout-paradigm-lead 当时：depth 1、回合已结束（idle）
+  const idleLead = {
+    status: 'idle',
+    session: { header: { parentSession: 'session-1d8c8c60', delegationDepth: 1, origin: 'subagent' } },
+  };
+  assert.equal(shouldQueueNotice({ parentAgent: idleLead, stopReason: 'completed' }), true);
+});
+
+test('7.19.0：该入队的情形（取不到父级 / 父级空闲）', () => {
   // ① 取不到父级 agent（父级回合已结束、实例被回收）→ 必须存
   assert.equal(shouldQueueNotice({ parentAgent: undefined, stopReason: 'completed' }), true);
   assert.equal(shouldQueueNotice({ parentAgent: null, stopReason: 'completed' }), true);
