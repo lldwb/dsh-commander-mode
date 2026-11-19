@@ -41,6 +41,9 @@ const EXECUTION_TOOLS = [
   'terminal_open', 'terminal_send', 'terminal_signal', 'terminal_close',
   // 仓库状态
   'create_worktree',
+  // 沙箱执行（7.20.0：devkit 挂进本模式后同步纳入执行边界）
+  'devkit_sandbox_create', 'devkit_sandbox_install', 'devkit_sandbox_run', 'devkit_sandbox_destroy',
+  'devkit_ui_open', 'devkit_ui_act', 'devkit_ui_close',
 ];
 
 /** 各执行类插件的只读半边：必须放行。 */
@@ -53,6 +56,7 @@ const READONLY_TOOLS = [
   'browser_network', 'browser_list_pages', 'browser_ping', 'browser_wait_for',
   'android_status', 'android_screenshot', 'android_ui_dump', 'android_logcat', 'android_ui_wait',
   'terminal_read', 'terminal_list',
+  'devkit_status', 'devkit_sandbox_list', 'devkit_sandbox_compose',
   'todo_write', 'ask_user_question', 'present',
   'subagent', 'send_message', 'list_agents', 'wait_agent', 'interrupt_agent',
   'team_task_create', 'team_task_list', 'team_task_get', 'team_task_update',

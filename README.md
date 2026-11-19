@@ -773,6 +773,37 @@ pnpm install     # 或 node <dsh>/runtime/primary-runtime/dependencies/pnpm/bin/
 > `skill-filesystem.config.customSkillDirs` 加载（按包名定位包目录，不写死绝对路径）。
 > `dsh plugin add` 用 `link:` 安装，目录随包在工作区里，不需要额外构建步骤。
 
+## 插件开发：通过预设组件接入 dsh-plugin-devkit（7.20.0）
+
+用户 2026-11-19 要求：指挥者模式也要像创造模式一样能编辑插件、能用 `dsh-plugin-devkit`。
+
+preset 是**完整组合**——一个模式能拿到什么，只取决于它自己的 `config.plugins`。devkit 的 patch 只能按 id 覆盖创造模式（`preset-cordis`），也无法把行插进本包的 preset（`insert` 只对 `group: true` 的行有效），更不该把 `devkit_*` 挂成全局行（那会让标准模式等所有模式泄漏沙箱工具）。所以链路是：
+
+1. devkit（2.6.0+）在自己的 `package.json` 里**声明**预设组件：
+   `dsh.presetComponent = { id: "devkit", module: "dsh-plugin-devkit/preset-component", skillDirs: ["skills"] }`；
+2. 本包在声明 preset 前用 `lib/preset-components.js` 从 Loader 起点（`ctx.baseUrl` = profile 目录的 file URL）解析它，
+   把 `module` 这一行追加到组合末尾、把 `skillDirs` 并进 `skill-filesystem.customSkillDirs`；
+3. 于是指挥者模式的 scope 里就有：10 个 `devkit_*` 工具、`devkit:workspace-conventions` prompt section、
+   以及 devkit 的三个开发 skill（`dsh-plugin-development` / `dsh-plugin-settings-page` / `dsh-plugin-debugging`）。
+
+**它是软依赖**：devkit 没装 / 不在 `dsh.profile.bundles` / 清单字段不合法 / 入口解析不到 → 跳过并 `warn`，
+指挥者模式照旧声明。发现逻辑 fail-closed——preset 的实例审计是"一行挂不上 ⇒ 整个模式判坏"，
+所以宁可少一个组件，也不能把注定挂不上的行塞进来。
+
+**指挥官自己仍然不执行**：devkit 的执行类工具（`devkit_sandbox_create` / `install` / `run` / `destroy`、
+`devkit_ui_open` / `act` / `close`）已补进默认 `blockedTools`；只读的 `devkit_status` /
+`devkit_sandbox_list` / `devkit_sandbox_compose` 放行。小组长 / 子智能体不受 `blockedTools` 影响，
+照常能用全套——插件开发这类活按本模式的既有规则派给小组长。
+
+**怎么验证**（改完 devkit 或本包后）：
+
+- `preset_audit { preset: "commander" }`：应出现 `dsh-plugin-devkit/preset-component` 行，工具集里有 10 个 `devkit_*`；
+- 指挥者模式的新会话里调 `devkit_status`：`conventionsSection` 应为 `devkit:workspace-conventions`；
+- `skill` 目录里能看到 devkit 的三个开发 skill。
+
+> 插件页的「包含的组件」**看不到**这一行——预设子行是运行时挂载的 fiber，不在 Loader 的 entry 树里。
+> 别用插件页判断"挂没挂上"，用 `preset_audit`。
+
 ## 它怎么保证"指挥者不执行操作"
 
 两道保障，一道是概率性的、一道是确定性的：
@@ -2351,6 +2382,27 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.20.0** —— **指挥者模式接入 `dsh-plugin-devkit`（预设组件）**。用户 2026-11-19 要求：
+  「让 dsh-commander-mode 插件也可以像创造模式一样编辑插件和使用 dsh-plugin-devkit 插件」。
+  ① **怎么接**：devkit 2.6.0 在自己的 `package.json` 里声明 `dsh.presetComponent`
+  （`id` / `module` / `skillDirs`）；本包新增 `lib/preset-components.js`，在声明 preset 前从
+  Loader 起点（`ctx.baseUrl`）解析该声明，把 `module` 行追加进 `config.plugins`、把 `skillDirs`
+  并进 `skill-filesystem.customSkillDirs`，于是指挥者模式的 scope 里多了 10 个 `devkit_*` 工具、
+  `devkit:workspace-conventions` section 与三个开发 skill。
+  ② **为什么不在 devkit 的 patch 里插一行**：patch 的 `insert` 只对 `group: true` 的行有效，
+  `preset-cordis`/`preset-commander` 都是 EntryGroup；按 id 覆盖又要求整块重述、且层序上会被
+  本包自己的 patch 覆盖。把 devkit 挂成**全局行**更不行——standard / minimal 等所有模式都会
+  泄漏沙箱工具（devkit `test/13` 的契约明确禁止）。
+  ③ **软依赖、fail-closed**：devkit 没装 / 被禁用（不在 `dsh.profile.bundles`）/ 清单字段不合法 /
+  入口解析不到 → 跳过并 `warn`，模式照旧声明。preset 的实例审计是"一行挂不上 ⇒ 整个模式判坏"，
+  所以绝不把注定挂不上的行塞进来。
+  ④ **执行边界同步**：`devkit_sandbox_create/install/run/destroy`、`devkit_ui_open/act/close`
+  补进默认 `blockedTools`（只读的 `devkit_status` / `devkit_sandbox_list` / `devkit_sandbox_compose`
+  放行）。新能力进入 preset 时执行边界必须同步覆盖，否则指挥者会多出一条"亲力亲为"的通道。
+  ⑤ **验证**：`node --test "test/*.test.mjs"` 773 条全绿（新增 `test/preset-components.test.mjs` 17 条）；
+  `preset_audit { preset: "commander" }` 可见 `dsh-plugin-devkit/preset-component` 行与 10 个
+  `devkit_*` 工具（真实 profile 需重启宿主后复查）。
 
 - **7.19.0** —— **子智能体完成但小组长不知道：运行时在父级空闲时把通知静默丢弃**。
   ① **现象**（`9fbe2191` = 小组长 `layout-paradigm-lead`，2026-11-18）：它派了 **6 个子智能体**，

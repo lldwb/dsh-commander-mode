@@ -108,6 +108,23 @@
 # 层若要覆盖下面这个 preset，必须重述 `id`、`name`、`description`、`order`。
 # （`plugins` 由 `lib/preset-plugins.js` 注入，YAML 覆盖它不会生效。）
 #
+# ## 7.20.0：同伴包预设组件（devkit）—— 软依赖
+#
+# preset 是完整组合，所以「指挥者模式也能编辑插件、也能用 dsh-plugin-devkit」只能由本模式的
+# plugins 里多一行 devkit 子行来实现（devkit 的 patch 只能覆盖 `preset-cordis`，`insert` 对
+# EntryGroup 行无效；也不该把 devkit_* 挂成全局行，否则 standard / minimal 等模式全泄漏）。
+#
+# 本包不硬编码 devkit 的文件名：声明前用 `lib/preset-components.js` 从 Loader 起点
+# （`ctx.baseUrl`，即 profile 目录的 file URL）解析 `dsh-plugin-devkit/package.json`，读它
+# `dsh.presetComponent` 声明的 `{ id, module, skillDirs }`，把 `module` 这一行追加到组合末尾、
+# 把 `skillDirs` 并进 `skill-filesystem.customSkillDirs`（devkit 的三个开发 skill 因此可用）。
+# devkit 没装 / 不在 `dsh.profile.bundles` / 清单字段不合法或入口解析不到 → **跳过（并 warn）**，
+# 指挥者模式照旧声明：软依赖绝不阻断模式（preset 的实例审计是"一行挂不上 ⇒ 整个 preset 判坏"）。
+#
+# 同一版本把 devkit 的执行类工具补进了 `blockedTools`（见下）：新能力进入 preset 时，执行边界
+# 必须同步覆盖，否则指挥官会多出一条"亲力亲为"的通道。只读的 devkit_status /
+# devkit_sandbox_list / devkit_sandbox_compose 仍放行。
+#
 # ## 本 patch 插入两行
 #
 # 1. `commander-mode`（`dsh-commander-mode/host`）—— **profile 顶层配置行**。它持有
@@ -218,6 +235,15 @@
           - terminal_signal
           - terminal_close
           - create_worktree
+          # 7.20.0：devkit 挂进本模式后，沙箱执行同样是「执行操作」。
+          # 只读半边（devkit_status / devkit_sandbox_list / devkit_sandbox_compose）仍放行。
+          - devkit_sandbox_create
+          - devkit_sandbox_install
+          - devkit_sandbox_run
+          - devkit_sandbox_destroy
+          - devkit_ui_open
+          - devkit_ui_act
+          - devkit_ui_close
         # 是否把长文协议注册成 skill。
         registerSkill: true
         # ---- 0.6.0 工单账本与计划授权 --------------------------------
