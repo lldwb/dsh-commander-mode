@@ -29,6 +29,7 @@ import {
 } from '../lib/preset-declaration.js';
 import { CAPABILITY_ROWS } from '../lib/capabilities.js';
 import { apply as applyCommander, name as commanderName, packageSkillsDir } from '../preset-commander.js';
+import { apply as applyCc, name as ccName } from '../preset-cc.js';
 
 /**
  * 最小 ctx 替身：记录 effect / register / warn。
@@ -129,6 +130,30 @@ test('插件名稳定（Loader 诊断与测试都依赖它）', () => {
   assert.equal(commanderName, 'preset-commander-declaration');
 });
 
+test('7.26.0：CC 模式的声明行 —— id 正确、组合与原生模式逐行相同、释放标签独立', async () => {
+  const { ctx, record } = makeCtx();
+  await applyCc(ctx, sampleConfig('commander-cc'));
+
+  assert.equal(record.registrations.length, 1, '应注册一次');
+  const definition = record.registrations[0];
+  assert.equal(definition.id, 'commander-cc', 'preset id 必须是 commander-cc（模式行靠它判变体）');
+  assert.equal(definition.order, sampleConfig('commander-cc').order);
+
+  // 组合与原生模式**完全相同**：差异只在 preset id，不靠删能力行
+  const native = makeCtx();
+  await applyCommander(native.ctx, sampleConfig('commander'));
+  assert.deepEqual(
+    definition.plugins.map((entry) => entry.id),
+    native.record.registrations[0].plugins.map((entry) => entry.id),
+    'CC 模式的能力行/模式行必须与原生模式逐行一致',
+  );
+  assert.equal(definition.plugins.length, CAPABILITY_ROWS.length + 2);
+
+  assert.equal(record.disposers.length, 1);
+  assert.equal(record.disposers[0].label, 'preset-cc: preset commander-cc');
+  assert.equal(ccName, 'preset-commander-cc-declaration');
+});
+
 test('3.7.0：cordis.patch.yml 里两个 preset 的 config 能通过声明器 schema', () => {
   // 真实 Loader 在 apply 之前会拿导出的 Config 校验本行 config。YAML 只写元数据之后，
   // 这里用一个最小逐行解析还原出 config，跑一遍 schema —— 挡住"手写 YAML 漏键 / 写错类型
@@ -142,6 +167,8 @@ test('3.7.0：cordis.patch.yml 里两个 preset 的 config 能通过声明器 sc
   };
   for (const [presetId, expectedId] of [
     ['preset-commander', 'commander'],
+    // 7.26.0：第二个模式（CC 变体）走同一个声明器 schema。
+    ['preset-commander-cc', 'commander-cc'],
   ]) {
     const block = blockOf(presetId);
     /** 取 `config:` 下 8 空格缩进的标量值。 */

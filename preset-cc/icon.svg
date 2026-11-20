@@ -1,0 +1,19 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cc-top" x1="18" y1="6" x2="18" y2="16" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFB86B"/><stop offset="1" stop-color="#E2681B"/>
+    </linearGradient>
+    <linearGradient id="cc-bottom" x1="18" y1="18" x2="18" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFCF9B"/><stop offset="1" stop-color="#F08330"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 两层 = 指挥官 → 小组长；下层不再分叉，而是一枚 CC 会话标记 -->
+  <path d="M18 6.5 26.5 10.9 18 15.3 9.5 10.9 18 6.5Z" fill="url(#cc-top)"/>
+  <path d="M9.5 15.8 18 20.2 26.5 15.8" stroke="url(#cc-bottom)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- CC 会话徽标 -->
+  <rect x="10.5" y="22" width="15" height="9" rx="2.6" fill="#2B2B33"/>
+  <text x="18" y="28.6" text-anchor="middle" font-family="Consolas, Menlo, monospace"
+        font-size="6.2" font-weight="700" fill="#FFCF9B">CC</text>
+</svg>

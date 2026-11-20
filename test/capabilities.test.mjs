@@ -64,7 +64,8 @@ test('3.7.0：YAML 里不再出现任何能力行 id（能力行只在 lib/capab
     .map((line) => /^\s*- id: (.+?)\s*$/u.exec(line)?.[1])
     .filter((id) => id !== undefined);
   // 5.0.0：patch 只插入两行 —— 配置行 + 唯一的模式声明行。
-  assert.deepEqual(declared.sort(), ['commander-mode', 'preset-commander']);
+  // 7.26.0：新增第二个模式（CC 变体），所以是三行：配置行 + 两个模式声明行。
+  assert.deepEqual(declared.sort(), ['commander-mode', 'preset-commander', 'preset-commander-cc']);
   for (const id of allCapabilityRowIds()) {
     assert.ok(!declared.includes(id), `YAML 不应再声明能力行 ${id}`);
   }

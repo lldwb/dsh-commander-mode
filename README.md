@@ -7,7 +7,11 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 
 **一句话**：你只做判断，小组长做执行（它也可以再交子智能体）；需要有人替你拆分、派活与逐项验收，就用这个模式——流程按任务形状定，不套模板。
 
-> **5.0.0：原「项目经理模式」已并入本模式。** 两边的差别（专家团、六段工作流）本来就都是按需能力，不需要用两个模式来表达。现在只有一个模式、一个 preset，切换成本为零。
+> **5.0.0：原「项目经理模式」已并入本模式。** 两边的差别（专家团、六段工作流）本来就都是按需能力，不需要用两个模式来表达。
+>
+> **7.26.0：模式菜单里多了一个「指挥者 · CC 模式」。** 组合与「指挥者模式」**完全相同**，唯一差别是
+> **小组长那一层的下级**：原生模式派 DSH 子智能体（可 `send_message` 续做、可读任务板），CC 模式派
+> **Claude Code 会话**（`subagent_claude_code`，一次性、不可追问）。指挥官这一层不受影响。
 
 - **指挥者不执行**：`write` / `edit` / `pwsh` 这类调用会被**确定性拒绝**并附上纠正指令
   （不是"靠提示词自觉"）——所以「分析、拆解、派活、验收」是它唯一的工作方式。
@@ -88,7 +92,7 @@ DeepSeek Harness（dsh）的**一个模式**：**指挥者模式**。指挥者�
 ```text
 30 秒上手
 1) 插件页安装本包，重启桌面版
-2) 新建会话，模式菜单选「指挥者模式」（现在只有一个模式）
+2) 新建会话，模式菜单选「指挥者模式」（7.26.0 起另有「指挥者 · CC 模式」：小组长改派 Claude Code 会话）
 3) 把任务丢给它 → 只读侦察 → 按任务形状拆 → 你确认 → 建 Team/任务板 → 派给小组长 → 逐项验收
    - 需要完整交付链（从零开发 / 大改造）时，让它用 skill 加载 project-dev-workflow 按六段推进
    - 发版打包 / 交接 / 单点修复 / 排障不需要六段，按对应形状拆即可
@@ -368,6 +372,8 @@ Session）对指挥官一律拒绝。
 4. **只有小组长可以修改智能体团队的任务进展并做排期**（`claim` / `release` / `complete` /
    `reopen` / `set_dependencies`）；指挥官只建任务、`reassign` 指派 owner、读板与验收。
 5. **只有一个模式（5.0.0）**：原「项目经理模式」已并入，协议正文只有 `lib/protocol.js` 一份。
+   7.26.0 起多了一个 **CC 变体**（「指挥者 · CC 模式」），它复用同一份协议与同一套能力行，
+   只按 preset id 改写"团队模型"那一段并加一道深度门禁 —— 仍然只有**一份**协议正文。
 
 这五条在实现里落成 `lib/team-model.js` 的**十条规则**（hierarchy / runtime-limits /
 one-team-one-task / continuous-intake / ambiguity-chain / leader-owns-board /
@@ -460,6 +466,36 @@ A/B 各产一份独立文件绕过了）。计划里的 A/B/C/D/E 是**阶段**�
 **用户要做什么**：重新安装 / 重启 DSH（preset 与协议文本都在启动时确定）。旧习惯（指挥官自己
 `claim` / `complete`、直接调 `subagent_<id>`）会收到拒绝与纠正指令，按拒因改走小组长即可；
 `delegationHierarchy: false` 只能回退任务板 / 工单两条门禁，**放不开派发通道硬规则**（7.0.0）。
+
+## 指挥者 · CC 模式（7.26.0）
+
+输入框模式菜单里的**第二个模式**（`preset.id = commander-cc`，`order: 8`）。它和「指挥者模式」
+共用同一份能力行、同一份协议正文、同一套门禁与工单体系，**唯一差别是小组长那一层的下级**：
+
+| | 指挥者模式 | 指挥者 · CC 模式 |
+|---|---|---|
+| 指挥官（L0） | `subagent` 建小组长 | **一样** |
+| 小组长（L1）的下级 | `subagent` / `subagent_fork` 建 DSH 子智能体（可 `send_message` 续做、可读任务板） | `subagent_claude_code` 派 **Claude Code 会话**（一次性、不可追问、不可续会话） |
+| 小组长还能用 `subagent` / `workflow` / 名册专家吗 | 能（L1→L2 不受限） | **不能**：`tools/pre-execute` 确定性拒绝，并给出纠正指令 |
+| 深度 | 最大 2 | 小组长之后是外部 CLI，**没有 DSH 深度** |
+
+**为什么这样实现**：两个模式共用同一个 preset 组合（`tool-subagent` 既是"指挥官建小组长"的通道，
+也是"小组长建子智能体"的通道）。删掉这一行会让指挥官自己也建不了小组长，三层链塌成一层；
+而 preset 子级继承父级的同一份组合，按 agent 收紧只能落在门禁上。所以判据是**会话头里的
+`agentPreset`**（`lib/mode-variant.js`）：指挥官照旧、小组长被拦 DSH 委派。
+
+**协议差异只有两处**（渲染层实测）：
+- 指挥官的「团队模型」一节改成「指挥官 → 小组长 → Claude Code 会话」，并加一段
+  「本模式的下级通道」（一次性、任务书自包含、并行=同时多发几条、没收到完成通知要重派）。
+- 小组长原本拿到**空串**（省 token），CC 模式下改为拿一份 ~0.5 KB brief：只说三件事——
+  只能用 `subagent_claude_code`、任务书自包含、没收到完成通知就重派。
+
+**前置条件**：需要启用官方 **Claude Code 子智能体** bundle（提供 `subagent_claude_code`
+与 `claude-code` provider）。没启用时协议与 brief 都会点名告警（"没有检测到
+`subagent_claude_code`"），不会让小组长空转。
+
+**不适合的活**：需要多轮澄清、需要中途改方向、需要读任务板/工单的任务 —— CC 会话没有回问通道
+（`AskUserQuestion` 被禁用、权限提示一律拒绝）。这种活要么拆成一轮自包含任务，要么换回原生模式。
 
 ## 指挥者模式（含项目经理职责，5.0.0 合并）
 
@@ -2385,6 +2421,29 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.26.0** —— **新增第二个模式「指挥者 · CC 模式」：小组长这一层的下级换成 Claude Code 会话**。
+  ① **用户要求**（2026-11-20）：给指挥者模式加一个 CC 变体，**小组长下没有子智能体，换成 CC 会话**。
+  ② **实现**：新增 preset `commander-cc`（`cordis.patch.yml` 的 `preset-commander-cc` 行 +
+  `preset-cc.js` 声明器 + `preset-cc/locale`、`preset-cc/icon`）；组合与「指挥者模式」**完全相同**
+  （同一份 `lib/capabilities.js` 能力行 + 同一份 `lib/preset-plugins.js` 拼装），差异只来自
+  **preset id**——`lib/mode-variant.js` 读会话头 `agentPreset` 判变体（`*-cc` 后缀即 CC），
+  子代理也带该字段（`dsh-subagent` 用 `composedPreset(parent.ctx)` 继承）。
+  ③ **为什么不能靠删能力行**：`tool-subagent` 同时是"指挥官建小组长"和"小组长建子智能体"的通道，
+  删了指挥官也建不了小组长；而 preset 子级继承父级同一份组合，按 agent 收紧只能落在
+  `tools/pre-execute`。所以新增 `evaluateCcDelegation()`（`lib/guard.js`）：**只拦子级**
+  （`subagent` / `subagent_fork` / `workflow` / 名册专家 / Worker），指挥官本人照旧，
+  `subagent_claude_code` 明确放行（第一版被 `isSpecialistDispatchTool()` 当名册专家误拦，已修）。
+  ④ **协议**：`renderCommanderSection({ delegation: 'cc' })` 改写「团队模型」为
+  「指挥官 → 小组长 → Claude Code 会话」并追加一段一次性通道纪律；小组长在 CC 模式下**不再拿空串**，
+  改拿 ~0.5 KB brief（原生模式仍然是空串，省 token）。两条路径都会在缺少
+  `subagent_claude_code` 时点名告警（`hasCcDelegate === false` 才告警，读不到工具视图时不猜）。
+  ⑤ **验证**：`node --test "test/**/*.test.mjs"` → **823/823**（新增 `test/cc-mode-726.test.mjs` 5 例
+  + `plugin.test.mjs` 一条真实接线用例：section 三分支、小组长 `subagent`/`subagent_fork` 被拒、
+  `subagent_claude_code` 走 `next()`、指挥官与原生模式放行）；`patch.test.mjs` /
+  `capabilities.test.mjs` 的"只插两行"断言更新为三个声明行。
+  ⑥ **兼容性**：原生「指挥者模式」行为**零改动**（变体读不到时退回 `native`）；两个模式共享同一份
+  配置行与同一套工单/看板/门禁；不需要新的服务或 DSH 新面。**启用后需重启 DSH**（preset 在启动时注册）。
 
 - **7.25.2** —— **修「退化看门狗误报导致的死循环」：frame 元数据不得进重复检测 + 连续掐断熔断**。
   ① **现场**（用户会话 `b885b225`，「1.8.50 回归验证」小组长，2026-11-20）：一分钟内被看门狗

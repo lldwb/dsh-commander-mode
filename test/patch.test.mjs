@@ -30,7 +30,7 @@ const PATCH = fs.readFileSync(new URL('../cordis.patch.yml', import.meta.url), '
 const LINES = PATCH.split('\n');
 
 /** 两个 preset（顺序 = patch 里的声明顺序）。 */
-const PRESETS = ['preset-commander'];
+const PRESETS = ['preset-commander', 'preset-commander-cc'];
 
 /** 文件里所有行 id，含嵌套 group 的子行。 */
 function allRowIds() {
@@ -53,10 +53,11 @@ function presetBlock(presetId) {
 
 // ---------------------------------------------------------------- 能力行 ---
 
-test('3.7.0：patch 只插入两行（配置行 + 模式声明行），能力行不在 YAML', () => {
+test('3.7.0：patch 只插入声明行（配置行 + 模式声明行），能力行不在 YAML', () => {
   // 能力行改由 lib/preset-plugins.js 从 lib/capabilities.js 拼装（单一来源）。
   // 这条断言防止有人把能力行块复制回 YAML —— 那样单一来源就又变成两份。
-  assert.deepEqual(allRowIds().sort(), ['commander-mode', 'preset-commander']);
+  // 7.26.0：第二个模式（CC 变体）加了一行模式声明行。
+  assert.deepEqual(allRowIds().sort(), ['commander-mode', 'preset-commander', 'preset-commander-cc']);
 });
 
 test('3.7.0：模式声明行不再写 plugins，只留声明元数据', () => {
