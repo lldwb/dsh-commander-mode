@@ -30,6 +30,8 @@ import {
 } from '../lib/mode-variant.js';
 import {
   evaluateCcDelegation,
+  evaluateCcExecution,
+  isCcExecutionTool,
   isDshDelegationTool,
 } from '../lib/guard.js';
 import {
@@ -122,6 +124,41 @@ test('7.26.0：协议 —— CC 变体改写"团队模型"，原生模式一字�
   assert.ok(degraded.includes('没有检测到 `subagent_claude_code`'), degraded.slice(-300));
   const unknown = renderCommanderSection({ delegation: 'cc', hasCcDelegate: undefined });
   assert.equal(unknown.includes('没有检测到'), false, '读不到工具视图时不要瞎告警');
+});
+
+test('7.27.0：CC 模式下小组长不许自己实现（write/edit），验收手段仍放行', () => {
+  const root = agentOf('commander-cc', 0);
+  const lead = agentOf('commander-cc', 1);
+  const nativeLead = agentOf('commander', 1);
+
+  // 实现动作：只拦 CC 模式的小组长
+  for (const name of ['write', 'edit', 'apply_patch']) {
+    const decision = evaluateCcExecution({ agent: lead, name, variant: 'cc' });
+    assert.equal(decision?.kind, 'deny', `${name} 应当被拒（活要交给 CC）`);
+    assert.ok(decision.reason.includes('subagent_claude_code'), '拒因必须点名 CC 通道');
+    assert.ok(decision.reason.includes('任务书'), '拒因要告诉它写任务书');
+    assert.equal(evaluateCcExecution({ agent: root, name, variant: 'cc' }), undefined, '指挥官本来就被执行边界拦，本函数不重复管');
+    assert.equal(evaluateCcExecution({ agent: nativeLead, name, variant: 'native' }), undefined, '原生模式不受影响');
+  }
+
+  // 验收与派活：放行
+  for (const name of ['read', 'grep', 'glob', 'pwsh', 'bash', 'subagent_claude_code', 'send_message']) {
+    assert.equal(evaluateCcExecution({ agent: lead, name, variant: 'cc' }), undefined, `${name} 应当放行`);
+  }
+
+  assert.equal(isCcExecutionTool('write'), true);
+  assert.equal(isCcExecutionTool('pwsh'), false, 'pwsh 是验收手段，不能拦');
+});
+
+test('7.27.0：协议要求"能交给 CC 的活尽量交给 CC"', () => {
+  const cc = renderCommanderSection({ delegation: 'cc' });
+  assert.ok(cc.includes('CC 产能纪律'), '指挥官协议要有产能纪律');
+  assert.ok(cc.includes('能整块交给 CC 的活，就别切碎'));
+  assert.ok(cc.includes('这一单由 CC 执行'));
+
+  assert.ok(CC_LEAD_BRIEF.includes('活交给 Claude Code 会话去干'), '小组长 brief 要写明默认分工');
+  assert.ok(CC_LEAD_BRIEF.includes('第一反应是写任务书'), '小组长 brief 要压住"自己上手"');
+  assert.ok(CC_LEAD_BRIEF.includes('原始输出'), '要让 CC 自己出证据（避免小组长重跑）');
 });
 
 test('7.26.0：小组长 brief 只在 CC 模式出现（原生模式子级仍然空串）', () => {

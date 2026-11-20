@@ -107,6 +107,7 @@ import {
   agentToolNames,
   evaluateBoardWrite,
   evaluateCcDelegation,
+  evaluateCcExecution,
   evaluateCommanderChannels,
   evaluateDuplicateLead,
   evaluatePreExecute,
@@ -1906,6 +1907,22 @@ export function apply(ctx) {
         if (ccDecision !== undefined) {
           ctx.logger?.info?.('commander-mode: 拒绝小组长在 CC 模式下派 DSH 子智能体（%s）', toolName);
           return ccDecision;
+        }
+      }
+
+      // 7.27.0 CC 产能门禁：小组长不许自己实现（write / edit / apply_patch），活要交给 CC。
+      // 用户 2026-11-20：「cc 模式时，要尽可能把活交给 cc 来干」——只换下级不够，
+      // 小组长手里留着 write/edit 就会图省事自己写，CC 的隔离与原生工具链都白搭。
+      // 只拦"实现动作"：read / grep / pwsh（跑测试、看 diff）仍留给它验收。
+      {
+        const execDecision = evaluateCcExecution({
+          agent: exec?.agent,
+          name: toolName,
+          variant: delegationVariantOf(exec?.agent),
+        });
+        if (execDecision !== undefined) {
+          ctx.logger?.info?.('commander-mode: 拒绝小组长在 CC 模式下自己实现（%s）', toolName);
+          return execDecision;
         }
       }
 

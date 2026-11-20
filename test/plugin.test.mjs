@@ -469,6 +469,19 @@ test('7.26.0 接线：CC 模式下小组长被拒 DSH 委派、指挥官放行�
   // 原生模式的小组长照旧能派 L2
   const nativeDecision = await listener({ name: 'subagent', agent: agentOf('commander', 1) }, () => Promise.resolve({ kind: 'allow' }));
   assert.equal(nativeDecision.kind, 'allow');
+
+  // ── 3. 7.27.0 产能门禁：CC 模式的小组长不许自己实现，验收仍放行 ────────────
+  const writeDenied = await listener({ name: 'write', agent: ccLead }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(writeDenied.kind, 'deny', 'CC 模式下小组长的 write 必须被拒（活要交给 CC）');
+  assert.ok(writeDenied.reason.includes('subagent_claude_code'));
+
+  let readNext = 0;
+  const readAllowed = await listener({ name: 'read', agent: ccLead }, () => { readNext += 1; return Promise.resolve({ kind: 'allow' }); });
+  assert.equal(readAllowed.kind, 'allow');
+  assert.equal(readNext, 1, '只读验收必须走 next');
+
+  const nativeWrite = await listener({ name: 'write', agent: agentOf('commander', 1) }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(nativeWrite.kind, 'allow', '原生模式的小组长照旧能自己写');
 });
 
 test('7.25.2：退出退化死循环的超时保护 —— 只有元数据帧永不误掐 + 连续掐断有熔断', () => {
