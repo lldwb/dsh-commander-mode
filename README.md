@@ -2433,6 +2433,20 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.27.1** —— **修：CC 模式的指挥官没有被强制开启智能体团队**。
+  ① **现象**（用户 2026-11-20 直接问）：「指挥官 cc 模式为什么没有强制开启智能体团队协作？」
+  ② **根因**：`lib/team-mode.js` 的 `isCommanderSession()` 与 `agent-preset/selected` 分支都写死了
+  `=== 'commander'`。7.26.0 加了第二个 preset（`commander-cc`）之后，三条强制通道
+  （`agent/created` 创建即开 / 切模式即开 / `team/mode` 被关即重开）**全部匹配不上**，
+  于是 CC 模式的团队静默保持关闭 —— 而它的看板、`team_task_*`、工单投影全都建立在 Team 上。
+  这是"加第二个 preset"时漏改的判据，单测当时只覆盖了原生模式。
+  ③ **修法**：新增 `isCommanderPresetId()`，判据改为 `commander` **或** `*-cc`
+  （复用 `lib/mode-variant.js` 的 `isCcPresetId()`，与协议/门禁的变体判据**单一来源**）；
+  两处调用点都换成它。将来再加 `*-cc` 变体不会再漏。
+  ④ **验证**：`node --test "test/**/*.test.mjs"` → **828/828**（新增 2 例：`isCommanderSession`
+  认 `commander-cc` / 任意 `*-cc`、排除子代理、投影优先；`agent/created` 对 CC 根 agent
+  真的调用 `setEnabled(true)`）；`team-mode.test.mjs` 的导出清单断言同步。
+
 - **7.27.0** —— **CC 模式「尽可能把活交给 CC」：加产能纪律 + 执行归属门禁**。
   ① **用户要求**（2026-11-20）：「cc 模式时，要尽可能把活交给 cc 来干」。7.26.0 只换了
   「小组长的下级」，但小组长手里还留着 `write` / `edit` —— 它图省事就会自己写，CC 的隔离、
