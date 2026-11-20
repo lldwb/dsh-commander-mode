@@ -1624,7 +1624,14 @@ export function apply(ctx) {
       // 掐断当前回合（保留收件箱，避免把已经排队的消息清掉），再把原因排给下一回合。
       const notice = buildDegenerationNotice({ pattern: result.pattern, count: result.count });
       try {
-        if (typeof agent.cancel === 'function') agent.cancel({ kind: 'degeneration' }, { keepInbox: true });
+        // ⚠️ cause.kind 必须是运行时**封闭 union** 的成员（user / parent / hook / disposed）。
+        // `agent-loop` 的 `abortedCancelCause()` 用一个 exhaustive switch 归一化 cause，
+        // 未知成员走 `assertNever()` 抛错；该异常发生在 `finally` 之前，于是 `turnEnds`
+        // 仍是 null，`finally` 照样 append `turn/end { turn, reason: null }` —— 一条
+        // **永久写坏**的日志：投影层读 `event.data.reason.kind` 直接 TypeError，
+        // 整个会话从此「历史加载失败」（0.2.2-rc.5 实测，2026-11-20 用户会话 01916ad6）。
+        // 自定义语义只能塞进 `hook.reason` 这个自由字段。
+        if (typeof agent.cancel === 'function') agent.cancel({ kind: 'hook', reason: 'degeneration' }, { keepInbox: true });
       } catch (error) {
         ctx.logger?.debug?.('commander-mode: 退化看门狗取消失败：%o', error);
       }

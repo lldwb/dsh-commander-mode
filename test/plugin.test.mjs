@@ -382,6 +382,46 @@ test('注册了确定性钩子：门禁、计划清单记录、结算兜底、�
   ]);
 });
 
+test('7.25.1：退化看门狗传给 agent.cancel 的 cause 必须是运行时封闭 union 的成员', () => {
+  // ## 这条测试是为什么
+  //
+  // 7.22.0 的看门狗调用 `agent.cancel({ kind: 'degeneration' })`。`AgentCancelCause`
+  // 是**封闭 union**（`user | parent | hook | disposed`），`AgentCancelCause` 之外的
+  // 成员会让 `agent-loop` 的 `abortedCancelCause()` 走 `assertNever()` 抛错；该异常
+  // 发生在 `finally` 之前，`turnEnds` 仍是 null，`finally` 照样 append
+  // `turn/end { turn, reason: null }` —— **永久写坏一份会话日志**：投影层读
+  // `event.data.reason.kind` 直接 TypeError，整会话「历史加载失败」（2026-11-20，
+  // 会话 `session-01916ad6` 就是这么坏的；同批共 14 个会话）。
+  //
+  // 用 mock agent 记参数即可钉住这条契约：cause.kind 只能是那四个，自定义语义
+  // 只能放进 `hook.reason`。
+  const VALID = ['user', 'parent', 'hook', 'disposed'];
+  const agent = {
+    id: 'session-degenerate',
+    session: { id: 'session-degenerate', header: { id: 'session-degenerate' } },
+    cancelled: [],
+    followedUp: [],
+    cancel(cause, options) { this.cancelled.push({ cause, options }); },
+    followup(message) { this.followedUp.push(message); },
+  };
+  const listener = listenerOf(boot().record, 'agent/assistant-stream');
+
+  // 按运行时真实 frame 形状驱动：`type: 'start'` 重置，之后 `chunk.text` 是增量。
+  listener({ agent, frame: { type: 'start' } });
+  const degenerate = '.\n\nEmit.\n\nNow.\n\nOK.\n\n';
+  for (let i = 0; i < 300 && agent.cancelled.length === 0; i += 1) {
+    listener({ agent, frame: { type: 'delta', chunk: { type: 'text-delta', text: degenerate } } });
+  }
+
+  assert.equal(agent.cancelled.length, 1, '退化必须触发且只触发一次中断');
+  const { cause, options } = agent.cancelled[0];
+  assert.ok(VALID.includes(cause.kind), `非法 cancel cause（会让 assertNever 抛错并写坏日志）：${JSON.stringify(cause)}`);
+  assert.deepEqual(cause, { kind: 'hook', reason: 'degeneration' }, '自定义语义要放进 hook.reason');
+  assert.deepEqual(options, { keepInbox: true });
+  assert.equal(agent.followedUp.length, 1, '中断后要补一条说明（否则模型不知道自己被打断）');
+  assert.ok(agent.followedUp[0].content[0].text.includes('退化输出看门狗'));
+});
+
 test('7.5.0：subagent/end 兜底只在父级是小组长时唤醒，且用 steer（真实接线）', () => {
   // 这条证明 `agent.js` 的监听器真的接上了 `handleSettlement`，而不是只写在 lib 里。
   const steered = [];

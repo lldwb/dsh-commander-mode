@@ -2386,6 +2386,41 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.25.1** —— **修「退化看门狗把会话日志永久写坏」：`agent.cancel()` 的 cause 必须是运行时封闭 union**。
+  ① **根因**（运行时源码 + 会话日志双向确证）：7.22.0 的看门狗调用
+  `agent.cancel({ kind: 'degeneration' }, { keepInbox: true })`，而 `AgentCancelCause`
+  （`packages/core/session/src/types.ts:198-205`）是**封闭 union**
+  `user | parent | hook | disposed`。`agent-loop` 的 `abortedCancelCause()`
+  （`packages/core/agent-loop/src/agent.ts:94-109`）用 exhaustive switch 归一化 cause，
+  未知成员走 `assertNever()` **抛错**；这个异常发生在 `finally` 之前，此时 `turnEnds` 仍是
+  `null`，而 `finally`（同文件 428 行）照样
+  `append('turn/end', { turn, reason: turnEnds! })` —— 于是持久化出一条
+  `{"type":"turn/end","data":{"turn":N,"reason":null}}`。
+  ② **为什么它能把会话锁死**：这条事件能过 `Session.fromRestore`（只校验信封 / seq / surface /
+  header），所以 `readSession`、`session_lookup` 都正常；但**投影层必崩**——
+  `api/session-controller/src/continuation.ts:46` 读 `event.data.reason.kind` → TypeError，
+  GUI 报「历史加载失败：failed to project session … Cannot read properties of null
+  (reading 'kind')（gateway/internal）」（`history/controller.ts:172` 用
+  `projectionMode: 'all'` 调 `observeSession`）。客户端 `turn-error.ts` / `TurnProcessNodeView.tsx`
+  / `ui-session-status` 等十余处同样是 `event.data.reason.kind`，所以这不是单点。
+  数据一旦落下就是**永久的**：每触发一次看门狗就坏一份会话。
+  ③ **修复**：cause 改为 `{ kind: 'hook', reason: 'degeneration' }`。`hook` 是 union 里
+  唯一带自由字符串的成员，语义（"被插件的钩子逻辑中断"）不变，`abortedCancelCause()` 走
+  `case 'hook'` 正常归一化，`turn/end.reason` 落成
+  `{"kind":"aborted","reason":{"kind":"hook","reason":"degeneration"}}`。
+  ④ **存量数据**（同一缺陷的 14 份日志）：全库 798 份会话日志扫描出 **14 个会话**的
+  `turn/end.reason === null`，时间跨 2026-11-09 → 11-20、跨 3 个工作区，全部由该看门狗造成
+  （每份都紧跟在一条「退化输出看门狗」通知之后）。修复工具见 `dsh-session-enhance` 5.6.4 的
+  `scripts/repair-session-log.mjs`（新增 `turn/end` null reason 修复 + DSH 官方投影门禁）。
+  ⑤ **验证**：`test/plugin.test.mjs` 新增用例——用**真实接线**（`boot()` + 真实
+  `agent/assistant-stream` 监听器 + 真实 `DegenerationTracker`）喂退化帧，断言
+  `agent.cancel` 的 cause `kind` ∈ `{user,parent,hook,disposed}` 且等于
+  `{kind:'hook',reason:'degeneration'}`、`keepInbox` 保持、中断后仍补一条说明。
+  **对照实验**：在临时副本里把该行改回 `{kind:'degeneration'}`，该用例立刻失败（证明它真能
+  抓住原缺陷），工作区未受污染。`node --test "test/**/*.test.mjs"` → 全绿。
+  ⑥ **兼容性**：只改一个 cause 字面量；看门狗判据、通知文案、`keepInbox` 语义、其它 7.22.0
+  行为均未动，不需要新服务或 DSH 新面。
+
 - **7.25.0** —— **修「有工单但忘记派活、要用户提醒」：建单不再算完成**。
   ① **根因**（会话日志 + 源码确证）：现场 `session-1d8c8c60` 至少 5 次（t-453 / t-546 /
   t-399 / t-556 / t-557）。典型序列：`commander_ticket_create` 成功返回 id + `team_task_id`
