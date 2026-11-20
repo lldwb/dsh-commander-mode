@@ -156,6 +156,7 @@ import {
   SYNC_CONTEXT_NAME,
   SYNC_CONTEXT_ORDER,
   buildSyncNudge,
+  buildPendingDispatchAdvisory,
   consumeStaleNudge,
   evaluateSync,
   recordBoard,
@@ -1708,6 +1709,28 @@ export function apply(ctx) {
         });
         ctx.logger?.info?.('commander-mode: 执行者收尾时仍有在飞下级，已注入提醒（turn=%s）', String(turn));
         return;
+      }
+      // 7.25.0：建单未派 —— **建单成功不等于已派活**。
+      // 现场 session-1d8c8c60 至少 5 次：建单后继续处理别的输入，回合收尾时这张单的
+      // assignments 仍是 []，直到用户追问「安排给谁了」。这里在收尾时补一次提醒：
+      // 不硬拦、每回合最多一次、派活后（assignments 非空）自然不再注入。
+      {
+        const advisory = buildPendingDispatchAdvisory(listTicketsSafe(agent));
+        if (advisory !== '' && typeof agent.inject === 'function') {
+          const pendingTurn = payload?.turn;
+          const pendingKey = `pending-dispatch:${String(agent.session?.id ?? agent.id)}:${String(pendingTurn)}`;
+          if (!nudgedTurns.has(pendingKey)) {
+            if (nudgedTurns.size > 256) nudgedTurns.clear();
+            nudgedTurns.add(pendingKey);
+            agent.inject({
+              id: randomUUID(),
+              role: 'user',
+              content: [{ type: 'text', text: advisory }],
+              source: { kind: 'dsh-commander-mode', form: 'notice', summary: '建单未派提醒' },
+            });
+            ctx.logger?.info?.('commander-mode: 建单未派，已注入提醒（turn=%s）', String(pendingTurn));
+          }
+        }
       }
       if (readOptions().syncGuard === false) return;
       if (!syncBoardEnabled()) return;

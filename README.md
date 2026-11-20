@@ -221,8 +221,11 @@ Ticket / Mandate / Assignment / Report 形状（裁剪到指挥者场景，去�
 1. **计划确认有固定格式**：必须用 `ask_user_question`，问题 id 精确写成 `commander-plan`，
    选项第一项 label 精确写成「确认，开始执行」，第二项「需要调整」。只有选中第一项
    （或自定义答案以"确认"开头）才算拿到**计划授权（Mandate）**。
-2. **先建工单再派活**：计划确认后，每一项要交付的活用 `commander_ticket_create` 建工单
-   （`title` + `acceptance`，可选 `intent` / `scope`）。一张工单可多次派发（实现 / 返工 / 审查）。
+2. **建单即派**（7.25.0 起，原名「先建工单再派活」）：计划确认后，每一项要交付的活用
+   `commander_ticket_create` 建工单（`title` + `acceptance`，可选 `intent` / `scope`）；
+   **建单后必须在同一回合内完成派活**（`team_task_update action:"reassign"` + `send_message`，
+   prompt 首行写 `[ticket:t-N]`）——做不到就在回复里说明为什么先不派。一张工单可多次派发
+   （实现 / 返工 / 审查）。
 3. **每次派发都带工单**：specialist 工具传 `ticket` 参数；Team 的 `subagent` 在
    prompt 首行写 `[ticket:t-N]`。
 4. **回报必须结构化**：执行者（3.0.0 起是小组长）最终答复最后一行写
@@ -2382,6 +2385,42 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
   `partialRoute` 提示（Host 侧 `normalizeRoster` 跳过告警有单测覆盖）。
 
 ## 版本
+
+- **7.25.0** —— **修「有工单但忘记派活、要用户提醒」：建单不再算完成**。
+  ① **根因**（会话日志 + 源码确证）：现场 `session-1d8c8c60` 至少 5 次（t-453 / t-546 /
+  t-399 / t-556 / t-557）。典型序列：`commander_ticket_create` 成功返回 id + `team_task_id`
+  后，模型把「登记完成」当成「已派活」，接着处理别的输入（用户消息 / system-reminder /
+  子代理通知），回合结束时这张单的 `assignments` 仍是空数组——直到用户问「安排给谁了」。
+  机制缺口三条：**建单与派活非原子**（成功返回被误当派活）；`lib/dispatch-gate.js` 只有
+  **单向**门禁（派活必须带单），没有反向检查「建了单必须派」；看板既有的
+  `board-stale-open` 要 10 分钟宽限（刚建的新单不触发），且 `agent.js` 对
+  `assignments.length === 0` 的工单直接 return。
+  ② **A. 可行动看板告警**（`lib/sync.js`，issue `code: 'ticket-created-not-dispatched'`）：
+  工单**非终态**、`assignments` 为空、`now - createdAt >= 2 分钟`、且**排除 waiting-on-user**
+  时报警；`detail` 点名工单并给下一步（「工单 t-N 已建但还没派活：现在用 send_message 派给
+  小组长（或说明为什么先不派）」）。**派活后 assignments 非空即消失**，不会变成永久噪音；
+  与 `board-stale-open`（派了但主人停手 / 陈旧孤儿）、`all-idle-stalled`（全员空闲）分工不重叠。
+  判定抽成公共函数 `pendingDispatchTickets()`，看板与收尾自检共用一份口径。
+  ③ **B. 回合收尾自检**（`agent/turn-stopping` + `buildPendingDispatchAdvisory()`）：root 指挥者
+  收尾时若仍有「建单未派」→ 注入一条 advisory（点名 N 张单 + `send_message` / `subagent` /
+  一次性专家 `ticket` 参数的具体动作 + 「确实要等外部输入就写明为什么先不派」）；**不硬拦、
+  每 turn 最多一次、派活后自然不再注入**；该提醒不依赖 `syncGuard` / 团队服务（精简部署也生效）。
+  ④ **C. 文案与建单返回原子化**：`lib/protocol.js` 的 `ticket-first` 改为「**建单即派**：建单后
+  必须在同一回合完成 reassign + `send_message`；做不到就在回复里说明为什么先不派」；
+  `lib/ticket-tools.js` 的 `commander_ticket_create` 成功 `note` 追加「下一步必须派活
+  （send_message + [ticket:<id>]），否则这张单不算开始」。`discipline.js` / `guard.js`
+  实测无「先建工单再派活」类句子（只有团队优先与派活通道门禁说明），故未改。
+  ⑤ **兼容性（加法式）**：只新增一条 issue + 一条收尾 advisory + 改措辞；既有 10 类告警
+  （`plan-stale` / `board-open-plan-closed` / `plan-missing` / `board-stale-open` /
+  `channel-drift` / `all-idle-stalled` / `ticket-backlog` / `starved-ticket` / `scope-conflict` /
+  `parallel-underused` / `dispatch-focus` / `fan-out-unused`）判据与渲染**未改**；
+  7.24.0 的冷唤醒 / pending-notices / stall-watchdog 逻辑未动；新 issue 明确**不进入**
+  `buildSyncNudge`（避免与专用收尾提醒重复注入）；不依赖任何新服务或 DSH 新面。
+  ⑥ **验证**：`node --test "test/**/*.test.mjs"`（桌面 Node v24.21.0）→ **811/811 通过**
+  （既有 803 + 新增 8，全部在 `test/pending-dispatch-725.test.mjs`：超 2 分钟未派触发且点名 /
+  未到宽限不触发 / 已派不触发 / waiting-on-user 与终态不触发 / turn-stopping 注入且同 turn
+  去重、派活后与新回合不再注入 / 建单返回文本含「下一步必须派活」/ 新 issue 追加在既有之后
+  且不重复进入通用收尾提醒）。
 
 - **7.24.0** —— **修小组长「莫名停止」：父级空闲时冷唤醒 + 结束回合条件化**。
   ① **根因**（读运行时源码 + 会话日志确证）：`@deepseek-ai/dsh-subagent` 的
