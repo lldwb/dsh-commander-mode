@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { apply, FALLBACK_OPTIONS, SECTION_NAME, SECTION_ORDER } from '../agent.js';
+import { DEGENERATION_FIRE_LIMIT } from '../lib/degeneration-guard.js';
 import { DEFAULT_BLOCKED_TOOLS } from '../lib/guard.js';
 import { emptyLedger } from '../lib/ledger.js';
 import { CommanderLedger } from '../lib/ledger-service.js';
@@ -406,11 +407,11 @@ test('7.25.1：退化看门狗传给 agent.cancel 的 cause 必须是运行时�
   };
   const listener = listenerOf(boot().record, 'agent/assistant-stream');
 
-  // 按运行时真实 frame 形状驱动：`type: 'start'` 重置，之后 `chunk.text` 是增量。
-  listener({ agent, frame: { type: 'start' } });
+  // 按运行时真实 frame 形状驱动（`AssistantStreamFrame`：start / chunk / end）。
+  listener({ agent, frame: { type: 'start', attemptId: 'a', turn: 1, step: 1 } });
   const degenerate = '.\n\nEmit.\n\nNow.\n\nOK.\n\n';
   for (let i = 0; i < 300 && agent.cancelled.length === 0; i += 1) {
-    listener({ agent, frame: { type: 'delta', chunk: { type: 'text-delta', text: degenerate } } });
+    listener({ agent, frame: { type: 'chunk', attemptId: 'a', revision: 1, index: 0, time: 0, chunk: { type: 'text-delta', text: degenerate } } });
   }
 
   assert.equal(agent.cancelled.length, 1, '退化必须触发且只触发一次中断');
@@ -420,6 +421,64 @@ test('7.25.1：退化看门狗传给 agent.cancel 的 cause 必须是运行时�
   assert.deepEqual(options, { keepInbox: true });
   assert.equal(agent.followedUp.length, 1, '中断后要补一条说明（否则模型不知道自己被打断）');
   assert.ok(agent.followedUp[0].content[0].text.includes('退化输出看门狗'));
+});
+
+test('7.25.2：退出退化死循环的超时保护 —— 只有元数据帧永不误掐 + 连续掐断有熔断', () => {
+  // ## 现场 `b885b225`（2026-11-20，「1.8.50 回归验证」小组长）
+  //
+  // 一分钟内被看门狗连掐 **6 次**、烧掉 **26 个回合**，模型一直在「立刻调工具」和
+  // 「被判定退化」之间打转，任务一个字都没推进。两个独立缺陷叠加：
+  //
+  // 1. `frameDelta()` 把 frame 元数据（`type:'chunk'` + `attemptId`=会话 id）当正文，
+  //    每帧都产生同一串 40 字符 → 恒判退化（已由 degeneration-guard.test.mjs 钉住）。
+  // 2. 看门狗没有熔断：掐断的前提是「重来能变好」，连掐几次不恢复就该停手，
+  //    否则只会把回合预算烧光。本用例钉第 2 条（同时验证第 1 条在真实接线里也不误发）。
+  const listener = listenerOf(boot().record, 'agent/assistant-stream');
+  const makeAgent = (id) => ({
+    id,
+    session: { id, header: { id } },
+    cancelled: [],
+    followedUp: [],
+    cancel(cause, options) { this.cancelled.push({ cause, options }); },
+    followup(message) { this.followedUp.push(message); },
+  });
+
+  // ── 1. 纯元数据流（没有一行模型文本）：一次都不该掐 ────────────────────────
+  const metadataAgent = makeAgent('session-metadata-only');
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    listener({ agent: metadataAgent, frame: { type: 'start', attemptId: 'a', turn: attempt, step: 1 } });
+    for (let i = 0; i < 100; i += 1) {
+      listener({
+        agent: metadataAgent,
+        frame: {
+          type: 'chunk', attemptId: 'b885b225-5bed-468c-b45c-518d4b85f8d', revision: attempt, index: 1, time: 0,
+          chunk: { type: 'tool-call-chunks', index: 1, dt: [1, 2, 3], id: 'call_00_x', name: 'pwsh', args: ['Set-Location E:\\', '; $f=...'] },
+        },
+      });
+    }
+  }
+  assert.equal(metadataAgent.cancelled.length, 0, '纯元数据帧不该触发任何掐断（b885b225 的根因）');
+
+  // ── 2. 真退化文本：最多掐 DEGENERATION_FIRE_LIMIT 次，之后只停手 ──────────
+  const loopAgent = makeAgent('session-real-loop');
+  const pushDegenerateTurn = () => {
+    listener({ agent: loopAgent, frame: { type: 'start', attemptId: 'a', turn: 1, step: 1 } });
+    for (let i = 0; i < 300; i += 1) {
+      listener({
+        agent: loopAgent,
+        frame: { type: 'chunk', attemptId: 'a', revision: 1, index: 0, time: 0, chunk: { type: 'text-delta', text: '.\n\nEmit.\n\nNow.\n\nOK.\n\n' } },
+      });
+    }
+  };
+  for (let round = 0; round < 6; round += 1) pushDegenerateTurn();
+
+  assert.equal(
+    loopAgent.cancelled.length, DEGENERATION_FIRE_LIMIT,
+    `连续 ${6} 轮退化最多掐 ${DEGENERATION_FIRE_LIMIT} 次（现场连掐 6 次 = 死循环），实际 ${loopAgent.cancelled.length}`,
+  );
+  // 熔断只是不再掐断，说明仍应补过（模型至少知道发生了什么）——但补说明也不该无限刷。
+  assert.ok(loopAgent.followedUp.length <= DEGENERATION_FIRE_LIMIT, '熔断后不该继续灌说明');
+  assert.ok(DEGENERATION_FIRE_LIMIT >= 2, '阈值至少要允许一次"重试仍退化"的判定');
 });
 
 test('7.5.0：subagent/end 兜底只在父级是小组长时唤醒，且用 steer（真实接线）', () => {

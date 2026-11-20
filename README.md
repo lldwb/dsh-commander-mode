@@ -2386,6 +2386,29 @@ const settled = await started.result   // { output: blocks[], stopReason, struct
 
 ## 版本
 
+- **7.25.2** —— **修「退化看门狗误报导致的死循环」：frame 元数据不得进重复检测 + 连续掐断熔断**。
+  ① **现场**（用户会话 `b885b225`，「1.8.50 回归验证」小组长，2026-11-20）：一分钟内被看门狗
+  连掐 **6 次**、烧掉 **26 个回合**，任务一字未推进。每次提示都是「片段
+  `chunkb885b225-5bed-468c-b45c-518d4b85f8d` 重复了约 3 次」，模型只能反复「立刻调工具」→ 再被掐。
+  ② **根因 A（误报）**：`frameDelta()` 末尾的兜底 `collectStrings(frame)` 把 **frame 元数据**当正文
+  —— `frame.type`（`'chunk'`）+ `frame.attemptId`（= `${sessionId}:${attempt}`，
+  `core/agent-loop/src/assistant-stream.ts:44`）+ chunk 类型字符串，合成 63 字符的「伪文本」。
+  `detectDegeneration` 只在窗口 ≥2000 字符时判定，于是当一轮输出超过 2000 字、且末尾连续出现
+  3 个同类型 `block-start` 帧时，长周期分支以 p=63 命中（`count` 恒为 3）；提示再把 pattern
+  截到 40 字符 → `chunk` + 会话 id 前缀，与用户截图**一字不差**。最小复现已进测试。
+  ③ **根因 B（无熔断）**：掐断的前提是「重来能变好」。连掐 6 次仍不恢复时继续掐只会烧预算；
+  本版加滚动窗口熔断（`DEGENERATION_FIRE_WINDOW_MS` = 60 秒、`DEGENERATION_FIRE_LIMIT` = 3）：
+  窗口内达到上限就只 warn 一次、**不再 cancel**，回合交给 `max-tokens` 之类自然收场。
+  ④ **修法**：`frameDelta` 只认 `frame.type === 'chunk'` 且 `chunk.text`（单条增量）或
+  `chunk.texts`（批量形态），其余一律空串 —— **宁可漏报，不可误报**：漏报只是回到「没有看门狗」，
+  误报会把整个会话锁死。工具调用参数（`chunk.args` / `chunk.dt`）同样不计数（重试同一条命令是
+  合法行为，不是退化）。
+  ⑤ **验证**：`node --test` 全绿（新增 4 个用例：元数据零正文、纯元数据流 0 误报、现场最小复现、
+  真实文本仍命中）；**对照实验**：临时副本里分别回退 `frameDelta` 与 `agent.js`，相应用例立刻红；
+  真实数据：把 `b885b225` 的 51 份 attempt/message stream 还原成真实 frame 重放，修复后 **0 次误报**。
+  ⑥ **兼容性**：只收紧「取文本」的判据 + 新增熔断；`degenerationGuard: false` 仍是总开关，
+  判据参数（窗口 2000 / 片段 8..40 / 重复 20）未动。
+
 - **7.25.1** —— **修「退化看门狗把会话日志永久写坏」：`agent.cancel()` 的 cause 必须是运行时封闭 union**。
   ① **根因**（运行时源码 + 会话日志双向确证）：7.22.0 的看门狗调用
   `agent.cancel({ kind: 'degeneration' }, { keepInbox: true })`，而 `AgentCancelCause`

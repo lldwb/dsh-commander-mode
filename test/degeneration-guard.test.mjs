@@ -136,23 +136,117 @@ test('7.22.0：Tracker 同一次尝试只报一次（不能反复 cancel）', ()
 
 test('7.22.0：Tracker 的 reset 让下一次尝试重新计数', () => {
   const tracker = new DegenerationTracker();
-  for (let i = 0; i < 200; i += 1) tracker.push({ chunk: { type: 'text-delta', text: 'Emit.\n\nNow.\n\nOK.\n\n' } });
+  // 用运行时**真实 frame 形状**（`AssistantStreamFrame` 的 chunk 分支带 attemptId）。
+  const textFrame = (text) => ({ type: 'chunk', attemptId: 'b885b225-5bed-468c-b45c-518d4b85f8d', revision: 1, index: 0, time: 0, chunk: { type: 'text-delta', text } });
+  for (let i = 0; i < 200; i += 1) tracker.push(textFrame('Emit.\n\nNow.\n\nOK.\n\n'));
   assert.equal(tracker.fired, true);
   tracker.reset();
   assert.equal(tracker.fired, false);
   // reset 后正常内容不会立刻命中
-  const r = tracker.push({ chunk: { type: 'text-delta', text: '这是一段新的正常文本。' } });
+  const r = tracker.push(textFrame('这是一段新的正常文本。'));
   assert.equal(r.degenerate, false);
 });
 
 test('7.22.0：frameDelta 能从真实 frame 结构取增量，start/end 返回空', () => {
-  assert.equal(frameDelta({ type: 'start' }), '');
-  assert.equal(frameDelta({ type: 'end' }), '');
+  assert.equal(frameDelta({ type: 'start', attemptId: 'a', turn: 1, step: 1 }), '');
+  assert.equal(frameDelta({ type: 'end', attemptId: 'a', outcome: { kind: 'committed' } }), '');
   assert.equal(frameDelta({ type: 'chunk', chunk: { type: 'text-delta', text: 'hello' } }), 'hello');
   assert.equal(frameDelta({ type: 'chunk', chunk: { type: 'reasoning-delta', text: 'thinking' } }), 'thinking');
+  // 批量形态：texts 数组
+  assert.equal(frameDelta({ type: 'chunk', chunk: { type: 'reasoning-chunks', dt: [], texts: ['a', 'b'] } }), 'ab');
   assert.equal(frameDelta(null), '');
   assert.equal(frameDelta(undefined), '');
   assert.equal(frameDelta(42), '');
+});
+
+// ── 7.25.2：frame 元数据绝不能进重复检测 ─────────────────────────────────────
+// 现场 `b885b225`（2026-11-20）：「1.8.50 回归验证」小组长一分钟内被看门狗连掐 6 次、
+// 烧掉 26 个回合。报出来的重复片段是 `chunkb885b225-5bed-468c-b45c-518d4b85f8d`
+// —— `chunk` 是 frame.type、后面是 frame.attemptId，**根本没有模型文本参与**。
+// 旧实现末尾的 `collectStrings(frame)` 兜底把它们当正文拼进窗口，每帧都产生同一串
+// 40 字符，于是「同一片段连续重复 ≥3 次」恒成立。
+test('7.25.2：frameDelta 只认文本，绝不把 frame.type / attemptId 当正文', () => {
+  const attemptId = 'b885b225-5bed-468c-b45c-518d4b85f8d';
+  const base = { attemptId, revision: 3, index: 1, time: 1795167595956 };
+  // 这些帧全都没有正文；旧实现会返回 `chunk<attemptId>...`。
+  const noTextFrames = [
+    { type: 'chunk', ...base, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } },
+    { type: 'chunk', ...base, chunk: { type: 'block-end', index: 0, block: { type: 'reasoning', text: ' ' } } },
+    { type: 'chunk', ...base, chunk: { type: 'block-start', index: 1, blockType: 'tool-call' } },
+    {
+      type: 'chunk', ...base,
+      chunk: {
+        type: 'tool-call-chunks', index: 1, dt: [23, 243, 0, 0], id: 'call_00_x13282fqengf9taoc0fges46',
+        name: 'pwsh', args: ['{"', 'command', '": ', '"', 'Get-Date', '"}'],
+      },
+    },
+  ];
+  for (const frame of noTextFrames) {
+    const delta = frameDelta(frame);
+    assert.equal(delta, '', `不该从元数据取到文本：${JSON.stringify(delta)}（frame=${frame.chunk.type}）`);
+    assert.ok(!delta.includes(attemptId), 'attemptId 绝不能进正文');
+    assert.ok(!delta.includes('chunk'), 'frame.type 绝不能进正文');
+  }
+});
+
+test('7.25.2：只有元数据帧时 Tracker 永不判退化（b885b225 误报回归）', () => {
+  const attemptId = 'b885b225-5bed-468c-b45c-518d4b85f8d';
+  const tracker = new DegenerationTracker();
+  let fired = 0;
+  // 模拟真实一轮：start → 若干 block-start/tool-call-chunks（参数里带重复内容）→ end
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    tracker.reset();
+    for (let i = 0; i < 200; i += 1) {
+      const frames = [
+        { type: 'chunk', attemptId, revision: attempt, index: 0, time: 0, chunk: { type: 'block-start', index: 0, blockType: 'reasoning' } },
+        { type: 'chunk', attemptId, revision: attempt, index: 1, time: 0, chunk: { type: 'tool-call-chunks', index: 1, dt: [1, 0, 0], id: 'call_00_x', name: 'pwsh', args: ['Set-Location E:\\', '顺灵 Boardmate', '; $f=...'] } },
+        { type: 'chunk', attemptId, revision: attempt, index: 2, time: 0, chunk: { type: 'block-end', index: 1, block: { type: 'tool-call', args: { command: 'x' } } } },
+      ];
+      for (const frame of frames) if (tracker.push(frame).degenerate) fired += 1;
+    }
+  }
+  assert.equal(fired, 0, `纯元数据帧不该判退化，实际误报 ${fired} 次`);
+});
+
+test('7.25.2：复现现场 —— 3 个相同元数据帧曾足以判退化，修复后不再', () => {
+  // ⚠️ 这是 b885b225 的**最小复现**（数字都是实测的）：
+  //
+  // 1. 一轮里先有 ≥2000 字正常输出（`detectDegeneration` 只在 `source.length >= window` 时判）；
+  // 2. 末尾连续出现 3 个 `block-start` 帧（reasoning 一个、tool-call 一个，加上重试再来一个）；
+  // 3. 旧 `frameDelta` 对每个 block-start 帧都返回 `chunk<attemptId><block-start><blockType>`（63 字符），
+  //    三个完全相同 → 长周期分支（41..200）以 p=63 命中，`count` 恒为 3；
+  // 4. `buildDegenerationNotice` 把 pattern 截到 40 字符，于是提示里出现
+  //    `chunkb885b225-5bed-468c-b45c-518d4b85f8d` —— 与用户截图**一字不差**。
+  const id = 'b885b225-5bed-468c-b45c-518d4b85f8d7:7';
+  const blockStart = { type: 'chunk', attemptId: id, revision: 1, index: 0, time: 0, chunk: { type: 'block-start', index: 1, blockType: 'tool-call' } };
+
+  // 旧实现（元数据进窗口）：手工拼出它当时的窗口
+  const legacyDelta = 'chunk' + id + 'block-starttool-call';
+  const padding = '正常的推理内容，每一句都不一样。'.repeat(200);
+  const legacyResult = detectDegeneration(padding + legacyDelta.repeat(3));
+  assert.equal(legacyResult.degenerate, true, '旧窗口形状确实会命中（这就是当时的误报）');
+  assert.ok(legacyResult.pattern.startsWith('chunk' + id), JSON.stringify(legacyResult));
+  const shown = buildDegenerationNotice({ pattern: legacyResult.pattern, count: legacyResult.count }).split('\n')[1];
+  assert.ok(shown.includes('chunkb885b225-5bed-468c-b45c-518d4b85f8d'), `提示文案应与现场一致：${shown}`);
+
+  // 新实现：同样的帧序列，窗口里只有正常文本，一个字符都不该进检测器
+  const tracker = new DegenerationTracker();
+  for (const ch of padding) tracker.push({ type: 'chunk', attemptId: id, revision: 1, index: 0, time: 0, chunk: { type: 'text-delta', text: ch } });
+  let fired = 0;
+  for (let i = 0; i < 3; i += 1) if (tracker.push(blockStart).degenerate) fired += 1;
+  assert.equal(fired, 0, '修复后同样的元数据帧不该再触发退化判定');
+  assert.equal(tracker.tail.includes('b885b225'), false, 'tail 里不该出现 attemptId');
+});
+
+test('7.25.2：真实文本退化仍能在真实 frame 形状下命中（收紧后没有失去能力）', () => {
+  const attemptId = 'b885b225-5bed-468c-b45c-518d4b85f8d';
+  const tracker = new DegenerationTracker();
+  let fired = 0;
+  for (let i = 0; i < 300; i += 1) {
+    const frame = { type: 'chunk', attemptId, revision: 1, index: 0, time: 0, chunk: { type: 'text-delta', text: '.\n\nEmit.\n\nNow.\n\nOK.\n\n' } };
+    if (tracker.push(frame).degenerate) fired += 1;
+  }
+  assert.equal(fired, 1, '真实退化文本必须仍然命中且只报一次');
 });
 
 test('7.22.0：collectStrings 递归收字符串（结构变了也不静默失效）', () => {

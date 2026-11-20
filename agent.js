@@ -136,7 +136,7 @@ import {
 import { buildTicketTools } from './lib/ticket-tools.js';
 import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
 import { buildStallNotice, shouldWakeStall } from './lib/stall-watchdog.js';
-import { DegenerationTracker, buildDegenerationNotice } from './lib/degeneration-guard.js';
+import { DEGENERATION_FIRE_LIMIT, DEGENERATION_FIRE_WINDOW_MS, DegenerationTracker, buildDegenerationNotice } from './lib/degeneration-guard.js';
 import { renderPendingNotices, shouldQueueNotice, takePendingForRedelivery } from './lib/pending-notices.js';
 import { createColdWaker, handleSettlement, parseSettlement, steerParent } from './lib/wake-chain.js';
 import { buildInFlightAdvisory } from './lib/in-flight-advisory.js';
@@ -533,6 +533,7 @@ export function apply(ctx) {
   ctx.on('dispose', () => {
     if (watchdogTimer !== undefined) clearInterval(watchdogTimer);
     degenerationTrackers.clear();
+    degenerationFires.clear();
   });
 
   /**
@@ -1607,6 +1608,10 @@ export function apply(ctx) {
   // 为什么能掐断：运行时流式循环里每个 chunk 都 `signal.throwIfAborted()`，
   // 而 `agent.cancel()` 会 `this.phase.abort.abort(cause)` —— 中断当前回合。
   const degenerationTrackers = new Map();
+  // 7.25.2 熔断：同一会话在短时间内被反复判定退化，说明「掐断」并没有让它恢复
+  // （典型是检测器本身误报 —— 现场 `b885b225` 一分钟内连掐 6 次、26 个回合原地打转）。
+  // 继续掐只会把回合预算烧光，所以阈值到了就**只告警、不再掐断**，交给 max-tokens 收场。
+  const degenerationFires = new Map();
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     try {
       if (agent === undefined || readOptions().degenerationGuard === false) return;
@@ -1621,6 +1626,21 @@ export function apply(ctx) {
       if (frame?.type === 'start') { tracker.reset(); return; }
       const result = tracker.push(frame);
       if (!result.degenerate) return;
+
+      // 熔断判定：滚动窗口内的掐断次数。
+      const now = Date.now();
+      const recent = (degenerationFires.get(sessionId) ?? []).filter((at) => now - at < DEGENERATION_FIRE_WINDOW_MS);
+      if (recent.length >= DEGENERATION_FIRE_LIMIT) {
+        degenerationFires.set(sessionId, recent);
+        ctx.logger?.warn?.(
+          'commander-mode: 会话 %s 在 %d 秒内已被判定退化 %d 次，停止继续掐断（疑似误报或模型无法自我纠正），交给回合自然收场',
+          sessionId, Math.round(DEGENERATION_FIRE_WINDOW_MS / 1000), recent.length,
+        );
+        return;
+      }
+      recent.push(now);
+      degenerationFires.set(sessionId, recent);
+
       // 掐断当前回合（保留收件箱，避免把已经排队的消息清掉），再把原因排给下一回合。
       const notice = buildDegenerationNotice({ pattern: result.pattern, count: result.count });
       try {
