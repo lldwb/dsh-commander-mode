@@ -423,6 +423,67 @@ test('7.25.1：退化看门狗传给 agent.cancel 的 cause 必须是运行时�
   assert.ok(agent.followedUp[0].content[0].text.includes('退化输出看门狗'));
 });
 
+test('7.26.0 接线：CC 模式下小组长被拒 DSH 委派、指挥官放行；section 按变体分流', async () => {
+  const { record } = boot();
+  const section = record.sections[0];
+  const listener = listenerOf(record, 'tools/pre-execute');
+
+  /** 造一个带 preset/深度的假 agent（plugin 只读会话头）。 */
+  const agentOf = (preset, depth) => ({
+    id: `session-${preset}-${depth}`,
+    session: { id: `session-${preset}-${depth}`, header: { agentPreset: preset, delegationDepth: depth } },
+  });
+
+  // ── 1. section 分流 ──────────────────────────────────────────────────────
+  const ccLeadText = section.text({ agent: agentOf('commander-cc', 1) });
+  assert.ok(ccLeadText.includes('Claude Code 会话'), 'CC 模式下小组长必须拿到 brief');
+  assert.ok(ccLeadText.includes('subagent_claude_code'));
+
+  const nativeLeadText = section.text({ agent: agentOf('commander', 1) });
+  assert.equal(nativeLeadText, '', '原生模式下子级仍然返回空串（省 token）');
+
+  const ccRootText = section.text({ agent: agentOf('commander-cc', 0) });
+  assert.ok(ccRootText.includes('团队模型：指挥官 → 小组长 → Claude Code 会话'));
+  const nativeRootText = section.text({ agent: agentOf('commander', 0) });
+  assert.ok(nativeRootText.includes('团队模型：指挥官 → 小组长 → 子智能体'));
+
+  // ── 2. 门禁接线 ──────────────────────────────────────────────────────────
+  const ccLead = agentOf('commander-cc', 1);
+  const denied = await listener({ name: 'subagent', agent: ccLead }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(denied.kind, 'deny', `CC 模式下小组长的 subagent 必须被拒，实际 ${JSON.stringify(denied)}`);
+  assert.ok(denied.reason.includes('subagent_claude_code'));
+
+  const deniedFork = await listener({ name: 'subagent_fork', agent: ccLead }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(deniedFork.kind, 'deny');
+
+  // CC 通道放行（必须真的走到 next）
+  let nextCalls = 0;
+  const allowed = await listener({ name: 'subagent_claude_code', agent: ccLead }, () => { nextCalls += 1; return Promise.resolve({ kind: 'allow' }); });
+  assert.equal(allowed.kind, 'allow');
+  assert.equal(nextCalls, 1, 'CC 通道必须走 next，不能被门禁短路');
+
+  // 指挥官本人照旧能建小组长
+  const rootDecision = await listener({ name: 'subagent', agent: agentOf('commander-cc', 0) }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(rootDecision.kind, 'allow');
+
+  // 原生模式的小组长照旧能派 L2
+  const nativeDecision = await listener({ name: 'subagent', agent: agentOf('commander', 1) }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(nativeDecision.kind, 'allow');
+
+  // ── 3. 7.27.0 产能门禁：CC 模式的小组长不许自己实现，验收仍放行 ────────────
+  const writeDenied = await listener({ name: 'write', agent: ccLead }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(writeDenied.kind, 'deny', 'CC 模式下小组长的 write 必须被拒（活要交给 CC）');
+  assert.ok(writeDenied.reason.includes('subagent_claude_code'));
+
+  let readNext = 0;
+  const readAllowed = await listener({ name: 'read', agent: ccLead }, () => { readNext += 1; return Promise.resolve({ kind: 'allow' }); });
+  assert.equal(readAllowed.kind, 'allow');
+  assert.equal(readNext, 1, '只读验收必须走 next');
+
+  const nativeWrite = await listener({ name: 'write', agent: agentOf('commander', 1) }, () => Promise.resolve({ kind: 'allow' }));
+  assert.equal(nativeWrite.kind, 'allow', '原生模式的小组长照旧能自己写');
+});
+
 test('7.25.2：退出退化死循环的超时保护 —— 只有元数据帧永不误掐 + 连续掐断有熔断', () => {
   // ## 现场 `b885b225`（2026-11-20，「1.8.50 回归验证」小组长）
   //

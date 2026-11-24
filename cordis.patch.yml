@@ -316,3 +316,17 @@
         order: 7
         # 能力行 + 模式行 + 可选工作流行由 lib/preset-plugins.js 从 lib/capabilities.js
         # 单一来源拼装，这里**不再重述**（3.7.0 前这里有一份 ~84 行的能力行副本）。
+
+    # 7.26.0 第二个模式：「指挥者 · CC 模式」。
+    # 组合与 preset-commander **完全相同**（同一份能力行 + 模式行），差异只在 preset id：
+    # `commander-cc`。模式行按会话头的 `agentPreset` 判变体（lib/mode-variant.js），于是：
+    #   - 指挥官（L0）照旧用 `subagent` 建小组长；
+    #   - 小组长（L1）的 DSH 委派工具被 tools/pre-execute 拒绝，只能 `subagent_claude_code`。
+    # 为什么不删 `tool-subagent`：删了指挥官自己也建不了小组长，三层链会塌成一层。
+    - id: preset-commander-cc
+      name: 'dsh-commander-mode/preset-cc'
+      config:
+        id: commander-cc
+        name: 指挥者 · CC 模式
+        description: 和指挥者模式一样接单与拆分，但小组长这一层的下级换成 Claude Code 会话（一次性、不可追问）；不再派 DSH 子智能体。
+        order: 8
