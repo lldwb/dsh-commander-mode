@@ -106,8 +106,6 @@ import {
   DELEGATION_TOOLS,
   agentToolNames,
   evaluateBoardWrite,
-  evaluateCcDelegation,
-  evaluateCcExecution,
   evaluateCommanderChannels,
   evaluateDuplicateLead,
   evaluatePreExecute,
@@ -133,12 +131,8 @@ import {
   SKILL_DESCRIPTION,
   SKILL_NAME,
   SKILL_WHEN_TO_USE,
-  renderCcLeadBrief,
   renderModeOpening,
 } from './lib/protocol.js';
-// 7.26.0：同一个模式行被两个 preset 复用（指挥者 / 指挥者 · CC 模式），
-// 靠会话头的 preset id 判断当前变体（见 `lib/mode-variant.js` 的注释）。
-import { delegationVariantOf } from './lib/mode-variant.js';
 import { buildTicketTools } from './lib/ticket-tools.js';
 import { createRestoredLedger, toSnapshot } from './lib/sync-store.js';
 import { buildStallNotice, shouldWakeStall } from './lib/stall-watchdog.js';
@@ -1393,28 +1387,10 @@ export function apply(ctx) {
         // 0.4.0 修复：teammate / specialist 与指挥者共用同一个 preset scope，也会被问到
         // 这份 section。此前它们会收到完整的「指挥者模式」协议（"你不执行操作"），
         // 既浪费每个请求约 4 KB，又和它们自己的执行者人设冲突。子级一律返回空串。
-        //
-        // 7.26.0：**CC 变体例外** —— 小组长的下级被换成了 Claude Code 会话，
-        // 它必须知道自己不能 `subagent`、任务书要自包含，所以只给它一份 ~1 KB 的 brief。
         const agent = context?.agent;
-        if (agent !== undefined && isDelegatedAgent(agent)) {
-          const variant = delegationVariantOf(agent);
-          if (variant !== 'cc') return '';
-          const tools = agentToolNames(agent);
-          return renderCcLeadBrief({
-            // `undefined` = 读不到工具视图（见 `agentToolNames` 的注释），此时不告警。
-            hasCcDelegate: Array.isArray(tools) ? tools.includes('subagent_claude_code') : undefined,
-          });
-        }
+        if (agent !== undefined && isDelegatedAgent(agent)) return '';
         return renderModeOpening({
           ...readOptions(),
-          // 7.26.0：本 agent 所在变体（'native' | 'cc'）。
-          delegation: delegationVariantOf(agent),
-          // CC 变体下判断小组长的派活通道是否存在；`undefined` = 读不到，不告警。
-          hasCcDelegate: (() => {
-            const tools = agentToolNames(agent);
-            return Array.isArray(tools) ? tools.includes('subagent_claude_code') : undefined;
-          })(),
           specialists: installedRoster,
           hasSpecialistTools: installedRoster.length > 0,
           syncBoard: syncBoardEnabled(),
@@ -1893,37 +1869,6 @@ export function apply(ctx) {
       if (channelDecision !== undefined) {
         ctx.logger?.info?.('commander-mode: 拒绝指挥官换派发通道（%s）', toolName);
         return channelDecision;
-      }
-
-      // 7.26.0 CC 变体门禁：小组长这一层不许再派 DSH 子智能体（只能 `subagent_claude_code`）。
-      // 只对子级生效（`evaluateCcDelegation` 内部按 `isDelegatedAgent` 判），指挥官本人照旧
-      // 用 `subagent` 建小组长。排在 `observeDelegation` 之前：被拒的尝试不能计入派发统计。
-      {
-        const ccDecision = evaluateCcDelegation({
-          agent: exec?.agent,
-          name: toolName,
-          variant: delegationVariantOf(exec?.agent),
-        });
-        if (ccDecision !== undefined) {
-          ctx.logger?.info?.('commander-mode: 拒绝小组长在 CC 模式下派 DSH 子智能体（%s）', toolName);
-          return ccDecision;
-        }
-      }
-
-      // 7.27.0 CC 产能门禁：小组长不许自己实现（write / edit / apply_patch），活要交给 CC。
-      // 用户 2026-11-20：「cc 模式时，要尽可能把活交给 cc 来干」——只换下级不够，
-      // 小组长手里留着 write/edit 就会图省事自己写，CC 的隔离与原生工具链都白搭。
-      // 只拦"实现动作"：read / grep / pwsh（跑测试、看 diff）仍留给它验收。
-      {
-        const execDecision = evaluateCcExecution({
-          agent: exec?.agent,
-          name: toolName,
-          variant: delegationVariantOf(exec?.agent),
-        });
-        if (execDecision !== undefined) {
-          ctx.logger?.info?.('commander-mode: 拒绝小组长在 CC 模式下自己实现（%s）', toolName);
-          return execDecision;
-        }
       }
 
       // 3.0.0 三层指挥链门禁：任务板进展/排期、工单推进状态都归小组长。

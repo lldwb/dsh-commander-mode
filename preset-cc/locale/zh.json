@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "指挥者 · CC 模式",
-    "description": "声明「指挥者 · CC 模式」这个 Agent 预设：小组长这一层的下级换成 Claude Code 会话（一次性），不再派 DSH 子智能体。"
-  }
-}

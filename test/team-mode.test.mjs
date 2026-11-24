@@ -23,7 +23,6 @@ import {
   currentAgentPreset,
   deferToNextTask,
   installForcedTeamMode,
-  isCommanderPresetId,
   isCommanderSession,
   isRootAgent,
   liveAgentOf,
@@ -109,19 +108,6 @@ const COMMANDER_ROOT = Object.freeze({
   session: { id: 'session-root', header: { id: 'session-root', agentPreset: COMMANDER_PRESET_ID } },
 });
 
-/**
- * 一个**CC 变体**的指挥官根 agent（7.26.0 新增的第二个 preset）。
- *
- * 7.27.1 回归：加第二个 preset 时，`isCommanderSession()` 里写的是
- * `=== 'commander'`，于是 CC 模式的指挥官**从来没有被强制开团队** ——
- * 三条通道（创建 / 切模式 / 被关重开）全部匹配不上，团队静默保持关闭。
- * 用户 2026-11-20 直接问「指挥官 cc 模式为什么没有强制开启智能体团队协作？」。
- */
-const COMMANDER_CC_ROOT = Object.freeze({
-  id: 'session-root-cc',
-  session: { id: 'session-root-cc', header: { id: 'session-root-cc', agentPreset: 'commander-cc' } },
-});
-
 /** 一个非指挥官根 agent（standard 模式）。 */
 const STANDARD_ROOT = Object.freeze({
   id: 'session-standard',
@@ -162,36 +148,6 @@ test('agentPresetOf / isCommanderSession：只认指挥官根会话', () => {
   // 子代理继承父 preset，但 origin=subagent → 不是"根会话"
   assert.equal(isCommanderSession(ctx, COMMANDER_CHILD.session), false);
   assert.equal(isCommanderSession(ctx, undefined), false);
-});
-
-test('7.27.1：CC 变体（commander-cc）也属于"指挥官会话"——第二个 preset 不能再漏', () => {
-  const { ctx } = makeHostCtx();
-  // 原生与 CC 都要认
-  assert.equal(isCommanderSession(ctx, COMMANDER_ROOT.session), true);
-  assert.equal(isCommanderSession(ctx, COMMANDER_CC_ROOT.session), true, 'CC 模式的指挥官必须被强制开团队');
-  // 将来派生的 *-cc 变体同样认（判据是后缀，不是白名单）
-  assert.equal(isCommanderSession(ctx, { header: { agentPreset: 'interview-cc' } }), true);
-  // 其它模式不认
-  assert.equal(isCommanderSession(ctx, STANDARD_ROOT.session), false);
-  // 子代理仍然排除（即使 header 带 commander-cc）
-  assert.equal(isCommanderSession(ctx, { header: { agentPreset: 'commander-cc', origin: 'subagent' } }), false);
-  // 投影生效时以投影为准（输入框切模式）
-  const presets = { presetForSession: () => 'commander-cc' };
-  assert.equal(isCommanderSession(makeHostCtx({ agentPresets: presets }).ctx, STANDARD_ROOT.session), true);
-
-  assert.equal(isCommanderPresetId('commander'), true);
-  assert.equal(isCommanderPresetId('commander-cc'), true);
-  assert.equal(isCommanderPresetId('standard'), false);
-  assert.equal(isCommanderPresetId(undefined), false);
-});
-
-test('7.27.1 接线：CC 模式的根 agent 创建时也会 setEnabled(true)', async () => {
-  const agentTeams = makeTeamService();
-  const { ctx, record } = makeHostCtx({ agentTeams, subagents: makeSubagents(COMMANDER_CC_ROOT) });
-  installForcedTeamMode(ctx);
-  await listenerOf(record, 'agent/created')({ agent: COMMANDER_CC_ROOT, source: 'startup' });
-  await flush();
-  assert.deepEqual(agentTeams.calls.map((call) => call.enabled), [true], 'CC 模式根会话必须被强制开团队');
 });
 
 test('currentAgentPreset：优先读 agentPresets 投影（支持在输入框里切模式）', () => {
@@ -404,7 +360,6 @@ test('本模块不提供任何关闭团队的入口（没有配置项 / 没有�
     'currentAgentPreset',
     'deferToNextTask',
     'installForcedTeamMode',
-    'isCommanderPresetId',
     'isCommanderSession',
     'isRootAgent',
     'liveAgentOf',

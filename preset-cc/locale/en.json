@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "Commander mode · CC",
-    "description": "Declares the \"Commander mode · CC\" agent preset: group leads delegate to one-shot Claude Code sessions instead of DSH subagents."
-  }
-}
