@@ -175,6 +175,11 @@ import {
   renderLongSessionCheck,
   renderSyncBoard,
 } from './lib/sync.js';
+// 7.28.0 重启后续做：识别离线可续做下级，提示先复用而不是新开。
+import {
+  renderRebootResumeNotice,
+  snapshotChildren,
+} from './lib/reboot-resume.js';
 
 /** Cordis 插件名（Loader 诊断用）。 */
 export const name = 'commander-mode-agent';
@@ -625,6 +630,15 @@ export function apply(ctx) {
   const teamMembers = new WeakMap();
   const TEAM_MEMBERS_MAX_AGE_MS = 15000;
 
+  /**
+   * 「可续做下级」的离线/在线快照（7.28.0 重启后续做）。
+   *
+   * 与 `teamMembers` 用**同一次** `listDescendants()` 结果算出，只是分组口径不同：
+   * 那边要 name/status 给看板，这边要 id/name 给"先复用别新开"的提示。
+   * 同样是「异步刷新 + 同步读缓存」。
+   */
+  const childSnapshot = new WeakMap();
+
   /** 触发一次后台刷新（同一 agent 不并发刷新）。 */
   const refreshingTeams = new WeakSet();
 
@@ -653,6 +667,11 @@ export function apply(ctx) {
           depth: typeof row.depth === 'number' ? row.depth : 1,
         }));
       teamMembers.set(agent, { members, at: Date.now() });
+      // 7.28.0：顺手算"可续做下级的离线/在线分组"（重启后用它们复用，而不是新开）。
+      childSnapshot.set(agent, {
+        ...snapshotChildren(rows, (id) => getService('agents')?.get?.(id) !== undefined),
+        at: Date.now(),
+      });
     } catch (error) {
       // 读不到名册按"未知"处理：同步判定只会在证据充分时报警，绝不因为读不到就拦人。
       ctx.logger?.debug?.('commander-mode: 读取 subagent 成员快照失败（按未知处理）：%o', error);
@@ -704,6 +723,30 @@ export function apply(ctx) {
       return Array.isArray(rows) ? rows : [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * 同步读「可续做下级」的离线/在线分组（7.28.0）。
+   *
+   * 与 `readExecutorMembers` 同一套缓存语义：过期就触发后台刷新，本轮先用已有快照。
+   *
+   * @param {object} agent - 指挥者 agent。
+   * @returns {{ offline: object[], online: object[] }} 分组；读不到返回两个空数组。
+   */
+  function readChildSnapshot(agent) {
+    try {
+      const cached = childSnapshot.get(agent);
+      if (cached === undefined || Date.now() - cached.at > TEAM_MEMBERS_MAX_AGE_MS) {
+        void refreshTeamMembers(agent);
+      }
+      const latest = childSnapshot.get(agent);
+      return {
+        offline: Array.isArray(latest?.offline) ? latest.offline : [],
+        online: Array.isArray(latest?.online) ? latest.online : [],
+      };
+    } catch {
+      return { offline: [], online: [] };
     }
   }
 
@@ -1463,6 +1506,23 @@ export function apply(ctx) {
           const parts = [];
           // 7.16.0：上下文渲染发生在每个回合里 → 用它登记"有动作"，看门狗的宽限期从这里起算。
           touchSession(agent);
+          // 7.28.0 重启后续做：有离线可续做下级时，先把它摆到眼前。
+          // 用户 2026-11-25：「重启后应该复用之前被停止的会话，而不是单独开」。
+          {
+            const { offline, online } = readChildSnapshot(agent);
+            if (offline.length > 0) {
+              const tools = agentToolNames(agent);
+              const resumeText = renderRebootResumeNotice({
+                offline,
+                online,
+                // 读不到工具视图时按"有"处理：宁可提示它去试，也不要让它以为没有通道而新开一批。
+                resumeToolPresent: Array.isArray(tools)
+                  ? tools.includes('session_resume_subagents')
+                  : true,
+              });
+              if (resumeText !== '') parts.push(resumeText);
+            }
+          }
           if (syncBoardEnabled()) {
             const { view, members } = inspectSync(agent);
             const syncText = renderSyncBoard(view, members);

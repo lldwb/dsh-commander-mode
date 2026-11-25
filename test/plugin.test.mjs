@@ -484,6 +484,37 @@ test('7.26.0 接线：CC 模式下小组长被拒 DSH 委派、指挥官放行�
   assert.equal(nativeWrite.kind, 'allow', '原生模式的小组长照旧能自己写');
 });
 
+test('7.28.0 接线：有离线下级时，运行时上下文里出现"重启后续做"提示', async () => {
+  // 用户 2026-11-25：「重启后应该复用之前被停止的会话，而不是单独开」。
+  // 判据：`subagents.listDescendants()` 里 kind=child/depth=1 的行 → 用 agents.get 判在线；
+  // 离线的在**每一轮**运行时上下文里列出来（异步刷新 + 同步读缓存，所以要喂两轮）。
+  const rows = [
+    { kind: 'child', depth: 1, id: 'session-lead-a', path: 'lead-a', mode: 'continuable', activity: 'inactive' },
+    { kind: 'child', depth: 1, id: 'session-lead-b', path: 'lead-b', mode: 'continuable', activity: 'running' },
+  ];
+  const built = boot({
+    extraServices: {
+      subagents: { listDescendants: async () => rows },
+      // lead-b 在线，lead-a 离线
+      agents: { get: (id) => (id === 'session-lead-b' ? { id } : undefined) },
+    },
+  });
+  const definition = syncContext(built.record);
+  const root = { id: 'session-root', session: { id: 'session-root', header: { id: 'session-root' } } };
+
+  // 第一轮只触发后台刷新，第二轮才读到快照。
+  definition.text({ agent: root });
+  await flush();
+  const text = definition.text({ agent: root });
+
+  assert.ok(text.includes('重启后续做'), `上下文里应有重启续做提示：${text.slice(0, 200)}`);
+  assert.ok(text.includes('`lead-a`'), '离线下级要点名');
+  assert.ok(text.includes('`session-lead-a`'), '离线清单里带会话 id');
+  assert.equal(text.includes('`lead-b`（`session-lead-b`）'), false, '在线的不能进"别新开"清单');
+  assert.ok(text.includes('session_resume_subagents'), '要给出恢复工具名');
+  assert.ok(text.includes('lead-b'), '在线的要单独说明可以直接 send_message');
+});
+
 test('7.25.2：退出退化死循环的超时保护 —— 只有元数据帧永不误掐 + 连续掐断有熔断', () => {
   // ## 现场 `b885b225`（2026-11-20，「1.8.50 回归验证」小组长）
   //
