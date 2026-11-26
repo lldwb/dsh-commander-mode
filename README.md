@@ -24,7 +24,7 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 
 ## 加载方式
 
-加载方式：按需（挂载点：声明「指挥者模式」agent preset——5 个工具与 3 个提示词 section 都在 preset 内，宿主行只做事件队列/门禁；未选中该模式时不加载这些工具）
+加载方式：按需（挂载点：声明「指挥者模式」agent preset——3 个工单工具（`commander_ticket_create` / `commander_ticket_update` / `commander_tickets`）、每位专家一个 `subagent_<id>`（出厂名册 6 位），以及 `commander:mode` 协议 section、`commander:specialist` 人设 section 与 `commander:sync-board` 每轮看板上下文，都由 preset 内的行注册；宿主行只做事件队列/门禁，未选中该模式时不加载这些工具）
 
 > 加载方式是 DSH 插件开发的必答项（工作区约定 §10.0）：按需的必须有入口与退路，
 > 常驻的必须写理由。这条标记行供人工审阅与将来做门禁。
@@ -337,7 +337,7 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 2. **建单即派**：计划确认后，每一项要交付的活用 `commander_ticket_create` 建工单，
    **建单后必须在同一回合内完成派活**（`team_task_update action:"reassign"` + `send_message`，
    prompt 首行写 `[ticket:t-N]`）；做不到就在回复里说明为什么先不派。一张工单可多次派发
-   （实现 / 返工 / 审查）。
+   （首轮实现、按验收意见修正、独立审查）。
 3. **回报必须结构化**：执行者（小组长）最终答复最后一行写
    `STATUS: progress|waiting|ready|blocked|failed|dropped`，并用 `commander_ticket_update`
    回报推进状态；指挥官只核对、验收后才 `done` / `cancelled`。
@@ -397,7 +397,7 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 | `architect` | 系统架构与拆分：需求拆解、技术方案、接口与数据模型设计（不直接写实现） |
 | `implementer` | 代码实现：按既定方案写/改代码，补齐边界处理，产出可运行改动与自检结果 |
 | `reviewer` | 代码审查：正确性、可维护性、风格一致性与潜在缺陷，按严重程度给意见 |
-| `tester` | 测试：设计并补齐覆盖改动的测试，运行验证并报告明细，复现缺陷给最小步骤 |
+| `tester` | 测试：设计并补齐覆盖改动的测试，运行验证并报告通过/失败明细；把缺陷缩成最小可重放的步骤 |
 | `security-auditor` | 安全审计：依赖漏洞、注入与越权、密钥与敏感信息泄漏、不安全默认值 |
 | `doc-writer` | 文档：README、API 说明、使用与迁移文档 |
 
@@ -447,7 +447,7 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 `project-dev-workflow`，不注入常驻 prompt section。指挥者与专家小组长都可以用 `skill`
 按需加载，**也可以只读需要的那一段**；不加载也能正常干活。
 
-手册内容：每段的**目的 / 必做动作 / 必须落盘的产物 / 验收判据 / 失败返工规则 /
+手册内容：每段的**目的 / 必做动作 / 必须落盘的产物 / 验收判据 / 失败后的补救规则 /
 对应专家与团队用法**。
 
 每段的专家小组长都可以把该段的子任务交给下级一次性专家（`subagent_<id>`，例如架构段
