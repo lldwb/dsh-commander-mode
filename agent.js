@@ -180,6 +180,11 @@ import {
   renderRebootResumeNotice,
   snapshotChildren,
 } from './lib/reboot-resume.js';
+// 谷峰暂停后续做：识别「被高峰暂停打断」的下级，提示它们会自己恢复、别当失败重派。
+import {
+  collectOffpeakPaused,
+  renderOffpeakPausedNotice,
+} from './lib/offpeak-paused.js';
 
 /** Cordis 插件名（Loader 诊断用）。 */
 export const name = 'commander-mode-agent';
@@ -639,8 +644,35 @@ export function apply(ctx) {
    */
   const childSnapshot = new WeakMap();
 
+  /** 「被谷峰暂停」判定缓存：子会话 id → `{ paused, at }`（避免每轮重读整份日志）。 */
+  const offpeakPausedCache = new Map();
+
+  /** 谷峰暂停判定的缓存有效期。 */
+  const OFFPEAK_READ_TTL_MS = 60 * 1000;
+
   /** 触发一次后台刷新（同一 agent 不并发刷新）。 */
   const refreshingTeams = new WeakSet();
+
+  /**
+   * 找出「被谷峰高峰暂停打断」的直接下级（`aborted + hook + offpeak-pause`）。
+   *
+   * 只读最近一份日志的最后一个 `turn/end`；每条结果按会话 id 缓存 `OFFPEAK_READ_TTL_MS`，
+   * 避免每 15 秒把每个子会话整份读一遍。读不到（没有 sessionQuery / 日志损坏）按
+   * "不是暂停"处理——宁可少提示一次，也不要把正常下级误报成暂停。
+   *
+   * @param {any[]} rows - `subagents.listDescendants()` 的结果。
+   * @returns {Promise<{ id: string, name: string }[]>} 被暂停的下级。
+   */
+  const readOffpeakPausedChildren = async (rows) => {
+    const sessionQuery = getService('sessionQuery');
+    if (sessionQuery === undefined || typeof sessionQuery.readSession !== 'function') return [];
+    return collectOffpeakPaused({
+      rows,
+      readSession: (id) => sessionQuery.readSession(id),
+      cache: offpeakPausedCache,
+      ttlMs: OFFPEAK_READ_TTL_MS
+    });
+  };
 
   /**
    * 异步刷新某个指挥者的团队成员快照。
@@ -668,8 +700,21 @@ export function apply(ctx) {
         }));
       teamMembers.set(agent, { members, at: Date.now() });
       // 7.28.0：顺手算"可续做下级的离线/在线分组"（重启后用它们复用，而不是新开）。
+      // 谷峰暂停：再算一组「被高峰暂停打断」的下级（会自己恢复，别当失败重派）。
+      const paused = await readOffpeakPausedChildren(rows);
+      // 诊断出口：自动化验证 / 控制台排查「哪些下级被谷峰暂停」。
+      try {
+        globalThis.__commanderOffpeakPaused = {
+          sessionId,
+          paused,
+          at: Date.now()
+        };
+      } catch {
+        // 诊断失败不影响业务。
+      }
       childSnapshot.set(agent, {
         ...snapshotChildren(rows, (id) => getService('agents')?.get?.(id) !== undefined),
+        paused,
         at: Date.now(),
       });
     } catch (error) {
@@ -744,9 +789,10 @@ export function apply(ctx) {
       return {
         offline: Array.isArray(latest?.offline) ? latest.offline : [],
         online: Array.isArray(latest?.online) ? latest.online : [],
+        paused: Array.isArray(latest?.paused) ? latest.paused : [],
       };
     } catch {
-      return { offline: [], online: [] };
+      return { offline: [], online: [], paused: [] };
     }
   }
 
@@ -1521,6 +1567,21 @@ export function apply(ctx) {
                   : true,
               });
               if (resumeText !== '') parts.push(resumeText);
+            }
+          }
+          // 谷峰暂停后续做（2026-11-27）：有「被高峰暂停打断」的下级时，明确告诉指挥官
+          // 它们只是被暂停、会自己恢复——别当失败重新派一批。
+          {
+            const { paused } = readChildSnapshot(agent);
+            if (Array.isArray(paused) && paused.length > 0) {
+              const tools = agentToolNames(agent);
+              const pausedText = renderOffpeakPausedNotice({
+                paused,
+                resumeToolPresent: Array.isArray(tools)
+                  ? tools.includes('session_resume_subagents')
+                  : true,
+              });
+              if (pausedText !== '') parts.push(pausedText);
             }
           }
           if (syncBoardEnabled()) {

@@ -148,6 +148,22 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 部署里没有 `session_resume_subagents` 时提示换成"不要另开一批做同一件事，先问用户"，
 并且不点名一个不存在的工具。
 
+### 谷峰暂停后续做
+
+`dsh-session-enhance` 的「谷峰」会在高峰时段把正在跑的小组长/子智能体 `cancel` 掉
+（`turn/end` 的 reason 是 `aborted + hook + offpeak-pause`）。它们**不是失败**：会话与上下文都在，
+进入空闲时段或用户关掉谷峰后会自动续跑。
+
+但指挥官看不到"它只是被暂停"，很容易当成失败重派。所以每轮运行时上下文里，若发现有
+**被谷峰暂停的直接下级**（`kind=child`、`depth=1`、当前不在跑、且最后一个 `turn/end`
+是 `offpeak-pause`；判定结果按会话缓存 60 秒），插件渲染一段：
+
+- 列出被暂停的下级（名字 + 会话 id，最多 8 个）；
+- 明确三条处置口径：**不要重新派一批替代**、**不要当失败追责/报错**、**需要立刻推进才
+  `session_resume_subagents`，否则等它们自己恢复**。
+
+没有这类下级时一个字都不输出；部署里没有 `session_resume_subagents` 时提示改为「等它们自己恢复」。
+
 ## 确定性门禁
 
 门禁都在 `tools/pre-execute` 上，挂在 preset scope 里，**只影响本模式**。

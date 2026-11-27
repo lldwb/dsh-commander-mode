@@ -3,6 +3,29 @@
 本插件的改动记在这里；版本号遵循 `.` 分段语义（大版本 = 结构性/破坏性，中版本 = 新能力，
 小版本 = 修复与文档）。本文件自 8.2.2 起建立，更早的版本记录见 `git log`（各版本有 tag）。
 
+## 8.3.0 — 2026-11-27
+
+### 谷峰暂停后续做：被「高峰暂停」打断的下级别当失败重派
+
+用户要求参照 `lib/reboot-resume.js`（7.28.0）的做法，对「谷峰暂停」这种中断同样在运行时上下文里
+给出协议提示。
+
+- 新增 `lib/offpeak-paused.js`：`isOffpeakPause()`（认 `aborted + hook + offpeak-pause`）、
+  `lastTurnEndReason()`、`collectOffpeakPaused()`（从 `listDescendants()` 挑出「不在跑 + 最后一个
+  `turn/end` 是 offpeak-pause」的直接下级，按会话缓存 60 秒，读失败按"不是暂停"处理，绝不误报）、
+  `renderOffpeakPausedNotice()`（列出下级 + 三条处置口径）；
+- `refreshTeamMembers()` 顺带算这组名单（与离线/在线快照同一次 `listDescendants()`），
+  运行时上下文在重启提示之后渲染：「**不要重新派一批替代**、**不要当失败追责/报错**、
+  需要立刻推进才 `session_resume_subagents`，否则等它们自己恢复」；没有这类下级时不输出；
+- 没有 `session_resume_subagents` 时提示改为「等它们自动恢复（或让用户先关掉谷峰）」，
+  不点名不存在的工具。
+
+**验证**：指挥官测试 **844/844**（新增 9 例：判定、最后 turn/end 提取、渲染三条口径、
+空名单不输出、无 resume 工具时改写、>8 个截断、`collectOffpeakPaused` 的过滤/缓存/失败降级）；
+session-enhance 侧同批改动 **333/333**；真实沙箱（commander 8.2.5 + session-enhance 6.8.2）
+验证了「关闭谷峰后指挥官会话收到写明『高峰暂停』的续跑消息」；本提示块由单测覆盖
+（`systemPrompt.context` 不落盘，未做端到端抓取，如实说明）。
+
 ## 8.2.5 — 2026-11-27
 
 ### 插件卡片描述改为只描述当前能力
