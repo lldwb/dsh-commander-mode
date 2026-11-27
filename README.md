@@ -21,6 +21,7 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 
 - 仓库：<https://github.com/lldwb/dsh-commander-mode>（公开）
 - 许可：[MIT](./LICENSE)
+- 变更历史见 [`CHANGELOG.md`](./CHANGELOG.md)
 
 ## 加载方式
 
@@ -229,7 +230,7 @@ DeepSeek Harness（dsh）的**一个模式**（agent preset）加**一个可选�
 - 读不出 agent 身份（没有 `session.header`）→ 当作子代理，放行；
 - 判定过程抛错 → 放行，并让工具调用继续；
 - 确认是**指挥官本人**时，第 4 条硬门禁一律拒绝，但身份读不到同样放行
-  （拦错小组长会让 L1→L2 断链；指挥官的身份在真实运行时总是可读的）。
+  （拦错小组长会让 L1→L2 断链；指挥官的身份在正常部署里总是可读的）。
 
 **唯一的两个例外**是「禁止等待」与「禁止轮询」：它们不按身份判定、也不"拿不准就放行"——
 理由是等待不是完成工作所必需的动作，拦错的代价只是少一条捷径。
@@ -881,5 +882,3 @@ dsh-plugin-devkit 的 skill `dsh-plugin-development/references/icon-design-langu
 - 可选：`@deepseek-ai/dsh-experimental-agent-team-profile`（插件页的「智能体团队」，
   本模式强制开启它）、Claude Code 子智能体 bundle（只有 CC 模式需要）、
   dsh-plugin-devkit（预设组件，软依赖）。
-
-变更历史见 git 历史与版本 tag。
